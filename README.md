@@ -87,6 +87,8 @@ Build local release archives under `dist/`:
 make dist VERSION=v0.1.0
 ```
 
+Each archive includes both binaries, `README.md`, `LICENSE`, and the core documents under `docs/`.
+
 Limit local release builds to selected `GOOS/GOARCH` targets:
 
 ```bash

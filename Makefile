@@ -49,7 +49,10 @@ dist-check:
 	VERSION="$(VERSION)" COMMIT="$(COMMIT)" BUILD_DATE="$(BUILD_DATE)" DIST_TARGETS="linux/amd64" DIST_DIR="$$dist_dir" bash scripts/build-release.sh; \
 	archive_count="$$(find "$$dist_dir" -maxdepth 1 -name '*.tar.gz' -print | wc -l | tr -d ' ')"; \
 	if [ "$$archive_count" != "1" ]; then echo "expected one release archive, found $$archive_count in $$dist_dir" >&2; exit 1; fi; \
-	test -s "$$dist_dir/sqlserver2tidb_$(VERSION)_linux_amd64.tar.gz"; \
+	archive="$$dist_dir/sqlserver2tidb_$(VERSION)_linux_amd64.tar.gz"; \
+	test -s "$$archive"; \
+	tar -tzf "$$archive" "sqlserver2tidb_$(VERSION)_linux_amd64/README.md" >/dev/null; \
+	tar -tzf "$$archive" "sqlserver2tidb_$(VERSION)_linux_amd64/docs/user-manual.md" >/dev/null; \
 	test -s "$$dist_dir/checksums.txt"
 
 validate-repo: build

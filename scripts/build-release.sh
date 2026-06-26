@@ -51,6 +51,9 @@ for target in "${targets[@]}"; do
 
   GOOS="${goos}" GOARCH="${goarch}" go build -ldflags "${ldflags}" -o "${outdir}/sqlserver2tidb${suffix}" ./cmd/sqlserver2tidb
   GOOS="${goos}" GOARCH="${goarch}" go build -ldflags "${ldflags}" -o "${outdir}/sqlserver2tidb-executor${suffix}" ./cmd/sqlserver2tidb-executor
+  cp README.md LICENSE "${outdir}/"
+  mkdir -p "${outdir}/docs"
+  cp docs/design.md docs/user-manual.md "${outdir}/docs/"
 
   tar -C "${dist_dir}" -czf "${dist_dir}/${name}.tar.gz" "${name}"
   rm -rf -- "${outdir}"
