@@ -802,6 +802,27 @@ func TestRunWorkerExportAndImportCommands(t *testing.T) {
 	stdout.Reset()
 	stderr.Reset()
 	code = Run([]string{
+		"worker-executor",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "import",
+		"--target-connection-string-env", "TIDB_IMPORT_DSN",
+		"--import-batch-size", "500",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("worker-executor import code = %d, stderr = %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "--target-connection-string-env TIDB_IMPORT_DSN") {
+		t.Fatalf("worker-executor stdout = %q, want target connection env", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "--import-batch-size 500") {
+		t.Fatalf("worker-executor stdout = %q, want import batch size", stdout.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = Run([]string{
 		"worker-import",
 		"--root", root,
 		"--source-cluster-id", "prod-sqlserver-a",

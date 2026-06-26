@@ -221,10 +221,11 @@ go run ./cmd/sqlserver2tidb worker-executor \
   --root . \
   --source-cluster-id prod-sqlserver-a \
   --project-id sales-db-to-tidb-prod-a \
-  --stage export
+  --stage export \
+  --source-connection-string-env SQLSERVER_READONLY_DSN
 ```
 
-This command reuses the same approval/hash gate and is dry-run by default. It prints `sqlserver2tidb-executor` commands for export chunks, import jobs, or CDC table apply work. The included executor binary can run SQL Server to local `file://` CSV export and streaming local `file://` CSV to TiDB import after connection strings are supplied through environment variables. Object storage export/import, TiDB Lightning or `IMPORT INTO`, and CDC apply side effects are still not implemented.
+This command reuses the same approval/hash gate and is dry-run by default. It prints `sqlserver2tidb-executor` commands for export chunks, import jobs, or CDC table apply work. Use `--source-connection-string-env`, `--target-connection-string-env`, and `--import-batch-size` to pass execution settings into generated executor commands. The included executor binary can run SQL Server to local `file://` CSV export and streaming local `file://` CSV to TiDB import after connection strings are supplied through environment variables. Object storage export/import, TiDB Lightning or `IMPORT INTO`, and CDC apply side effects are still not implemented.
 
 Preview ready and blocked worker actions across the repository:
 

@@ -8,7 +8,10 @@ import (
 )
 
 type WorkerExecutorPrepareSpec struct {
-	Binary string
+	Binary                    string
+	SourceConnectionStringEnv string
+	TargetConnectionStringEnv string
+	ImportBatchSize           int
 }
 
 type WorkerExecutorSpec struct {
@@ -34,6 +37,9 @@ func PrepareWorkerExecutor(root, sourceClusterID, projectID, stage string, spec 
 	if stage != "export" && stage != "import" && stage != "cdc" {
 		return WorkerExecutorSpec{}, fmt.Errorf("worker executor is not supported for stage %q", stage)
 	}
+	if spec.ImportBatchSize < 0 {
+		return WorkerExecutorSpec{}, fmt.Errorf("import batch size must be non-negative")
+	}
 	binary := strings.TrimSpace(spec.Binary)
 	if binary == "" {
 		binary = "sqlserver2tidb-executor"
@@ -54,13 +60,13 @@ func PrepareWorkerExecutor(root, sourceClusterID, projectID, stage string, spec 
 	}
 	switch stage {
 	case "export":
-		commands, err := prepareExportExecutorCommands(projectDir, binary, sourceClusterID, projectID)
+		commands, err := prepareExportExecutorCommands(projectDir, binary, sourceClusterID, projectID, spec)
 		if err != nil {
 			return WorkerExecutorSpec{}, err
 		}
 		result.Commands = commands
 	case "import":
-		commands, err := prepareImportExecutorCommands(projectDir, binary, sourceClusterID, projectID)
+		commands, err := prepareImportExecutorCommands(projectDir, binary, sourceClusterID, projectID, spec)
 		if err != nil {
 			return WorkerExecutorSpec{}, err
 		}
@@ -75,11 +81,12 @@ func PrepareWorkerExecutor(root, sourceClusterID, projectID, stage string, spec 
 	return result, nil
 }
 
-func prepareExportExecutorCommands(projectDir, binary, sourceClusterID, projectID string) ([]WorkerExecutorCommand, error) {
+func prepareExportExecutorCommands(projectDir, binary, sourceClusterID, projectID string, spec WorkerExecutorPrepareSpec) ([]WorkerExecutorCommand, error) {
 	chunks, err := readExportPlanChunks(filepath.Join(projectDir, "plan", "export-plan.yaml"))
 	if err != nil {
 		return nil, err
 	}
+	sourceConnectionStringEnv := strings.TrimSpace(spec.SourceConnectionStringEnv)
 	commands := make([]WorkerExecutorCommand, 0, len(chunks))
 	for _, chunk := range chunks {
 		args := []string{
@@ -95,16 +102,20 @@ func prepareExportExecutorCommands(projectDir, binary, sourceClusterID, projectI
 		if chunk.Predicate != "" {
 			args = append(args, "--predicate", chunk.Predicate)
 		}
+		if sourceConnectionStringEnv != "" {
+			args = append(args, "--source-connection-string-env", sourceConnectionStringEnv)
+		}
 		commands = append(commands, newWorkerExecutorCommand(binary, chunk.ID, args))
 	}
 	return commands, nil
 }
 
-func prepareImportExecutorCommands(projectDir, binary, sourceClusterID, projectID string) ([]WorkerExecutorCommand, error) {
+func prepareImportExecutorCommands(projectDir, binary, sourceClusterID, projectID string, spec WorkerExecutorPrepareSpec) ([]WorkerExecutorCommand, error) {
 	jobs, err := readImportPlanJobs(filepath.Join(projectDir, "plan", "import-plan.yaml"))
 	if err != nil {
 		return nil, err
 	}
+	targetConnectionStringEnv := strings.TrimSpace(spec.TargetConnectionStringEnv)
 	commands := make([]WorkerExecutorCommand, 0, len(jobs))
 	for _, job := range jobs {
 		args := []string{
@@ -116,6 +127,12 @@ func prepareImportExecutorCommands(projectDir, binary, sourceClusterID, projectI
 			"--target-object", job.TargetObject,
 			"--source-uri", job.SourceURI,
 			"--depends-on-export-chunk", job.DependsOnExportChunk,
+		}
+		if targetConnectionStringEnv != "" {
+			args = append(args, "--target-connection-string-env", targetConnectionStringEnv)
+		}
+		if spec.ImportBatchSize > 0 {
+			args = append(args, "--import-batch-size", strconv.Itoa(spec.ImportBatchSize))
 		}
 		commands = append(commands, newWorkerExecutorCommand(binary, job.ID, args))
 	}

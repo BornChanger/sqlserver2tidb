@@ -1011,6 +1011,28 @@ func TestPrepareWorkerExecutorBuildsExportCommandsWhenApprovedHashMatches(t *tes
 	assertContains(t, first.ShellCommand, "--output-uri s3://migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full/dbo.orders.000001.parquet")
 }
 
+func TestPrepareWorkerExecutorAddsExportConnectionStringEnv(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateDataPlansOnly(root))
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(export) error = %v", err)
+	}
+	writeStageApproval(t, root, "export", hash)
+
+	spec, err := PrepareWorkerExecutor(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export", WorkerExecutorPrepareSpec{
+		SourceConnectionStringEnv: "SQLSERVER_READONLY_DSN",
+	})
+	if err != nil {
+		t.Fatalf("PrepareWorkerExecutor() error = %v", err)
+	}
+	if len(spec.Commands) == 0 {
+		t.Fatal("Commands is empty")
+	}
+	assertContains(t, spec.Commands[0].ShellCommand, "--source-connection-string-env SQLSERVER_READONLY_DSN")
+}
+
 func TestPrepareWorkerExecutorRequiresApprovedStage(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
@@ -1050,6 +1072,51 @@ func TestPrepareWorkerExecutorBuildsImportCommandsWhenApprovedHashMatches(t *tes
 	assertContains(t, first.ShellCommand, "--target-object app.orders")
 	assertContains(t, first.ShellCommand, "--source-uri s3://migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full/dbo.orders.000001.parquet")
 	assertContains(t, first.ShellCommand, "--depends-on-export-chunk dbo.orders.000001")
+}
+
+func TestPrepareWorkerExecutorAddsImportConnectionStringEnvAndBatchSize(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateSchemaDraftOnly(root))
+	must(t, GenerateDataPlansOnly(root))
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(import) error = %v", err)
+	}
+	writeStageApproval(t, root, "import", hash)
+
+	spec, err := PrepareWorkerExecutor(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import", WorkerExecutorPrepareSpec{
+		TargetConnectionStringEnv: "TIDB_IMPORT_DSN",
+		ImportBatchSize:           500,
+	})
+	if err != nil {
+		t.Fatalf("PrepareWorkerExecutor() error = %v", err)
+	}
+	if len(spec.Commands) == 0 {
+		t.Fatal("Commands is empty")
+	}
+	assertContains(t, spec.Commands[0].ShellCommand, "--target-connection-string-env TIDB_IMPORT_DSN")
+	assertContains(t, spec.Commands[0].ShellCommand, "--import-batch-size 500")
+}
+
+func TestPrepareWorkerExecutorRejectsNegativeImportBatchSize(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateSchemaDraftOnly(root))
+	must(t, GenerateDataPlansOnly(root))
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(import) error = %v", err)
+	}
+	writeStageApproval(t, root, "import", hash)
+
+	_, err = PrepareWorkerExecutor(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import", WorkerExecutorPrepareSpec{
+		ImportBatchSize: -1,
+	})
+	if err == nil {
+		t.Fatal("PrepareWorkerExecutor() expected negative import batch size error")
+	}
+	assertContains(t, err.Error(), "import batch size must be non-negative")
 }
 
 func TestPrepareWorkerExecutorBuildsCDCCommandsWhenApprovedHashMatches(t *testing.T) {

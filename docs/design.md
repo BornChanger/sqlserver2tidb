@@ -115,7 +115,7 @@ These workers establish the approval and state write-back contract for future re
 - Output: dry-run command lines by default.
 - Optional execution: external command invocation only when `--execute` is explicitly set.
 
-The command reuses `requireApprovedStage`, so it refuses to produce executor commands unless the stage approval is approved, has reviewers, and the payload hash matches the current repository files. The default external binary is `sqlserver2tidb-executor`; operators can override it with `--executor-binary`.
+The command reuses `requireApprovedStage`, so it refuses to produce executor commands unless the stage approval is approved, has reviewers, and the payload hash matches the current repository files. The default external binary is `sqlserver2tidb-executor`; operators can override it with `--executor-binary`. Operators can also pass `--source-connection-string-env`, `--target-connection-string-env`, and `--import-batch-size`; these values are rendered into the generated executor commands instead of being stored in GitHub metadata.
 
 For export, it produces one command per export chunk. For import, it produces one command per import job. For CDC, it produces one command per tracked source table. The executor shell does not itself connect to SQL Server, TiDB, Kafka, or object storage.
 

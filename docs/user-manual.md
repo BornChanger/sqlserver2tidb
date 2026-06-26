@@ -861,7 +861,8 @@ bin/sqlserver2tidb worker-executor \
   --root . \
   --source-cluster-id prod-sqlserver-a \
   --project-id sales-db-to-tidb-prod-a \
-  --stage export
+  --stage export \
+  --source-connection-string-env SQLSERVER_READONLY_DSN
 ```
 
 默认只打印 `sqlserver2tidb-executor export ...` 命令。只有显式加 `--execute`，才会调用外部执行器 binary。
@@ -1610,10 +1611,11 @@ bin/sqlserver2tidb worker-executor \
   --source-cluster-id prod-sqlserver-a \
   --project-id sales-db-to-tidb-prod-a \
   --stage export \
+  --source-connection-string-env SQLSERVER_READONLY_DSN \
   --execute
 ```
 
-该命令支持 `export`、`import` 和 `cdc`。它复用对应 stage 的 approval/hash gate，只有 approval 通过且 payload hash 匹配时才生成执行器命令。默认外部 binary 是 `sqlserver2tidb-executor`，可以通过 `--executor-binary` 覆盖。默认 dry-run 只打印命令；只有加 `--execute` 才会调用外部 binary。当前随仓库提供的 `sqlserver2tidb-executor export --execute` 仅支持 SQL Server 到本地 `file://` CSV；`import --execute` 仅支持本地 `file://` CSV 到 TiDB 的流式逐行 insert；`cdc --execute` 仍返回 not implemented。
+该命令支持 `export`、`import` 和 `cdc`。它复用对应 stage 的 approval/hash gate，只有 approval 通过且 payload hash 匹配时才生成执行器命令。默认外部 binary 是 `sqlserver2tidb-executor`，可以通过 `--executor-binary` 覆盖。`--source-connection-string-env`、`--target-connection-string-env` 和 `--import-batch-size` 会被渲染进生成的 executor 命令，不写入 GitHub metadata。默认 dry-run 只打印命令；只有加 `--execute` 才会调用外部 binary。当前随仓库提供的 `sqlserver2tidb-executor export --execute` 仅支持 SQL Server 到本地 `file://` CSV；`import --execute` 仅支持本地 `file://` CSV 到 TiDB 的流式逐行 insert；`cdc --execute` 仍返回 not implemented。
 
 ### 16.18 sqlserver2tidb-executor
 

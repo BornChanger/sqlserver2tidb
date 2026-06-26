@@ -525,12 +525,18 @@ func runWorkerExecutor(args []string, stdout, stderr io.Writer) int {
 	projectID := fs.String("project-id", "", "migration project id")
 	stage := fs.String("stage", "", "executor stage: export, import, or cdc")
 	executorBinary := fs.String("executor-binary", "", "external executor binary; default is sqlserver2tidb-executor")
+	sourceConnectionStringEnv := fs.String("source-connection-string-env", "", "environment variable containing the SQL Server connection string for export execution")
+	targetConnectionStringEnv := fs.String("target-connection-string-env", "", "environment variable containing the TiDB/MySQL connection string for import execution")
+	importBatchSize := fs.Int("import-batch-size", 0, "rows to commit per import transaction; default is executor-defined")
 	execute := fs.Bool("execute", false, "run external executor commands; default is dry-run")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	spec, err := gitops.PrepareWorkerExecutor(*root, *sourceClusterID, *projectID, *stage, gitops.WorkerExecutorPrepareSpec{
-		Binary: *executorBinary,
+		Binary:                    *executorBinary,
+		SourceConnectionStringEnv: *sourceConnectionStringEnv,
+		TargetConnectionStringEnv: *targetConnectionStringEnv,
+		ImportBatchSize:           *importBatchSize,
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "worker executor: %v\n", err)
@@ -740,6 +746,7 @@ Usage:
   sqlserver2tidb worker-cdc --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
   sqlserver2tidb worker-validate --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
   sqlserver2tidb worker-executor --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage export
+  sqlserver2tidb worker-executor --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage import --target-connection-string-env SQLSERVER2TIDB_TARGET_CONNECTION_STRING --import-batch-size 1000
   sqlserver2tidb worker-reconcile --root . --dry-run
   sqlserver2tidb worker-reconcile --root . --execute-next --holder agent-a --state-pr-draft
   sqlserver2tidb create-cluster --cluster-id prod-sqlserver-a --display-name "prod SQL Server A" --listener sqlserver-a.internal --secret-ref vault://...
