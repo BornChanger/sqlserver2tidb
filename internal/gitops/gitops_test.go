@@ -1685,6 +1685,20 @@ func TestGenerateDataMovementPlansRequiresObjectURIPrefix(t *testing.T) {
 	assertContains(t, err.Error(), "object URI prefix is required")
 }
 
+func TestNormalizeDataMovementPlanSpecDefaultsToExecutableCSVPlan(t *testing.T) {
+	spec := normalizeDataMovementPlanSpec(DataMovementPlanSpec{
+		ObjectURIPrefix: "s3://migration/prod/full",
+		ChunkSizeRows:   1000000,
+	})
+
+	if spec.ExportFormat != "csv" {
+		t.Fatalf("ExportFormat = %q, want csv", spec.ExportFormat)
+	}
+	if spec.ImportEngine != "sql-insert" {
+		t.Fatalf("ImportEngine = %q, want sql-insert", spec.ImportEngine)
+	}
+}
+
 func TestGenerateCDCPlanWritesProjectCDCPlan(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())

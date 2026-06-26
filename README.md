@@ -24,7 +24,7 @@ This MVP provides:
 - DDL, export, import, CDC, and validation payload hash calculation.
 - Approved metadata-only export/import/CDC worker state write-back.
 - Dry-run-by-default external executor command generation for approved DDL/export/import/CDC/validation plans.
-- `sqlserver2tidb-executor` adapter for DDL/export/import/CDC and row-count validation work items, including `apply-ddl --execute`, minimal local CSV `export --execute`, `import --execute`, and `validate-count --execute` paths.
+- `sqlserver2tidb-executor` adapter for DDL/export/import/CDC and row-count validation work items, including `apply-ddl --execute`, CSV `export --execute` to local file or HTTP(S), CSV `import --execute` from local file or HTTP(S), and `validate-count --execute` paths.
 - Approved validation-only worker execution.
 - Read-only worker reconcile dry-run planning across source clusters and projects.
 - Worker state PR draft generation and a dry-run-by-default branch/commit/push/GitHub PR wrapper.
@@ -49,7 +49,7 @@ This MVP provides:
   ```
 
 - JSON Schema files for core metadata, including cluster, project, migration, export, import, CDC, and validation plan metadata.
-- Tests for repository initialization, validation, validation plan content checks, discovery planning and execution, compatibility analysis, schema draft generation, data movement, CDC, and validation plan generation, PR draft generation, GitHub PR create dry-runs, DDL/export/import/CDC/validation worker gates, external executor command dry-runs, executor binary dry-runs, DDL apply checks, local CSV export/import execution checks, row-count validation command checks, worker reconcile dry-runs and execute-next state PR drafts, worker state PR create dry-runs, executor evidence PR drafts and dry-runs, upstream SQL Server cluster creation, and migration project creation.
+- Tests for repository initialization, validation, validation plan content checks, discovery planning and execution, compatibility analysis, schema draft generation, data movement, CDC, and validation plan generation, PR draft generation, GitHub PR create dry-runs, DDL/export/import/CDC/validation worker gates, external executor command dry-runs, executor binary dry-runs, DDL apply checks, CSV export/import execution checks, row-count validation command checks, worker reconcile dry-runs and execute-next state PR drafts, worker state PR create dry-runs, executor evidence PR drafts and dry-runs, upstream SQL Server cluster creation, and migration project creation.
 
 This MVP connects to SQL Server for read-only catalog discovery and, when `sqlserver2tidb-executor export --execute` is explicitly used, for a minimal CSV export path to local `file://` output or HTTP(S) output such as a presigned object storage URL. It connects to TiDB when `sqlserver2tidb-executor apply-ddl --execute` is explicitly used with a reviewed DDL file, or when `sqlserver2tidb-executor import --execute` is explicitly used with a local `file://` CSV source or HTTP(S) CSV source and a TiDB/MySQL connection string environment variable; CSV rows are streamed and committed in batches. CSV export writes a header plus an internal `__sqlserver2tidb_null_bitmap` column so import can restore SQL NULL values instead of turning them into empty strings. It can also connect to both SQL Server and TiDB for an explicit `sqlserver2tidb-executor validate-count --execute` row-count comparison. It does **not** execute native `s3://` object storage IO, TiDB Lightning or `IMPORT INTO`, CDC streaming/apply, cutover, cleanup, checksum validation, sampled hash validation, or business SQL validation. The included `sqlserver2tidb-executor cdc --execute` path intentionally returns an explicit not-implemented error.
 
@@ -188,7 +188,7 @@ go run ./cmd/sqlserver2tidb generate-data-plans \
   --root . \
   --source-cluster-id prod-sqlserver-a \
   --project-id sales-db-to-tidb-prod-a \
-  --object-uri-prefix s3://migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full
+  --object-uri-prefix https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full
 ```
 
 This writes `plan/export-plan.yaml` and `plan/import-plan.yaml` under the project. The command estimates chunks from inventory `row_count`; single-chunk tables get a reviewed-safe `1 = 1` predicate, while multi-chunk tables still get `TODO` split predicates that must be reviewed before export execution. It does not connect to SQL Server or TiDB and does not move data.
@@ -397,6 +397,6 @@ This checks approved metadata, writes `state/validation-status.yaml`, and writes
 
 ## Next Milestones
 
-- Extend `sqlserver2tidb-executor export` beyond local CSV to reviewed object storage formats.
-- Extend `sqlserver2tidb-executor import` beyond row-by-row local CSV inserts to reviewed production import engines.
+- Extend `sqlserver2tidb-executor export` beyond CSV over local file/HTTP(S) to native object storage clients and reviewed production formats.
+- Extend `sqlserver2tidb-executor import` beyond row-by-row CSV inserts to reviewed production import engines.
 - Extend validation beyond direct row-count checks to checksum, sampled hash, and reviewed business SQL checks.

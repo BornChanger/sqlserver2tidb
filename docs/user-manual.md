@@ -731,10 +731,10 @@ bin/sqlserver2tidb generate-data-plans \
   --root . \
   --source-cluster-id prod-sqlserver-a \
   --project-id sales-db-to-tidb-prod-a \
-  --object-uri-prefix s3://migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full \
+  --object-uri-prefix https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full \
   --chunk-size-rows 1000000 \
-  --export-format parquet \
-  --import-engine import-into
+  --export-format csv \
+  --import-engine sql-insert
 ```
 
 输入：
@@ -766,8 +766,8 @@ bin/sqlserver2tidb generate-data-plans \
 status: draft
 project_id: sales-db-to-tidb-prod-a
 source_cluster_id: prod-sqlserver-a
-format: parquet
-object_uri_prefix: s3://migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full
+format: csv
+object_uri_prefix: https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full
 chunk_size_rows: 1000000
 tables:
   - source_object: sales.dbo.orders
@@ -777,7 +777,7 @@ tables:
       - id: dbo.orders.000001
         estimated_rows: 1000000
         predicate: "TODO: choose stable split predicate for sales.dbo.orders chunk 1"
-        output_uri: s3://migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full/dbo.orders.000001.parquet
+        output_uri: https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full/dbo.orders.000001.csv
 ```
 
 示例 `plan/import-plan.yaml`：
@@ -786,12 +786,12 @@ tables:
 status: draft
 project_id: sales-db-to-tidb-prod-a
 source_cluster_id: prod-sqlserver-a
-engine: import-into
+engine: sql-insert
 mode: append
 jobs:
   - id: import-dbo.orders.000001
     target_object: app.orders
-    source_uri: s3://migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full/dbo.orders.000001.parquet
+    source_uri: https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full/dbo.orders.000001.csv
     depends_on_export_chunk: dbo.orders.000001
 ```
 
@@ -935,7 +935,7 @@ chunks:
     status: planned
     source_object: sales.dbo.orders
     target_object: app.orders
-    output_uri: s3://migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full/dbo.orders.000001.parquet
+    output_uri: https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full/dbo.orders.000001.csv
     estimated_rows: 1000000
 ```
 
@@ -1598,13 +1598,13 @@ bin/sqlserver2tidb generate-data-plans \
   --root . \
   --source-cluster-id prod-sqlserver-a \
   --project-id sales-db-to-tidb-prod-a \
-  --object-uri-prefix s3://migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full \
+  --object-uri-prefix https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full \
   --chunk-size-rows 1000000 \
-  --export-format parquet \
-  --import-engine import-into
+  --export-format csv \
+  --import-engine sql-insert
 ```
 
-该命令读取源集群 inventory 和项目 metadata，写回项目目录下的 `plan/export-plan.yaml` 和 `plan/import-plan.yaml`。它只生成草稿，不连接 SQL Server 或 TiDB，不执行导出或导入。`--chunk-size-rows` 默认是 `1000000`，`--export-format` 默认是 `parquet`，`--import-engine` 默认是 `import-into`。
+该命令读取源集群 inventory 和项目 metadata，写回项目目录下的 `plan/export-plan.yaml` 和 `plan/import-plan.yaml`。它只生成草稿，不连接 SQL Server 或 TiDB，不执行导出或导入。`--chunk-size-rows` 默认是 `1000000`，`--export-format` 默认是 `csv`，`--import-engine` 默认是 `sql-insert`。
 
 ### 16.9 generate-cdc-plan
 
@@ -1820,7 +1820,7 @@ bin/sqlserver2tidb-executor export \
   --chunk-id dbo.orders.000001 \
   --source-object sales.dbo.orders \
   --target-object app.orders \
-  --output-uri s3://migration/prod/full/dbo.orders.000001.parquet
+  --output-uri https://object-store.example/migration/prod/full/dbo.orders.000001.csv
 ```
 
 导出执行到本地 CSV：
@@ -1840,7 +1840,7 @@ bin/sqlserver2tidb-executor export \
   --predicate "id >= 1 AND id < 1000"
 ```
 
-也可以用 `--source-connection-string-env <ENV_NAME>` 指定其他环境变量。执行模式会拒绝仍包含 `TODO` 的 predicate，并且当前只接受 `file://` 输出 URI。
+也可以用 `--source-connection-string-env <ENV_NAME>` 指定其他环境变量。执行模式会拒绝仍包含 `TODO` 的 predicate，并且当前只接受 `file://`、`http://` 和 `https://` 输出 URI。
 
 导入 dry-run：
 
@@ -1851,7 +1851,7 @@ bin/sqlserver2tidb-executor import \
   --project-id sales-db-to-tidb-prod-a \
   --job-id import-dbo.orders.000001 \
   --target-object app.orders \
-  --source-uri s3://migration/prod/full/dbo.orders.000001.parquet
+  --source-uri https://object-store.example/migration/prod/full/dbo.orders.000001.csv
 ```
 
 导入执行本地 CSV 到 TiDB：

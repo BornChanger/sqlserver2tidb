@@ -243,8 +243,8 @@ func runGenerateDataPlans(args []string, stdout, stderr io.Writer) int {
 	projectID := fs.String("project-id", "", "migration project id")
 	objectURIPrefix := fs.String("object-uri-prefix", "", "object storage URI prefix for exported full-load files")
 	chunkSizeRows := fs.Int64("chunk-size-rows", 1000000, "estimated rows per export chunk")
-	exportFormat := fs.String("export-format", "parquet", "export file format")
-	importEngine := fs.String("import-engine", "import-into", "TiDB import engine")
+	exportFormat := fs.String("export-format", "csv", "export file format")
+	importEngine := fs.String("import-engine", "sql-insert", "TiDB import engine")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

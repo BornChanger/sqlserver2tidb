@@ -130,11 +130,11 @@ func normalizeDataMovementPlanSpec(spec DataMovementPlanSpec) DataMovementPlanSp
 	spec.ObjectURIPrefix = strings.TrimSpace(spec.ObjectURIPrefix)
 	spec.ExportFormat = strings.ToLower(strings.TrimSpace(spec.ExportFormat))
 	if spec.ExportFormat == "" {
-		spec.ExportFormat = "parquet"
+		spec.ExportFormat = "csv"
 	}
 	spec.ImportEngine = strings.ToLower(strings.TrimSpace(spec.ImportEngine))
 	if spec.ImportEngine == "" {
-		spec.ImportEngine = "import-into"
+		spec.ImportEngine = "sql-insert"
 	}
 	return spec
 }

@@ -1514,6 +1514,14 @@ func TestRunWorkerReconcileDryRunCommand(t *testing.T) {
 	}, &stdout, &stderr); code != 0 {
 		t.Fatalf("generate-data-plans code = %d, stderr = %s", code, stderr.String())
 	}
+	defaultExportPlan := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/export-plan.yaml")
+	if !strings.Contains(defaultExportPlan, "format: csv") {
+		t.Fatalf("default export plan = %s, want format: csv", defaultExportPlan)
+	}
+	defaultImportPlan := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml")
+	if !strings.Contains(defaultImportPlan, "engine: sql-insert") {
+		t.Fatalf("default import plan = %s, want engine: sql-insert", defaultImportPlan)
+	}
 	reviewCLIExportPlanPredicates(t, root)
 	if code := Run([]string{
 		"generate-cdc-plan",
