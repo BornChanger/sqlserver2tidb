@@ -81,6 +81,12 @@ Install both binaries into `PREFIX/bin`:
 make install PREFIX="$HOME/.local"
 ```
 
+Build local release archives under `dist/`:
+
+```bash
+make dist VERSION=v0.1.0
+```
+
 Pushing a tag like `v0.1.0` runs the release workflow, builds Linux/macOS/Windows archives, publishes checksums, and creates a GitHub Release.
 
 ## Test

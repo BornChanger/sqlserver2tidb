@@ -6,7 +6,7 @@ BINDIR ?= $(PREFIX)/bin
 BUILDINFO_PACKAGE := github.com/BornChanger/sqlserver2tidb/internal/buildinfo
 LDFLAGS := -X $(BUILDINFO_PACKAGE).Version=$(VERSION) -X $(BUILDINFO_PACKAGE).Commit=$(COMMIT) -X $(BUILDINFO_PACKAGE).BuildDate=$(BUILD_DATE)
 
-.PHONY: test vet check build install validate-repo ci fmt
+.PHONY: test vet check build install dist validate-repo ci fmt
 
 test:
 	go test -count=1 ./...
@@ -29,6 +29,9 @@ install: build
 	mkdir -p "$(BINDIR)"
 	install -m 0755 bin/sqlserver2tidb "$(BINDIR)/sqlserver2tidb"
 	install -m 0755 bin/sqlserver2tidb-executor "$(BINDIR)/sqlserver2tidb-executor"
+
+dist:
+	VERSION="$(VERSION)" COMMIT="$(COMMIT)" BUILD_DATE="$(BUILD_DATE)" DIST_DIR="$(DIST_DIR)" bash scripts/build-release.sh
 
 validate-repo: build
 	bin/sqlserver2tidb validate-repo --root .

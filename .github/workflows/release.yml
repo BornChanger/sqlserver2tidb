@@ -29,42 +29,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
-          version="${GITHUB_REF_NAME}"
-          commit="${GITHUB_SHA}"
           build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          buildinfo_pkg="github.com/BornChanger/sqlserver2tidb/internal/buildinfo"
-          ldflags="-X ${buildinfo_pkg}.Version=${version} -X ${buildinfo_pkg}.Commit=${commit} -X ${buildinfo_pkg}.BuildDate=${build_date}"
-
-          mkdir -p dist
-          targets=(
-            "linux/amd64"
-            "linux/arm64"
-            "darwin/amd64"
-            "darwin/arm64"
-            "windows/amd64"
-          )
-
-          for target in "${targets[@]}"; do
-            goos="${target%/*}"
-            goarch="${target#*/}"
-            suffix=""
-            if [ "${goos}" = "windows" ]; then
-              suffix=".exe"
-            fi
-
-            name="sqlserver2tidb_${version}_${goos}_${goarch}"
-            outdir="dist/${name}"
-            mkdir -p "${outdir}"
-
-            GOOS="${goos}" GOARCH="${goarch}" go build -ldflags "${ldflags}" -o "${outdir}/sqlserver2tidb${suffix}" ./cmd/sqlserver2tidb
-            GOOS="${goos}" GOARCH="${goarch}" go build -ldflags "${ldflags}" -o "${outdir}/sqlserver2tidb-executor${suffix}" ./cmd/sqlserver2tidb-executor
-
-            tar -C dist -czf "dist/${name}.tar.gz" "${name}"
-            rm -rf "${outdir}"
-          done
-
-          sha256sum dist/*.tar.gz > dist/checksums.txt
+          VERSION="${GITHUB_REF_NAME}" COMMIT="${GITHUB_SHA}" BUILD_DATE="${build_date}" bash scripts/build-release.sh
 
       - name: Create GitHub release
         env:
