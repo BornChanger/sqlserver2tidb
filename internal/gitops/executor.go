@@ -2,6 +2,7 @@ package gitops
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -34,7 +35,7 @@ func PrepareWorkerExecutor(root, sourceClusterID, projectID, stage string, spec 
 		return WorkerExecutorSpec{}, err
 	}
 	stage = strings.ToLower(strings.TrimSpace(stage))
-	if stage != "export" && stage != "import" && stage != "cdc" {
+	if stage != "export" && stage != "import" && stage != "cdc" && stage != "validation" {
 		return WorkerExecutorSpec{}, fmt.Errorf("worker executor is not supported for stage %q", stage)
 	}
 	if spec.ImportBatchSize < 0 {
@@ -73,6 +74,12 @@ func PrepareWorkerExecutor(root, sourceClusterID, projectID, stage string, spec 
 		result.Commands = commands
 	case "cdc":
 		commands, err := prepareCDCExecutorCommands(projectDir, binary, sourceClusterID, projectID)
+		if err != nil {
+			return WorkerExecutorSpec{}, err
+		}
+		result.Commands = commands
+	case "validation":
+		commands, err := prepareValidationExecutorCommands(projectDir, binary, sourceClusterID, projectID, spec)
 		if err != nil {
 			return WorkerExecutorSpec{}, err
 		}
@@ -158,6 +165,83 @@ func prepareCDCExecutorCommands(projectDir, binary, sourceClusterID, projectID s
 		commands = append(commands, newWorkerExecutorCommand(binary, table.SourceObject, args))
 	}
 	return commands, nil
+}
+
+func prepareValidationExecutorCommands(projectDir, binary, sourceClusterID, projectID string, spec WorkerExecutorPrepareSpec) ([]WorkerExecutorCommand, error) {
+	checks, err := readValidationPlanChecks(filepath.Join(projectDir, "plan", "validation-plan.yaml"))
+	if err != nil {
+		return nil, err
+	}
+	sourceConnectionStringEnv := strings.TrimSpace(spec.SourceConnectionStringEnv)
+	targetConnectionStringEnv := strings.TrimSpace(spec.TargetConnectionStringEnv)
+	commands := make([]WorkerExecutorCommand, 0, len(checks))
+	for _, check := range checks {
+		if check.Type != "row_count" && check.Type != "row-count" {
+			continue
+		}
+		if strings.TrimSpace(check.ID) == "" {
+			return nil, fmt.Errorf("validation row_count check id is required")
+		}
+		if strings.TrimSpace(check.SourceObject) == "" {
+			return nil, fmt.Errorf("validation row_count check %q source_object is required", check.ID)
+		}
+		if strings.TrimSpace(check.TargetObject) == "" {
+			return nil, fmt.Errorf("validation row_count check %q target_object is required", check.ID)
+		}
+		args := []string{
+			"validate-count",
+			"--root", ".",
+			"--source-cluster-id", sourceClusterID,
+			"--project-id", projectID,
+			"--source-object", check.SourceObject,
+			"--target-object", check.TargetObject,
+		}
+		if strings.TrimSpace(check.Predicate) != "" {
+			args = append(args, "--predicate", check.Predicate)
+		}
+		if sourceConnectionStringEnv != "" {
+			args = append(args, "--source-connection-string-env", sourceConnectionStringEnv)
+		}
+		if targetConnectionStringEnv != "" {
+			args = append(args, "--target-connection-string-env", targetConnectionStringEnv)
+		}
+		commands = append(commands, newWorkerExecutorCommand(binary, check.ID, args))
+	}
+	return commands, nil
+}
+
+type validationPlanCheck struct {
+	ID           string
+	Type         string
+	SourceObject string
+	TargetObject string
+	Predicate    string
+}
+
+func readValidationPlanChecks(path string) ([]validationPlanCheck, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read validation plan: %w", err)
+	}
+	var checks []validationPlanCheck
+	for _, raw := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(raw)
+		switch {
+		case strings.HasPrefix(trimmed, "- id:"):
+			checks = append(checks, validationPlanCheck{
+				ID: trimYAMLScalar(strings.TrimPrefix(trimmed, "- id:")),
+			})
+		case strings.HasPrefix(trimmed, "type:") && len(checks) > 0:
+			checks[len(checks)-1].Type = strings.ToLower(trimYAMLScalar(strings.TrimPrefix(trimmed, "type:")))
+		case strings.HasPrefix(trimmed, "source_object:") && len(checks) > 0:
+			checks[len(checks)-1].SourceObject = trimYAMLScalar(strings.TrimPrefix(trimmed, "source_object:"))
+		case strings.HasPrefix(trimmed, "target_object:") && len(checks) > 0:
+			checks[len(checks)-1].TargetObject = trimYAMLScalar(strings.TrimPrefix(trimmed, "target_object:"))
+		case strings.HasPrefix(trimmed, "predicate:") && len(checks) > 0:
+			checks[len(checks)-1].Predicate = trimYAMLScalar(strings.TrimPrefix(trimmed, "predicate:"))
+		}
+	}
+	return checks, nil
 }
 
 func newWorkerExecutorCommand(binary, id string, args []string) WorkerExecutorCommand {

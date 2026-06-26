@@ -1146,6 +1146,45 @@ func TestPrepareWorkerExecutorBuildsCDCCommandsWhenApprovedHashMatches(t *testin
 	assertContains(t, first.ShellCommand, "--apply-batch-size 1000")
 }
 
+func TestPrepareWorkerExecutorBuildsValidationCountCommandsWhenApprovedHashMatches(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/validation-plan.yaml", `status: draft
+checks:
+  - id: orders-row-count
+    type: row_count
+    source_object: sales.dbo.orders
+    target_object: app.orders
+    predicate: "id >= 1"
+`)
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "validation")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(validation) error = %v", err)
+	}
+	writeStageApproval(t, root, "validation", hash)
+
+	spec, err := PrepareWorkerExecutor(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "validation", WorkerExecutorPrepareSpec{
+		SourceConnectionStringEnv: "SQLSERVER_VALIDATE_DSN",
+		TargetConnectionStringEnv: "TIDB_VALIDATE_DSN",
+	})
+	if err != nil {
+		t.Fatalf("PrepareWorkerExecutor() error = %v", err)
+	}
+	if spec.Stage != "validation" || spec.PayloadHash != hash || len(spec.Commands) != 1 {
+		t.Fatalf("executor spec = %+v, want validation with 1 command and hash %s", spec, hash)
+	}
+	first := spec.Commands[0]
+	if first.ID != "orders-row-count" {
+		t.Fatalf("first command ID = %q, want validation check id", first.ID)
+	}
+	assertContains(t, first.ShellCommand, "sqlserver2tidb-executor validate-count")
+	assertContains(t, first.ShellCommand, "--source-object sales.dbo.orders")
+	assertContains(t, first.ShellCommand, "--target-object app.orders")
+	assertContains(t, first.ShellCommand, "--predicate 'id >= 1'")
+	assertContains(t, first.ShellCommand, "--source-connection-string-env SQLSERVER_VALIDATE_DSN")
+	assertContains(t, first.ShellCommand, "--target-connection-string-env TIDB_VALIDATE_DSN")
+}
+
 func TestRunImportWorkerWritesPlannedStateWhenApprovedHashMatches(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())

@@ -20,7 +20,7 @@ This MVP provides:
 - PR draft generation and a dry-run-by-default GitHub PR creation wrapper.
 - Export, import, CDC, and validation payload hash calculation.
 - Approved metadata-only export/import/CDC worker state write-back.
-- Dry-run-by-default external executor command generation for approved export/import/CDC plans.
+- Dry-run-by-default external executor command generation for approved export/import/CDC/validation plans.
 - `sqlserver2tidb-executor` adapter for export/import/CDC and row-count validation work items, including minimal local CSV `export --execute`, `import --execute`, and `validate-count --execute` paths.
 - Approved validation-only worker execution.
 - Read-only worker reconcile dry-run planning across source clusters and projects.
@@ -225,7 +225,7 @@ go run ./cmd/sqlserver2tidb worker-executor \
   --source-connection-string-env SQLSERVER_READONLY_DSN
 ```
 
-This command reuses the same approval/hash gate and is dry-run by default. It prints `sqlserver2tidb-executor` commands for export chunks, import jobs, or CDC table apply work. Use `--source-connection-string-env`, `--target-connection-string-env`, and `--import-batch-size` to pass execution settings into generated executor commands. The included executor binary can run SQL Server to local `file://` CSV export, streaming local `file://` CSV to TiDB import, and direct SQL Server/TiDB row-count comparison after connection strings are supplied through environment variables. Object storage export/import, TiDB Lightning or `IMPORT INTO`, CDC apply side effects, and approval-gated real validation execution are still not implemented.
+This command reuses the same approval/hash gate and is dry-run by default. It prints `sqlserver2tidb-executor` commands for export chunks, import jobs, CDC table apply work, or validation row-count checks. Use `--source-connection-string-env`, `--target-connection-string-env`, and `--import-batch-size` to pass execution settings into generated executor commands. The included executor binary can run SQL Server to local `file://` CSV export, streaming local `file://` CSV to TiDB import, and approval-gated SQL Server/TiDB row-count comparison after connection strings are supplied through environment variables. Object storage export/import, TiDB Lightning or `IMPORT INTO`, CDC apply side effects, checksum validation, sampled hash validation, and business SQL validation are still not implemented.
 
 Preview ready and blocked worker actions across the repository:
 

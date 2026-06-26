@@ -962,6 +962,93 @@ func TestRunGenerateCDCPlanAndWorkerCDCCommands(t *testing.T) {
 	assertExists(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/cdc-catchup.json")
 }
 
+func TestRunWorkerExecutorValidationDryRunCommand(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	if code := Run([]string{"init-repo", "--root", root}, &stdout, &stderr); code != 0 {
+		t.Fatalf("init-repo code = %d, stderr = %s", code, stderr.String())
+	}
+	if code := Run([]string{
+		"create-cluster",
+		"--root", root,
+		"--cluster-id", "prod-sqlserver-a",
+		"--display-name", "prod SQL Server A",
+		"--listener", "sqlserver-a.internal",
+		"--secret-ref", "vault://migration/prod-sqlserver-a/readonly",
+		"--owner", "dba-team",
+	}, &stdout, &stderr); code != 0 {
+		t.Fatalf("create-cluster code = %d, stderr = %s", code, stderr.String())
+	}
+	if code := Run([]string{
+		"create-project",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--display-name", "sales DB to TiDB prod A",
+		"--source-database", "sales",
+		"--source-schema", "dbo",
+		"--target-name", "tidb-prod-a",
+		"--target-database", "app",
+		"--target-secret-ref", "vault://migration/tidb-prod-a/migrate-user",
+		"--owner", "dba-team",
+	}, &stdout, &stderr); code != 0 {
+		t.Fatalf("create-project code = %d, stderr = %s", code, stderr.String())
+	}
+	validationPlanPath := filepath.Join(root, "clusters", "prod-sqlserver-a", "projects", "sales-db-to-tidb-prod-a", "plan", "validation-plan.yaml")
+	if err := os.WriteFile(validationPlanPath, []byte(`status: draft
+checks:
+  - id: orders-row-count
+    type: row_count
+    source_object: sales.dbo.orders
+    target_object: app.orders
+    predicate: "id >= 1"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"compute-payload-hash",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "validation",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("compute-payload-hash validation code = %d, stderr = %s", code, stderr.String())
+	}
+	writeCLIStageApproval(t, root, "validation", parsePayloadHash(t, stdout.String()))
+
+	stdout.Reset()
+	stderr.Reset()
+	code = Run([]string{
+		"worker-executor",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "validation",
+		"--source-connection-string-env", "SQLSERVER_VALIDATE_DSN",
+		"--target-connection-string-env", "TIDB_VALIDATE_DSN",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("worker-executor validation code = %d, stderr = %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "stage: validation") {
+		t.Fatalf("worker-executor stdout = %q, want validation stage", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "sqlserver2tidb-executor validate-count") {
+		t.Fatalf("worker-executor stdout = %q, want validate-count command", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "--source-connection-string-env SQLSERVER_VALIDATE_DSN") {
+		t.Fatalf("worker-executor stdout = %q, want source connection env", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "--target-connection-string-env TIDB_VALIDATE_DSN") {
+		t.Fatalf("worker-executor stdout = %q, want target connection env", stdout.String())
+	}
+}
+
 func TestRunWorkerReconcileDryRunCommand(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer
