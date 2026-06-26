@@ -319,7 +319,7 @@ go run ./cmd/sqlserver2tidb create-executor-evidence-pr \
   --stage ddl
 ```
 
-`generate-executor-evidence-pr-draft` validates the existing `evidence/executor-<stage>-run.json` against the current approved payload hash and rejects evidence that has no executor command records. Evidence status must be `succeeded` or `failed`. Each command record must include `id`, `shell_command`, and `exit_code`; when the evidence status is `succeeded`, every command exit code must be `0`. The command then writes a Markdown PR body under `prs/`. `create-executor-evidence-pr` is a dry-run by default and prints deterministic `git switch`, `git add`, `git commit`, `git push`, and `gh pr create` commands. Add `--execute` only when the local checkout should create the branch, commit the evidence/body, push it, and open a GitHub PR.
+`generate-executor-evidence-pr-draft` validates the existing `evidence/executor-<stage>-run.json` against the current approved payload hash and rejects evidence that has no executor command records. Evidence status must be `succeeded` or `failed`. Each command record must include `id`, `shell_command`, and `exit_code`; `succeeded` evidence requires every command exit code to be `0`, and `failed` evidence requires at least one non-zero command exit code. The command then writes a Markdown PR body under `prs/`. `create-executor-evidence-pr` is a dry-run by default and prints deterministic `git switch`, `git add`, `git commit`, `git push`, and `gh pr create` commands. Add `--execute` only when the local checkout should create the branch, commit the evidence/body, push it, and open a GitHub PR.
 
 Generate a project-scoped PR draft for schema review:
 
