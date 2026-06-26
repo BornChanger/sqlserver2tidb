@@ -181,7 +181,7 @@ func loadExecutorEvidencePRContext(root, sourceClusterID, projectID, stage strin
 	if evidence.PayloadHash != payloadHash {
 		return executorEvidencePRContext{}, fmt.Errorf("executor evidence payload hash %s does not match current approved payload hash %s", evidence.PayloadHash, payloadHash)
 	}
-	if err := validateExecutorEvidenceCommands(evidence.Commands); err != nil {
+	if err := validateExecutorEvidenceCommands(evidence.Status, evidence.Commands); err != nil {
 		return executorEvidencePRContext{}, err
 	}
 
@@ -196,7 +196,7 @@ func loadExecutorEvidencePRContext(root, sourceClusterID, projectID, stage strin
 	}, nil
 }
 
-func validateExecutorEvidenceCommands(commands []executorEvidenceCommandSummary) error {
+func validateExecutorEvidenceCommands(status string, commands []executorEvidenceCommandSummary) error {
 	if len(commands) == 0 {
 		return fmt.Errorf("executor evidence commands must contain at least one command")
 	}
@@ -209,6 +209,9 @@ func validateExecutorEvidenceCommands(commands []executorEvidenceCommandSummary)
 		}
 		if command.ExitCode == nil {
 			return fmt.Errorf("executor evidence command %s exit_code is required", command.ID)
+		}
+		if strings.TrimSpace(status) == "succeeded" && *command.ExitCode != 0 {
+			return fmt.Errorf("executor evidence status succeeded conflicts with command %s exit_code %d", command.ID, *command.ExitCode)
 		}
 	}
 	return nil
