@@ -74,6 +74,7 @@ var requiredProjectFiles = []string{
 	"approvals/export-approval.yaml",
 	"approvals/import-approval.yaml",
 	"approvals/cdc-approval.yaml",
+	"approvals/validation-approval.yaml",
 	"approvals/cutover-approval.yaml",
 }
 

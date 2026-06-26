@@ -34,6 +34,32 @@ Supported stages are `discovery`, `schema`, `plan`, `export`, `import`, `cdc`, `
 
 It does not call the GitHub API, open a PR, merge a PR, or infer approval state.
 
+## Validation Worker
+
+The current worker implementation is validation-only and metadata-only. It does not connect to SQL Server or TiDB. It executes only after `approvals/validation-approval.yaml` has:
+
+- `action: validation`
+- `status: approved`
+- at least one `approved_by` entry
+- `payload_hash` matching the current validation payload
+
+The validation payload hash covers:
+
+- `project.yaml`
+- `schema/conversion-report.md`
+- `schema/schema-diff.json`
+- `schema/tidb-ddl/`
+- `plan/validation-plan.yaml`
+
+The approval file is not included in the hash, avoiding self-referential approvals. If the approval is missing, pending, or has a hash mismatch, the worker exits without changing state or evidence.
+
+When approved, the worker writes:
+
+- `state/validation-status.yaml`
+- `evidence/validation-report.md`
+
+Current checks are deterministic repository checks: schema diff parseability, generated DDL presence, manual review item clearance, conversion report presence, and validation plan presence. Source/target row-count or checksum validation is intentionally out of scope until import and target connection support exist.
+
 ## Metadata Boundary
 
 Metadata is organized by upstream SQL Server cluster:
@@ -75,7 +101,7 @@ LLMs may generate:
 - validation report narratives
 - incident diagnosis suggestions
 
-LLMs are not required for deterministic repository commands such as `validate-repo`, `discover-sqlserver --dry-run`, `analyze-compatibility`, `generate-schema-draft`, or `generate-pr-draft`. For schema work, the LLM may read `conversion-report.md` and `schema-diff.json` to propose candidate rewrites, but the candidate must be committed as reviewed files before any worker can use it. For PR work, the LLM may refine prose, but file lists, approval files, and stage gates must remain deterministic.
+LLMs are not required for deterministic repository commands such as `validate-repo`, `discover-sqlserver --dry-run`, `analyze-compatibility`, `generate-schema-draft`, `generate-pr-draft`, `compute-payload-hash`, or `worker-validate`. For schema work, the LLM may read `conversion-report.md` and `schema-diff.json` to propose candidate rewrites, but the candidate must be committed as reviewed files before any worker can use it. For PR work, the LLM may refine prose, but file lists, approval files, and stage gates must remain deterministic.
 
 LLMs must not decide:
 

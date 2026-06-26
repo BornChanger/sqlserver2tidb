@@ -33,6 +33,10 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runGenerateSchemaDraft(args[1:], stdout, stderr)
 	case "generate-pr-draft":
 		return runGeneratePRDraft(args[1:], stdout, stderr)
+	case "compute-payload-hash":
+		return runComputePayloadHash(args[1:], stdout, stderr)
+	case "worker-validate":
+		return runWorkerValidate(args[1:], stdout, stderr)
 	case "create-cluster":
 		return runCreateCluster(args[1:], stdout, stderr)
 	case "create-project":
@@ -223,6 +227,57 @@ func runGeneratePRDraft(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+func runComputePayloadHash(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("compute-payload-hash", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	root := fs.String("root", ".", "repository root")
+	sourceClusterID := fs.String("source-cluster-id", "", "upstream SQL Server cluster id")
+	projectID := fs.String("project-id", "", "migration project id")
+	stage := fs.String("stage", "", "stage to hash; currently supports validation")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	hash, err := gitops.ComputePayloadHashForStage(*root, *sourceClusterID, *projectID, *stage)
+	if err != nil {
+		fmt.Fprintf(stderr, "compute payload hash: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "stage: %s\n", *stage)
+	fmt.Fprintf(stdout, "source cluster: %s\n", *sourceClusterID)
+	fmt.Fprintf(stdout, "project: %s\n", *projectID)
+	fmt.Fprintf(stdout, "payload hash: %s\n", hash)
+	return 0
+}
+
+func runWorkerValidate(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("worker-validate", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	root := fs.String("root", ".", "repository root")
+	sourceClusterID := fs.String("source-cluster-id", "", "upstream SQL Server cluster id")
+	projectID := fs.String("project-id", "", "migration project id")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	result, err := gitops.RunValidationWorker(*root, *sourceClusterID, *projectID)
+	if err != nil {
+		fmt.Fprintf(stderr, "worker validate: %v\n", err)
+		return 1
+	}
+	status := "passed"
+	exitCode := 0
+	if !result.Passed {
+		status = "failed"
+		exitCode = 1
+	}
+	fmt.Fprintf(stdout, "validation worker completed for %s\n", result.ProjectID)
+	fmt.Fprintf(stdout, "status: %s\n", status)
+	fmt.Fprintf(stdout, "checks: %d\n", len(result.Checks))
+	fmt.Fprintf(stdout, "payload hash: %s\n", result.PayloadHash)
+	fmt.Fprintf(stdout, "wrote %s\n", "state/validation-status.yaml")
+	fmt.Fprintf(stdout, "wrote %s\n", "evidence/validation-report.md")
+	return exitCode
+}
+
 func runCreateCluster(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("create-cluster", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -320,6 +375,8 @@ Usage:
   sqlserver2tidb analyze-compatibility --root . --source-cluster-id prod-sqlserver-a
   sqlserver2tidb generate-schema-draft --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
   sqlserver2tidb generate-pr-draft --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage schema
+  sqlserver2tidb compute-payload-hash --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage validation
+  sqlserver2tidb worker-validate --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
   sqlserver2tidb create-cluster --cluster-id prod-sqlserver-a --display-name "prod SQL Server A" --listener sqlserver-a.internal --secret-ref vault://...
   sqlserver2tidb create-project --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --source-database sales --source-schema dbo --target-name tidb-prod-a --target-database app --target-secret-ref vault://...
 `)

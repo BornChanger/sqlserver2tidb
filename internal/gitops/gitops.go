@@ -368,17 +368,18 @@ source_cluster_id: %s
 status: pending
 checks: []
 `, spec.ProjectID, spec.SourceClusterID),
-		filepath.Join(base, "evidence", "precheck.json"):          "{\n  \"status\": \"pending\"\n}\n",
-		filepath.Join(base, "evidence", "import-summary.json"):    "{\n  \"status\": \"pending\"\n}\n",
-		filepath.Join(base, "evidence", "cdc-catchup.json"):       "{\n  \"status\": \"pending\"\n}\n",
-		filepath.Join(base, "evidence", "validation-report.md"):   "# Validation Report\n\nPending validation.\n",
-		filepath.Join(base, "evidence", "cutover-evidence.md"):    "# Cutover Evidence\n\nPending cutover.\n",
-		filepath.Join(base, "evidence", "post-cutover-report.md"): "# Post-Cutover Report\n\nPending stabilization.\n",
-		filepath.Join(base, "approvals", "ddl-approval.yaml"):     approvalSkeleton(spec, "ddl"),
-		filepath.Join(base, "approvals", "export-approval.yaml"):  approvalSkeleton(spec, "export"),
-		filepath.Join(base, "approvals", "import-approval.yaml"):  approvalSkeleton(spec, "import"),
-		filepath.Join(base, "approvals", "cdc-approval.yaml"):     approvalSkeleton(spec, "cdc"),
-		filepath.Join(base, "approvals", "cutover-approval.yaml"): approvalSkeleton(spec, "cutover"),
+		filepath.Join(base, "evidence", "precheck.json"):             "{\n  \"status\": \"pending\"\n}\n",
+		filepath.Join(base, "evidence", "import-summary.json"):       "{\n  \"status\": \"pending\"\n}\n",
+		filepath.Join(base, "evidence", "cdc-catchup.json"):          "{\n  \"status\": \"pending\"\n}\n",
+		filepath.Join(base, "evidence", "validation-report.md"):      "# Validation Report\n\nPending validation.\n",
+		filepath.Join(base, "evidence", "cutover-evidence.md"):       "# Cutover Evidence\n\nPending cutover.\n",
+		filepath.Join(base, "evidence", "post-cutover-report.md"):    "# Post-Cutover Report\n\nPending stabilization.\n",
+		filepath.Join(base, "approvals", "ddl-approval.yaml"):        approvalSkeleton(spec, "ddl"),
+		filepath.Join(base, "approvals", "export-approval.yaml"):     approvalSkeleton(spec, "export"),
+		filepath.Join(base, "approvals", "import-approval.yaml"):     approvalSkeleton(spec, "import"),
+		filepath.Join(base, "approvals", "cdc-approval.yaml"):        approvalSkeleton(spec, "cdc"),
+		filepath.Join(base, "approvals", "validation-approval.yaml"): approvalSkeleton(spec, "validation"),
+		filepath.Join(base, "approvals", "cutover-approval.yaml"):    approvalSkeleton(spec, "cutover"),
 	}
 
 	for rel, content := range files {

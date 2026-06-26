@@ -386,6 +386,109 @@ func TestRunGeneratePRDraftCommand(t *testing.T) {
 	assertExists(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/prs/schema-pr.md")
 }
 
+func TestRunWorkerValidateCommand(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	if code := Run([]string{"init-repo", "--root", root}, &stdout, &stderr); code != 0 {
+		t.Fatalf("init-repo code = %d, stderr = %s", code, stderr.String())
+	}
+	if code := Run([]string{
+		"create-cluster",
+		"--root", root,
+		"--cluster-id", "prod-sqlserver-a",
+		"--display-name", "prod SQL Server A",
+		"--listener", "sqlserver-a.internal",
+		"--secret-ref", "vault://migration/prod-sqlserver-a/readonly",
+		"--owner", "dba-team",
+	}, &stdout, &stderr); code != 0 {
+		t.Fatalf("create-cluster code = %d, stderr = %s", code, stderr.String())
+	}
+	if code := Run([]string{
+		"create-project",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--display-name", "sales DB to TiDB prod A",
+		"--source-database", "sales",
+		"--source-schema", "dbo",
+		"--target-name", "tidb-prod-a",
+		"--target-database", "app",
+		"--target-secret-ref", "vault://migration/tidb-prod-a/migrate-user",
+		"--owner", "dba-team",
+	}, &stdout, &stderr); code != 0 {
+		t.Fatalf("create-project code = %d, stderr = %s", code, stderr.String())
+	}
+	inventoryPath := filepath.Join(root, "clusters", "prod-sqlserver-a", "inventory", "inventory.json")
+	if err := os.WriteFile(inventoryPath, []byte(`{
+  "status": "discovered",
+  "databases": [
+    {
+      "name": "sales",
+      "schemas": [
+        {
+          "name": "dbo",
+          "tables": [
+            {
+              "name": "orders",
+              "columns": [
+                {"name": "id", "type": "int"}
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code := Run([]string{
+		"generate-schema-draft",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+	}, &stdout, &stderr); code != 0 {
+		t.Fatalf("generate-schema-draft code = %d, stderr = %s", code, stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"compute-payload-hash",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "validation",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("compute-payload-hash code = %d, stderr = %s", code, stderr.String())
+	}
+	payloadHash := parsePayloadHash(t, stdout.String())
+	writeCLIValidationApproval(t, root, payloadHash)
+
+	stdout.Reset()
+	stderr.Reset()
+	code = Run([]string{
+		"worker-validate",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("worker-validate code = %d, stderr = %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "validation worker completed for sales-db-to-tidb-prod-a") {
+		t.Fatalf("worker-validate stdout = %q, want completed message", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "status: passed") {
+		t.Fatalf("worker-validate stdout = %q, want passed status", stdout.String())
+	}
+	assertExists(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/validation-status.yaml")
+	assertExists(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/validation-report.md")
+}
+
 func TestRunUnknownCommandReturnsUsageError(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 
@@ -402,5 +505,37 @@ func assertExists(t *testing.T, root, rel string) {
 	t.Helper()
 	if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel))); err != nil {
 		t.Fatalf("expected %s to exist: %v", rel, err)
+	}
+}
+
+func parsePayloadHash(t *testing.T, output string) string {
+	t.Helper()
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "payload hash: ") {
+			return strings.TrimPrefix(line, "payload hash: ")
+		}
+	}
+	t.Fatalf("payload hash not found in output:\n%s", output)
+	return ""
+}
+
+func writeCLIValidationApproval(t *testing.T, root, payloadHash string) {
+	t.Helper()
+	path := filepath.Join(root, "clusters", "prod-sqlserver-a", "projects", "sales-db-to-tidb-prod-a", "approvals", "validation-approval.yaml")
+	content := `approval_id: validation-cli-test
+project_id: sales-db-to-tidb-prod-a
+source_cluster_id: prod-sqlserver-a
+action: validation
+payload_hash: ` + payloadHash + `
+required_reviewers:
+  - dba-team
+approved_by:
+  - dba-team
+status: approved
+approved_at: "2026-06-26T00:00:00Z"
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }

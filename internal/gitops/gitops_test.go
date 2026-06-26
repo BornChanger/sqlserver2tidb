@@ -2,6 +2,7 @@ package gitops
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -103,6 +104,7 @@ func TestCreateProjectCreatesProjectUnderSourceCluster(t *testing.T) {
 	assertFile(t, root, base+"/state/export-chunks.yaml")
 	assertFile(t, root, base+"/state/import-jobs.yaml")
 	assertFile(t, root, base+"/state/validation-status.yaml")
+	assertFile(t, root, base+"/approvals/validation-approval.yaml")
 	assertFile(t, root, base+"/approvals/cutover-approval.yaml")
 
 	projectYAML := readFile(t, root, base+"/project.yaml")
@@ -707,6 +709,148 @@ func TestGeneratePRDraftRejectsProjectStageWithoutProject(t *testing.T) {
 	assertContains(t, err.Error(), "project id is required for schema PR draft")
 }
 
+func TestRunValidationWorkerRequiresApprovedValidationApproval(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, `{
+  "status": "discovered",
+  "databases": [
+    {
+      "name": "sales",
+      "schemas": [
+        {
+          "name": "dbo",
+          "tables": [
+            {
+              "name": "orders",
+              "columns": [
+                {"name": "id", "type": "int"}
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+`)
+	must(t, GenerateSchemaDraftOnly(root))
+	stateBefore := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/validation-status.yaml")
+	evidenceBefore := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/validation-report.md")
+
+	_, err := RunValidationWorker(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a")
+	if err == nil {
+		t.Fatal("RunValidationWorker() expected approval error")
+	}
+	assertContains(t, err.Error(), "validation approval is not approved")
+	stateAfter := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/validation-status.yaml")
+	evidenceAfter := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/validation-report.md")
+	if stateAfter != stateBefore {
+		t.Fatalf("validation worker changed state before approval\nbefore:\n%s\nafter:\n%s", stateBefore, stateAfter)
+	}
+	if evidenceAfter != evidenceBefore {
+		t.Fatalf("validation worker changed evidence before approval\nbefore:\n%s\nafter:\n%s", evidenceBefore, evidenceAfter)
+	}
+}
+
+func TestRunValidationWorkerWritesPassedEvidenceWhenApprovedHashMatches(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, `{
+  "status": "discovered",
+  "databases": [
+    {
+      "name": "sales",
+      "schemas": [
+        {
+          "name": "dbo",
+          "tables": [
+            {
+              "name": "orders",
+              "columns": [
+                {"name": "id", "type": "int"},
+                {"name": "customer_name", "type": "nvarchar"}
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+`)
+	must(t, GenerateSchemaDraftOnly(root))
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "validation")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage() error = %v", err)
+	}
+	writeValidationApproval(t, root, hash)
+
+	result, err := RunValidationWorker(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a")
+	if err != nil {
+		t.Fatalf("RunValidationWorker() error = %v", err)
+	}
+	if !result.Passed {
+		t.Fatalf("RunValidationWorker() Passed = false, checks = %+v", result.Checks)
+	}
+	if result.PayloadHash != hash {
+		t.Fatalf("PayloadHash = %q, want %q", result.PayloadHash, hash)
+	}
+
+	state := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/validation-status.yaml")
+	assertContains(t, state, "status: passed")
+	assertContains(t, state, "payload_hash: "+hash)
+	assertContains(t, state, "name: schema_diff_parseable")
+
+	report := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/validation-report.md")
+	assertContains(t, report, "# Validation Report")
+	assertContains(t, report, "- Status: `passed`")
+	assertContains(t, report, "- Payload hash: `"+hash+"`")
+	assertContains(t, report, "schema_diff_parseable")
+}
+
+func TestRunValidationWorkerWritesFailedEvidenceForManualReviewItems(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, `{
+  "status": "discovered",
+  "databases": [
+    {
+      "name": "sales",
+      "schemas": [
+        {
+          "name": "dbo",
+          "tables": [
+            {
+              "name": "orders",
+              "columns": [
+                {"name": "payload", "type": "xml"}
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+`)
+	must(t, GenerateSchemaDraftOnly(root))
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "validation")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage() error = %v", err)
+	}
+	writeValidationApproval(t, root, hash)
+
+	result, err := RunValidationWorker(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a")
+	if err != nil {
+		t.Fatalf("RunValidationWorker() error = %v", err)
+	}
+	if result.Passed {
+		t.Fatalf("RunValidationWorker() Passed = true, want false")
+	}
+	state := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/validation-status.yaml")
+	assertContains(t, state, "status: failed")
+	assertContains(t, state, "name: schema_manual_review_cleared")
+	assertContains(t, state, "manual review items remain")
+}
+
 func assertFile(t *testing.T, root, rel string) {
 	t.Helper()
 	info, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel)))
@@ -771,6 +915,55 @@ func writeFileForTest(t *testing.T, root, rel, content string) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func createValidationWorkerProject(t *testing.T, root, inventory string) {
+	t.Helper()
+	must(t, InitRepo(root))
+	must(t, CreateCluster(root, ClusterSpec{
+		ClusterID:              "prod-sqlserver-a",
+		DisplayName:            "prod SQL Server A",
+		Listener:               "sqlserver-a.internal",
+		Port:                   1433,
+		SecretRef:              "vault://migration/prod-sqlserver-a/readonly",
+		CDCMode:                "sqlserver-cdc",
+		RetentionHoursRequired: 168,
+		Owners:                 []string{"dba-team"},
+	}))
+	must(t, CreateProject(root, ProjectSpec{
+		SourceClusterID: "prod-sqlserver-a",
+		ProjectID:       "sales-db-to-tidb-prod-a",
+		DisplayName:     "sales DB to TiDB prod A",
+		SourceDatabase:  "sales",
+		SourceSchemas:   []string{"dbo"},
+		TargetName:      "tidb-prod-a",
+		TargetDatabase:  "app",
+		TargetSecretRef: "vault://migration/tidb-prod-a/migrate-user",
+		Mode:            "short-downtime",
+		Owners:          []string{"dba-team"},
+	}))
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/inventory/inventory.json", inventory)
+}
+
+func GenerateSchemaDraftOnly(root string) error {
+	_, err := GenerateSchemaDraft(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a")
+	return err
+}
+
+func writeValidationApproval(t *testing.T, root, payloadHash string) {
+	t.Helper()
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/approvals/validation-approval.yaml", fmt.Sprintf(`approval_id: validation-test
+project_id: sales-db-to-tidb-prod-a
+source_cluster_id: prod-sqlserver-a
+action: validation
+payload_hash: %s
+required_reviewers:
+  - dba-team
+approved_by:
+  - dba-team
+status: approved
+approved_at: "2026-06-26T00:00:00Z"
+`, payloadHash))
 }
 
 type fakeCatalogReader struct {

@@ -33,13 +33,14 @@ LLM 只生成解释、候选方案和文档，不直接执行迁移
 - 基于 `inventory/inventory.json` 生成规则化兼容性分析报告。
 - 基于 SQL Server inventory 和 project metadata 生成项目级 TiDB DDL 草稿。
 - 基于 stage 生成本地 PR draft 文件和建议的 `gh pr create` 命令。
+- 计算 validation payload hash，并在 approval 通过后执行 metadata-only validation worker。
 - 创建上游 SQL Server 集群目录。
 - 在上游 SQL Server 集群下创建迁移项目目录。
 - 生成基础 YAML/JSON/Markdown 状态文件。
 - 生成核心 JSON Schema 文件。
 - 单元测试和 CLI smoke test。
 
-当前 CLI 只有在执行 `discover-sqlserver --connection-string-env ...` 时会连接 SQL Server，并且只读取 catalog metadata。它不会连接 TiDB，也不会执行生成的 DDL、真实导出、导入、CDC 或切流。`discover-sqlserver --dry-run` 只输出计划，不打开数据库连接，也不写 inventory 文件。`analyze-compatibility`、`generate-schema-draft` 和 `generate-pr-draft` 只读取并写回 GitHub metadata 文件。
+当前 CLI 只有在执行 `discover-sqlserver --connection-string-env ...` 时会连接 SQL Server，并且只读取 catalog metadata。它不会连接 TiDB，也不会执行生成的 DDL、真实导出、导入、CDC 或切流。`discover-sqlserver --dry-run` 只输出计划，不打开数据库连接，也不写 inventory 文件。`analyze-compatibility`、`generate-schema-draft`、`generate-pr-draft`、`compute-payload-hash` 和 `worker-validate` 只读取并写回 GitHub metadata 文件。
 
 ### 2.2 终极目标
 
@@ -117,7 +118,7 @@ clusters/<source_cluster_id>/projects/<project_id>/prs/<stage>-pr.md
 
 Worker 是终极形态中的执行器。它从 GitHub repo 拉取已批准 instruction，执行确定性操作，并把状态和证据写回 repo。
 
-当前 MVP 尚未实现真实 worker。
+当前 MVP 只实现了 `worker-validate`，用于在 approval 和 payload hash 通过后执行 metadata-only validation checks。完整 reconcile worker 尚未实现。
 
 ### 3.5 LLM
 
@@ -346,6 +347,7 @@ clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/
     export-approval.yaml
     import-approval.yaml
     cdc-approval.yaml
+    validation-approval.yaml
     cutover-approval.yaml
   prs/
 ```
@@ -745,6 +747,68 @@ evidence/validation-report.md
 
 LLM 可以解释 mismatch，但 pass/fail 必须由确定性校验结果决定。
 
+当前 MVP 已支持 metadata-only validation worker。它不会连接 SQL Server 或 TiDB，只校验当前仓库里的迁移元数据是否满足进入后续执行的最低条件。
+
+先计算 validation payload hash：
+
+```bash
+bin/sqlserver2tidb compute-payload-hash \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --stage validation
+```
+
+把输出的 `payload hash` 写入：
+
+```text
+clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/approvals/validation-approval.yaml
+```
+
+并设置：
+
+```yaml
+action: validation
+status: approved
+approved_by:
+  - dba-team
+payload_hash: sha256:...
+```
+
+然后运行 validation worker：
+
+```bash
+bin/sqlserver2tidb worker-validate \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a
+```
+
+approval gate：
+
+- `action` 必须是 `validation`。
+- `status` 必须是 `approved`。
+- `approved_by` 不能为空。
+- `payload_hash` 必须匹配当前 payload。
+
+payload hash 覆盖：
+
+- `project.yaml`
+- `schema/conversion-report.md`
+- `schema/schema-diff.json`
+- `schema/tidb-ddl/`
+- `plan/validation-plan.yaml`
+
+当前 worker 检查：
+
+- `schema-diff.json` 可解析。
+- `schema/tidb-ddl/` 下存在 SQL 文件。
+- schema diff 中 `manual_review_items` 为 0。
+- `schema/conversion-report.md` 存在。
+- `plan/validation-plan.yaml` 存在。
+
+如果 approval 未通过或 hash 不匹配，worker 直接退出，不写 `state/` 或 `evidence/`。如果 approval 通过，worker 写回 `state/validation-status.yaml` 和 `evidence/validation-report.md`。如果检查失败，worker 会写入 failed 状态，CLI 返回非零退出码。
+
 ### 10.10 阶段 9：Cutover
 
 cutover 前置条件：
@@ -802,6 +866,8 @@ clusters/<source_cluster_id>/state/worker-lease.yaml
 ```
 
 worker lease 是上游 SQL Server 集群级，避免多个 worker 同时操作同一个源集群。
+
+当前 MVP 只实现了 `worker-validate`。它不是完整 reconcile loop，不会扫描所有项目，也不会抢占 worker lease。它只针对一个显式指定的 project 执行 validation approval gate 和 metadata checks。
 
 ## 12. LLM 使用说明
 
@@ -954,7 +1020,7 @@ clusters/<source_cluster_id>/cluster.yaml
 
 ### 15.4 当前能直接迁移数据吗？
 
-当前 MVP 可以只读连接 SQL Server catalog 生成 inventory，也可以从 inventory 生成 TiDB DDL 草稿，但不能迁移数据，也不会连接 TiDB。export、import、CDC、validation、worker 将作为后续能力加入。
+当前 MVP 可以只读连接 SQL Server catalog 生成 inventory，也可以从 inventory 生成 TiDB DDL 草稿，并执行 metadata-only validation worker；但不能迁移数据，也不会连接 TiDB。export、import、CDC 和源/目标数据校验将作为后续能力加入。
 
 ### 15.5 可以把 LLM 接进来吗？
 
@@ -1074,6 +1140,29 @@ bin/sqlserver2tidb generate-pr-draft \
 
 该命令生成本地 PR body draft，并在 stdout 输出 PR 标题、建议分支名、body file 路径和 review 文件数量。它不会调用 GitHub API。
 
+### 16.9 compute-payload-hash
+
+```bash
+bin/sqlserver2tidb compute-payload-hash \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --stage validation
+```
+
+该命令计算指定 stage 的 payload hash。当前只支持 `validation` stage。这个 hash 应写入对应 approval 文件，防止审批后 payload 文件被修改。
+
+### 16.10 worker-validate
+
+```bash
+bin/sqlserver2tidb worker-validate \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a
+```
+
+该命令先检查 `approvals/validation-approval.yaml`，只有 approval 通过且 payload hash 匹配时才执行 validation checks。执行后写回 `state/validation-status.yaml` 和 `evidence/validation-report.md`。
+
 ## 17. 推荐落地顺序
 
 1. 使用当前 CLI 初始化 repo。
@@ -1086,6 +1175,7 @@ bin/sqlserver2tidb generate-pr-draft \
 8. 对已有 inventory 执行 `analyze-compatibility`，生成规则化兼容性报告。
 9. 执行 `generate-schema-draft`，生成 DDL 草稿、转换报告和 schema diff，并通过 Schema PR review。
 10. 对 discovery/schema/plan 等阶段执行 `generate-pr-draft`，生成 PR body 草稿和建议命令。
-11. 接入 validation-only worker。
-12. 再接入 export/import/CDC。
-13. 最后接入 cutover orchestration。
+11. 执行 `compute-payload-hash --stage validation`，把 hash 写入 validation approval。
+12. approval 通过后执行 `worker-validate`，生成 validation state 和 evidence。
+13. 再接入 export/import/CDC。
+14. 最后接入 cutover orchestration。

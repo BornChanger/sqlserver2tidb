@@ -141,10 +141,12 @@ var prStageDefinitions = map[string]prStageDefinition{
 		Scope:           "project",
 		RequiresProject: true,
 		Reviewers:       []string{"DBA", "App Owner"},
+		ApprovalFiles:   []string{"approvals/validation-approval.yaml"},
 		ProjectFiles: []string{
 			"plan/validation-plan.yaml",
 			"state/validation-status.yaml",
 			"evidence/validation-report.md",
+			"approvals/validation-approval.yaml",
 		},
 		Checklist: []string{
 			"Confirm validation checks cover row counts and representative business invariants.",
