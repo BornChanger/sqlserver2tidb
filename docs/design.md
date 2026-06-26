@@ -101,6 +101,20 @@ The current schema draft generator is deterministic and file-backed:
 
 It filters inventory by the project source database and source schemas. It generates TiDB DDL drafts with rule-based type mappings and marks unsupported or risky source types as manual-review items. It does not connect to TiDB and does not execute DDL.
 
+## Data Movement Plan Generation
+
+`generate-data-plans` is deterministic and file-backed:
+
+- Input: `clusters/<source_cluster_id>/inventory/inventory.json`.
+- Input: `clusters/<source_cluster_id>/projects/<project_id>/project.yaml`.
+- Input: operator-supplied object URI prefix and chunk sizing flags.
+- Output: project-local `plan/export-plan.yaml`.
+- Output: project-local `plan/import-plan.yaml`.
+
+It filters inventory by the project source database and source schemas. It estimates full-load export chunks from inventory `row_count`, writes object storage URIs for each chunk, and creates matching import jobs that depend on those export chunks.
+
+The generated split predicate is intentionally a `TODO` placeholder because a safe split key must be reviewed per table. The command does not connect to SQL Server or TiDB, does not read data, does not write object storage, and does not start `IMPORT INTO` or TiDB Lightning.
+
 ## LLM Boundary
 
 LLMs may generate:
@@ -108,11 +122,12 @@ LLMs may generate:
 - compatibility explanations
 - schema rewrite candidates
 - migration plan drafts
+- export/import chunking or split-key recommendations
 - PR descriptions
 - validation report narratives
 - incident diagnosis suggestions
 
-LLMs are not required for deterministic repository commands such as `validate-repo`, `discover-sqlserver --dry-run`, `analyze-compatibility`, `generate-schema-draft`, `generate-pr-draft`, `create-pr`, `compute-payload-hash`, or `worker-validate`. For schema work, the LLM may read `conversion-report.md` and `schema-diff.json` to propose candidate rewrites, but the candidate must be committed as reviewed files before any worker can use it. For PR work, the LLM may refine prose, but file lists, approval files, and stage gates must remain deterministic.
+LLMs are not required for deterministic repository commands such as `validate-repo`, `discover-sqlserver --dry-run`, `analyze-compatibility`, `generate-schema-draft`, `generate-data-plans`, `generate-pr-draft`, `create-pr`, `compute-payload-hash`, or `worker-validate`. For schema work, the LLM may read `conversion-report.md` and `schema-diff.json` to propose candidate rewrites, but the candidate must be committed as reviewed files before any worker can use it. For export/import planning, the LLM may propose split keys or risk notes, but generated predicates and execution settings still need PR review before workers can use them. For PR work, the LLM may refine prose, but file lists, approval files, and stage gates must remain deterministic.
 
 LLMs must not decide:
 

@@ -32,6 +32,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runAnalyzeCompatibility(args[1:], stdout, stderr)
 	case "generate-schema-draft":
 		return runGenerateSchemaDraft(args[1:], stdout, stderr)
+	case "generate-data-plans":
+		return runGenerateDataPlans(args[1:], stdout, stderr)
 	case "generate-pr-draft":
 		return runGeneratePRDraft(args[1:], stdout, stderr)
 	case "create-pr":
@@ -204,6 +206,38 @@ func runGenerateSchemaDraft(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "wrote %s\n", "schema/tidb-ddl")
 	fmt.Fprintf(stdout, "wrote %s\n", "schema/conversion-report.md")
 	fmt.Fprintf(stdout, "wrote %s\n", "schema/schema-diff.json")
+	return 0
+}
+
+func runGenerateDataPlans(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("generate-data-plans", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	root := fs.String("root", ".", "repository root")
+	sourceClusterID := fs.String("source-cluster-id", "", "upstream SQL Server cluster id")
+	projectID := fs.String("project-id", "", "migration project id")
+	objectURIPrefix := fs.String("object-uri-prefix", "", "object storage URI prefix for exported full-load files")
+	chunkSizeRows := fs.Int64("chunk-size-rows", 1000000, "estimated rows per export chunk")
+	exportFormat := fs.String("export-format", "parquet", "export file format")
+	importEngine := fs.String("import-engine", "import-into", "TiDB import engine")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	result, err := gitops.GenerateDataMovementPlans(*root, *sourceClusterID, *projectID, gitops.DataMovementPlanSpec{
+		ObjectURIPrefix: *objectURIPrefix,
+		ChunkSizeRows:   *chunkSizeRows,
+		ExportFormat:    *exportFormat,
+		ImportEngine:    *importEngine,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "generate data plans: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "data movement plans generated for %s under source cluster %s\n", result.ProjectID, result.SourceClusterID)
+	fmt.Fprintf(stdout, "tables: %d\n", result.Tables)
+	fmt.Fprintf(stdout, "export chunks: %d\n", result.ExportChunks)
+	fmt.Fprintf(stdout, "import jobs: %d\n", result.ImportJobs)
+	fmt.Fprintf(stdout, "wrote %s\n", "plan/export-plan.yaml")
+	fmt.Fprintf(stdout, "wrote %s\n", "plan/import-plan.yaml")
 	return 0
 }
 
@@ -414,6 +448,7 @@ Usage:
   sqlserver2tidb discover-sqlserver --root . --source-cluster-id prod-sqlserver-a --connection-string-env SQLSERVER2TIDB_SQLSERVER_DSN
   sqlserver2tidb analyze-compatibility --root . --source-cluster-id prod-sqlserver-a
   sqlserver2tidb generate-schema-draft --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
+  sqlserver2tidb generate-data-plans --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --object-uri-prefix s3://bucket/prefix
   sqlserver2tidb generate-pr-draft --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage schema
   sqlserver2tidb create-pr --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage schema
   sqlserver2tidb compute-payload-hash --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage validation

@@ -15,6 +15,7 @@ This MVP provides:
 - SQL Server catalog discovery using a connection string supplied through an environment variable.
 - Rule-based SQL Server compatibility analysis from `inventory/inventory.json`.
 - Project-scoped TiDB schema draft generation from SQL Server inventory and project metadata.
+- Project-scoped full export/import plan draft generation from SQL Server inventory and project metadata.
 - PR draft generation and a dry-run-by-default GitHub PR creation wrapper.
 - Validation payload hash calculation and approved validation-only worker execution.
 - Source-cluster-first metadata organization:
@@ -38,7 +39,7 @@ This MVP provides:
   ```
 
 - JSON Schema files for core metadata.
-- Tests for repository initialization, validation, discovery planning and execution, compatibility analysis, schema draft generation, PR draft generation, GitHub PR create dry-runs, validation worker gates, upstream SQL Server cluster creation, and migration project creation.
+- Tests for repository initialization, validation, discovery planning and execution, compatibility analysis, schema draft generation, data movement plan generation, PR draft generation, GitHub PR create dry-runs, validation worker gates, upstream SQL Server cluster creation, and migration project creation.
 
 This MVP connects to SQL Server only for read-only catalog discovery when a connection string is supplied through an environment variable. It does **not** connect to TiDB or execute generated DDL, export, import, CDC, cutover, cleanup, or source/target data validation yet.
 
@@ -140,6 +141,18 @@ go run ./cmd/sqlserver2tidb generate-schema-draft \
 
 This writes `schema/tidb-ddl/`, `schema/conversion-report.md`, and `schema/schema-diff.json` under the project. Manual-review mappings are marked in both the DDL comments and schema diff.
 
+Generate project-scoped full export/import draft plans from the current SQL Server inventory and project metadata:
+
+```bash
+go run ./cmd/sqlserver2tidb generate-data-plans \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --object-uri-prefix s3://migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full
+```
+
+This writes `plan/export-plan.yaml` and `plan/import-plan.yaml` under the project. The command estimates chunks from inventory `row_count`; it does not connect to SQL Server or TiDB and does not move data.
+
 Generate a project-scoped PR draft for schema review:
 
 ```bash
@@ -202,5 +215,5 @@ This checks approved metadata, writes `state/validation-status.yaml`, and writes
 
 ## Next Milestones
 
-- Add export/import plan generation.
+- Add full export executor and import executor behind approval gates.
 - Add source/target data validation connectors after import support exists.

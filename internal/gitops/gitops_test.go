@@ -797,6 +797,94 @@ func TestPrepareGitHubPRCreateRequiresGeneratedDraft(t *testing.T) {
 	assertContains(t, err.Error(), "run generate-pr-draft first")
 }
 
+func TestGenerateDataMovementPlansWritesExportAndImportPlans(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, `{
+  "status": "discovered",
+  "databases": [
+    {
+      "name": "sales",
+      "schemas": [
+        {
+          "name": "dbo",
+          "tables": [
+            {
+              "name": "orders",
+              "row_count": 2500000,
+              "columns": [
+                {"name": "id", "type": "int"},
+                {"name": "customer_name", "type": "nvarchar"}
+              ]
+            }
+          ]
+        },
+        {
+          "name": "audit",
+          "tables": [
+            {
+              "name": "events",
+              "row_count": 100,
+              "columns": [
+                {"name": "id", "type": "int"}
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+`)
+
+	result, err := GenerateDataMovementPlans(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", DataMovementPlanSpec{
+		ObjectURIPrefix: "s3://migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full",
+		ChunkSizeRows:   1000000,
+		ExportFormat:    "parquet",
+		ImportEngine:    "import-into",
+	})
+	if err != nil {
+		t.Fatalf("GenerateDataMovementPlans() error = %v", err)
+	}
+	if result.Tables != 1 || result.ExportChunks != 3 || result.ImportJobs != 3 {
+		t.Fatalf("GenerateDataMovementPlans() result = %+v, want 1 table, 3 chunks, 3 import jobs", result)
+	}
+
+	exportPlan := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/export-plan.yaml")
+	assertContains(t, exportPlan, "status: draft")
+	assertContains(t, exportPlan, "format: parquet")
+	assertContains(t, exportPlan, "chunk_size_rows: 1000000")
+	assertContains(t, exportPlan, "source_object: sales.dbo.orders")
+	assertContains(t, exportPlan, "target_object: app.orders")
+	assertContains(t, exportPlan, "id: dbo.orders.000001")
+	assertContains(t, exportPlan, "id: dbo.orders.000003")
+	assertContains(t, exportPlan, "output_uri: s3://migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full/dbo.orders.000003.parquet")
+	if strings.Contains(exportPlan, "sales.audit.events") {
+		t.Fatalf("export plan included table outside project schema:\n%s", exportPlan)
+	}
+
+	importPlan := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml")
+	assertContains(t, importPlan, "status: draft")
+	assertContains(t, importPlan, "engine: import-into")
+	assertContains(t, importPlan, "target_object: app.orders")
+	assertContains(t, importPlan, "source_uri: s3://migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full/dbo.orders.000001.parquet")
+	assertContains(t, importPlan, "depends_on_export_chunk: dbo.orders.000003")
+}
+
+func TestGenerateDataMovementPlansRequiresObjectURIPrefix(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, `{"status":"discovered","databases":[]}`)
+
+	_, err := GenerateDataMovementPlans(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", DataMovementPlanSpec{
+		ChunkSizeRows: 1000000,
+		ExportFormat:  "parquet",
+		ImportEngine:  "import-into",
+	})
+	if err == nil {
+		t.Fatal("GenerateDataMovementPlans() expected missing object URI prefix error")
+	}
+	assertContains(t, err.Error(), "object URI prefix is required")
+}
+
 func TestRunValidationWorkerRequiresApprovedValidationApproval(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, `{
