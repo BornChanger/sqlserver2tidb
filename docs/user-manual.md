@@ -866,7 +866,7 @@ bin/sqlserver2tidb worker-executor \
   --source-connection-string-env SQLSERVER_READONLY_DSN
 ```
 
-默认只打印 `sqlserver2tidb-executor export ...` 命令。只有显式加 `--execute`，才会调用外部执行器 binary。
+默认只打印 `sqlserver2tidb-executor export ...` 命令。只有显式加 `--execute`，才会调用外部执行器 binary，并向被调用的 executor 子命令传入 `--execute`。
 
 示例：
 
@@ -949,7 +949,7 @@ bin/sqlserver2tidb worker-executor \
   --stage import
 ```
 
-默认只打印 `sqlserver2tidb-executor import ...` 命令。只有显式加 `--execute`，才会调用外部执行器 binary。
+默认只打印 `sqlserver2tidb-executor import ...` 命令。只有显式加 `--execute`，才会调用外部执行器 binary，并向被调用的 executor 子命令传入 `--execute`。
 
 ### 10.8 阶段 7：CDC 增量回放
 
@@ -1016,7 +1016,7 @@ bin/sqlserver2tidb worker-executor \
   --stage cdc
 ```
 
-默认只打印 `sqlserver2tidb-executor cdc ...` 命令。只有显式加 `--execute`，才会调用外部执行器 binary。
+默认只打印 `sqlserver2tidb-executor cdc ...` 命令。只有显式加 `--execute`，才会调用外部执行器 binary，并向被调用的 executor 子命令传入 `--execute`。
 
 示例项目状态：
 
@@ -1689,7 +1689,7 @@ bin/sqlserver2tidb worker-executor \
   --target-connection-string-env SQLSERVER2TIDB_TARGET_CONNECTION_STRING
 ```
 
-该命令支持 `export`、`import`、`cdc` 和 `validation`。它复用对应 stage 的 approval/hash gate，只有 approval 通过且 payload hash 匹配时才生成执行器命令。默认外部 binary 是 `sqlserver2tidb-executor`，可以通过 `--executor-binary` 覆盖。`--source-connection-string-env`、`--target-connection-string-env` 和 `--import-batch-size` 会被渲染进生成的 executor 命令，不写入 GitHub metadata。默认 dry-run 只打印命令；只有加 `--execute` 才会调用外部 binary。当前随仓库提供的 `sqlserver2tidb-executor export --execute` 仅支持 SQL Server 到本地 `file://` CSV；`import --execute` 仅支持本地 `file://` CSV 到 TiDB 的流式逐行 insert；`validation` stage 会为 `row_count` 检查生成 `validate-count` 命令；`cdc --execute` 仍返回 not implemented。
+该命令支持 `export`、`import`、`cdc` 和 `validation`。它复用对应 stage 的 approval/hash gate，只有 approval 通过且 payload hash 匹配时才生成执行器命令。默认外部 binary 是 `sqlserver2tidb-executor`，可以通过 `--executor-binary` 覆盖。`--source-connection-string-env`、`--target-connection-string-env` 和 `--import-batch-size` 会被渲染进生成的 executor 命令，不写入 GitHub metadata。默认 dry-run 只打印命令；只有加 `--execute` 才会调用外部 binary，并在 executor 子命令后自动注入 `--execute`，让随仓库提供的 executor 离开 dry-run 模式。当前随仓库提供的 `sqlserver2tidb-executor export --execute` 仅支持 SQL Server 到本地 `file://` CSV；`import --execute` 仅支持本地 `file://` CSV 到 TiDB 的流式逐行 insert；`validation` stage 会为 `row_count` 检查生成 `validate-count` 命令；`cdc --execute` 仍返回 not implemented。
 
 ### 16.18 sqlserver2tidb-executor
 

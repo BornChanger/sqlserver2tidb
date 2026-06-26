@@ -528,7 +528,7 @@ func runWorkerExecutor(args []string, stdout, stderr io.Writer) int {
 	sourceConnectionStringEnv := fs.String("source-connection-string-env", "", "environment variable containing the SQL Server connection string for export execution")
 	targetConnectionStringEnv := fs.String("target-connection-string-env", "", "environment variable containing the TiDB/MySQL connection string for import execution")
 	importBatchSize := fs.Int("import-batch-size", 0, "rows to commit per import transaction; default is executor-defined")
-	execute := fs.Bool("execute", false, "run external executor commands; default is dry-run")
+	execute := fs.Bool("execute", false, "run external executor commands with executor --execute; default is dry-run")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -558,7 +558,8 @@ func runWorkerExecutor(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "worker executor: empty command for %s\n", command.ID)
 			return 1
 		}
-		cmd := exec.Command(command.Args[0], command.Args[1:]...)
+		args := withExternalExecutorExecuteFlag(command.Args)
+		cmd := exec.Command(args[0], args[1:]...)
 		cmd.Dir = *root
 		output, err := cmd.CombinedOutput()
 		if len(output) > 0 {
@@ -573,6 +574,19 @@ func runWorkerExecutor(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "stage: %s\n", spec.Stage)
 	fmt.Fprintf(stdout, "commands: %d\n", len(spec.Commands))
 	return 0
+}
+
+func withExternalExecutorExecuteFlag(args []string) []string {
+	out := append([]string(nil), args...)
+	for _, arg := range out[1:] {
+		if arg == "--execute" {
+			return out
+		}
+	}
+	if len(out) >= 2 {
+		return append(append(out[:2:2], "--execute"), out[2:]...)
+	}
+	return append(out, "--execute")
 }
 
 func runWorkerReconcile(args []string, stdout, stderr io.Writer) int {
