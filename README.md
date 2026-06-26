@@ -11,6 +11,7 @@ This MVP provides:
 - A Go CLI named `sqlserver2tidb`.
 - Initialization of the GitOps metadata repository structure.
 - Validation of the GitOps metadata repository structure.
+- SQL Server discovery dry-run planning without opening a database connection.
 - Source-cluster-first metadata organization:
 
   ```text
@@ -30,7 +31,7 @@ This MVP provides:
   ```
 
 - JSON Schema files for core metadata.
-- Tests for repository initialization, upstream SQL Server cluster creation, and migration project creation.
+- Tests for repository initialization, validation, discovery dry-run planning, upstream SQL Server cluster creation, and migration project creation.
 
 This MVP intentionally does **not** connect to SQL Server or TiDB yet. Real database execution will be added behind explicit approvals and deterministic worker code.
 
@@ -79,6 +80,15 @@ go run ./cmd/sqlserver2tidb create-cluster \
   --owner dba-team,sre-team
 ```
 
+Preview the SQL Server discovery scope without connecting to SQL Server or writing inventory files:
+
+```bash
+go run ./cmd/sqlserver2tidb discover-sqlserver \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --dry-run
+```
+
 Create a migration project under that upstream cluster:
 
 ```bash
@@ -112,8 +122,8 @@ go run ./cmd/sqlserver2tidb create-project \
 
 ## Next Milestones
 
-- Add SQL Server discovery in dry-run mode.
 - Add rule-based compatibility analyzer.
+- Add SQL Server discovery executor backed by catalog queries.
 - Add schema conversion draft generator.
 - Add PR generation helpers.
 - Add deterministic worker execution for approved validation steps.

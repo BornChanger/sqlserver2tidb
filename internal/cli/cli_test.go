@@ -104,6 +104,59 @@ func TestRunValidateRepoCommandReportsInvalidRepository(t *testing.T) {
 	}
 }
 
+func TestRunDiscoverSQLServerDryRunCommand(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	if code := Run([]string{"init-repo", "--root", root}, &stdout, &stderr); code != 0 {
+		t.Fatalf("init-repo code = %d, stderr = %s", code, stderr.String())
+	}
+	if code := Run([]string{
+		"create-cluster",
+		"--root", root,
+		"--cluster-id", "prod-sqlserver-a",
+		"--display-name", "prod SQL Server A",
+		"--listener", "sqlserver-a.internal",
+		"--secret-ref", "vault://migration/prod-sqlserver-a/readonly",
+		"--owner", "dba-team",
+	}, &stdout, &stderr); code != 0 {
+		t.Fatalf("create-cluster code = %d, stderr = %s", code, stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{"discover-sqlserver", "--root", root, "--source-cluster-id", "prod-sqlserver-a", "--dry-run"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("discover-sqlserver code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "SQL Server discovery dry run for prod-sqlserver-a") {
+		t.Fatalf("discover-sqlserver stdout = %q, want dry-run header", output)
+	}
+	if !strings.Contains(output, "No database connection will be opened.") {
+		t.Fatalf("discover-sqlserver stdout = %q, want no connection message", output)
+	}
+	if !strings.Contains(output, "sys.tables") {
+		t.Fatalf("discover-sqlserver stdout = %q, want catalog query list", output)
+	}
+	if !strings.Contains(output, "clusters/prod-sqlserver-a/inventory/inventory.json") {
+		t.Fatalf("discover-sqlserver stdout = %q, want target inventory file", output)
+	}
+}
+
+func TestRunDiscoverSQLServerRequiresDryRun(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{"discover-sqlserver", "--root", root, "--source-cluster-id", "prod-sqlserver-a"}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatal("discover-sqlserver code = 0, want non-zero without --dry-run")
+	}
+	if !strings.Contains(stderr.String(), "only --dry-run is supported") {
+		t.Fatalf("discover-sqlserver stderr = %q, want dry-run requirement", stderr.String())
+	}
+}
+
 func TestRunUnknownCommandReturnsUsageError(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 

@@ -28,13 +28,14 @@ LLM 只生成解释、候选方案和文档，不直接执行迁移
 - `sqlserver2tidb` Go CLI。
 - 初始化 GitOps metadata 目录。
 - 校验 GitOps metadata 目录结构。
+- 生成 SQL Server discovery dry-run 计划。
 - 创建上游 SQL Server 集群目录。
 - 在上游 SQL Server 集群下创建迁移项目目录。
 - 生成基础 YAML/JSON/Markdown 状态文件。
 - 生成核心 JSON Schema 文件。
 - 单元测试和 CLI smoke test。
 
-当前 CLI 不会连接真实 SQL Server 或 TiDB，也不会执行真实导出、导入、CDC 或切流。
+当前 CLI 不会连接真实 SQL Server 或 TiDB，也不会执行真实导出、导入、CDC 或切流。`discover-sqlserver --dry-run` 只输出计划，不打开数据库连接，也不写 inventory 文件。
 
 ### 2.2 终极目标
 
@@ -423,7 +424,22 @@ inventory/compatibility-report.md
 inventory/schema-issues.yaml
 ```
 
-当前 MVP 只创建占位文件。
+当前 MVP 会创建占位文件，并支持 discovery dry-run。dry-run 只根据 `cluster.yaml` 和目录结构输出计划，不连接 SQL Server，不写入 inventory 文件。
+
+命令：
+
+```bash
+bin/sqlserver2tidb discover-sqlserver \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --dry-run
+```
+
+输出包括：
+
+- 将来真实 discovery 会更新的目标文件。
+- 将来真实 discovery 会读取的 SQL Server catalog 范围。
+- 明确的 no-write/no-connect 说明。
 
 Discovery 应覆盖：
 
@@ -835,16 +851,30 @@ bin/sqlserver2tidb create-project \
   --owner dba-team,app-team
 ```
 
+### 16.5 discover-sqlserver
+
+当前版本只支持 dry-run：
+
+```bash
+bin/sqlserver2tidb discover-sqlserver \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --dry-run
+```
+
+该命令不会连接 SQL Server，也不会写文件。它用于提前 review discovery 将覆盖的 catalog 范围和目标 inventory 文件。
+
 ## 17. 推荐落地顺序
 
 1. 使用当前 CLI 初始化 repo。
 2. 执行 `validate-repo` 确认 metadata 结构完整。
 3. 为一个测试 SQL Server 集群创建 cluster。
-4. 为一个小 database 创建 project。
-5. 通过 PR review metadata 文件。
-6. 后续接入 discovery dry-run。
+4. 对测试 SQL Server 集群执行 `discover-sqlserver --dry-run`，review discovery 范围。
+5. 为一个小 database 创建 project。
+6. 通过 PR review metadata 文件。
 7. 接入 compatibility analyzer。
-8. 接入 schema conversion draft。
-9. 接入 validation-only worker。
-10. 再接入 export/import/CDC。
-11. 最后接入 cutover orchestration。
+8. 接入真实 SQL Server catalog discovery executor。
+9. 接入 schema conversion draft。
+10. 接入 validation-only worker。
+11. 再接入 export/import/CDC。
+12. 最后接入 cutover orchestration。

@@ -211,6 +211,59 @@ func TestValidateRepoChecksClusterAndProjectDirectories(t *testing.T) {
 	assertContains(t, strings.Join(report.Errors, "\n"), "missing required file: clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/migration-plan.yaml")
 }
 
+func TestBuildSQLServerDiscoveryDryRunPlanForCluster(t *testing.T) {
+	root := t.TempDir()
+	must(t, InitRepo(root))
+	must(t, CreateCluster(root, ClusterSpec{
+		ClusterID:              "prod-sqlserver-a",
+		DisplayName:            "prod SQL Server A",
+		Listener:               "sqlserver-a.internal",
+		Port:                   1433,
+		SecretRef:              "vault://migration/prod-sqlserver-a/readonly",
+		CDCMode:                "sqlserver-cdc",
+		RetentionHoursRequired: 168,
+		Owners:                 []string{"dba-team"},
+	}))
+	inventoryBefore := readFile(t, root, "clusters/prod-sqlserver-a/inventory/inventory.json")
+
+	plan, err := BuildSQLServerDiscoveryDryRunPlan(root, "prod-sqlserver-a")
+	if err != nil {
+		t.Fatalf("BuildSQLServerDiscoveryDryRunPlan() error = %v", err)
+	}
+
+	if plan.SourceClusterID != "prod-sqlserver-a" {
+		t.Fatalf("SourceClusterID = %q, want prod-sqlserver-a", plan.SourceClusterID)
+	}
+	if plan.Mode != "dry-run" {
+		t.Fatalf("Mode = %q, want dry-run", plan.Mode)
+	}
+	if plan.WritesFiles {
+		t.Fatal("WritesFiles = true, want false")
+	}
+	assertStringSliceContains(t, plan.TargetFiles, "clusters/prod-sqlserver-a/inventory/inventory.json")
+	assertStringSliceContains(t, plan.TargetFiles, "clusters/prod-sqlserver-a/inventory/compatibility-report.md")
+	assertStringSliceContains(t, plan.TargetFiles, "clusters/prod-sqlserver-a/inventory/schema-issues.yaml")
+	assertStringSliceContains(t, plan.CatalogQueries, "tables: sys.tables + sys.schemas + sys.partitions")
+	assertStringSliceContains(t, plan.CatalogQueries, "columns: sys.columns + sys.types")
+	assertStringSliceContains(t, plan.CatalogQueries, "cdc: cdc.change_tables + sys.databases")
+
+	inventoryAfter := readFile(t, root, "clusters/prod-sqlserver-a/inventory/inventory.json")
+	if inventoryAfter != inventoryBefore {
+		t.Fatalf("dry-run changed inventory.json\nbefore:\n%s\nafter:\n%s", inventoryBefore, inventoryAfter)
+	}
+}
+
+func TestBuildSQLServerDiscoveryDryRunPlanRequiresExistingCluster(t *testing.T) {
+	root := t.TempDir()
+	must(t, InitRepo(root))
+
+	_, err := BuildSQLServerDiscoveryDryRunPlan(root, "missing-cluster")
+	if err == nil {
+		t.Fatal("BuildSQLServerDiscoveryDryRunPlan() expected error for missing cluster")
+	}
+	assertContains(t, err.Error(), `source cluster "missing-cluster" does not exist`)
+}
+
 func assertFile(t *testing.T, root, rel string) {
 	t.Helper()
 	info, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel)))
@@ -247,6 +300,16 @@ func assertContains(t *testing.T, got, want string) {
 	if !strings.Contains(got, want) {
 		t.Fatalf("expected content to contain %q\ncontent:\n%s", want, got)
 	}
+}
+
+func assertStringSliceContains(t *testing.T, got []string, want string) {
+	t.Helper()
+	for _, item := range got {
+		if item == want {
+			return
+		}
+	}
+	t.Fatalf("expected slice to contain %q\nslice:\n%v", want, got)
 }
 
 func must(t *testing.T, err error) {
