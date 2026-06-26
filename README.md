@@ -220,6 +220,17 @@ go run ./cmd/sqlserver2tidb worker-reconcile \
 
 This scans cluster/project metadata and reports which `worker-export`, `worker-import`, `worker-cdc`, and `worker-validate` actions are ready or blocked by approval/hash checks. It does not execute workers, acquire leases, or write state.
 
+Execute the first ready metadata-only worker action with a source-cluster lease:
+
+```bash
+go run ./cmd/sqlserver2tidb worker-reconcile \
+  --root . \
+  --execute-next \
+  --holder agent-a
+```
+
+This acquires or renews `state/worker-lease.yaml` for the selected source cluster, runs exactly one ready metadata-only worker action, and writes the same state/evidence files that the explicit single-project worker would write. A different holder is blocked until the lease expires.
+
 Generate a project-scoped PR draft for schema review:
 
 ```bash
@@ -282,6 +293,6 @@ This checks approved metadata, writes `state/validation-status.yaml`, and writes
 
 ## Next Milestones
 
-- Replace the read-only reconcile dry-run with a lease-backed reconcile loop.
+- Extend `worker-reconcile --execute-next` to create bot branches/PRs for state write-back.
 - Replace metadata-only export/import/CDC workers with real executors behind the same approval gates.
 - Add source/target data validation connectors after import support exists.

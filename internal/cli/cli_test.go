@@ -1062,6 +1062,123 @@ func TestRunWorkerReconcileDryRunCommand(t *testing.T) {
 	}
 }
 
+func TestRunWorkerReconcileExecuteNextCommand(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	if code := Run([]string{"init-repo", "--root", root}, &stdout, &stderr); code != 0 {
+		t.Fatalf("init-repo code = %d, stderr = %s", code, stderr.String())
+	}
+	if code := Run([]string{
+		"create-cluster",
+		"--root", root,
+		"--cluster-id", "prod-sqlserver-a",
+		"--display-name", "prod SQL Server A",
+		"--listener", "sqlserver-a.internal",
+		"--secret-ref", "vault://migration/prod-sqlserver-a/readonly",
+		"--owner", "dba-team",
+	}, &stdout, &stderr); code != 0 {
+		t.Fatalf("create-cluster code = %d, stderr = %s", code, stderr.String())
+	}
+	if code := Run([]string{
+		"create-project",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--display-name", "sales DB to TiDB prod A",
+		"--source-database", "sales",
+		"--source-schema", "dbo",
+		"--target-name", "tidb-prod-a",
+		"--target-database", "app",
+		"--target-secret-ref", "vault://migration/tidb-prod-a/migrate-user",
+		"--owner", "dba-team",
+	}, &stdout, &stderr); code != 0 {
+		t.Fatalf("create-project code = %d, stderr = %s", code, stderr.String())
+	}
+	inventoryPath := filepath.Join(root, "clusters", "prod-sqlserver-a", "inventory", "inventory.json")
+	if err := os.WriteFile(inventoryPath, []byte(`{
+  "status": "discovered",
+  "databases": [
+    {
+      "name": "sales",
+      "schemas": [
+        {
+          "name": "dbo",
+          "tables": [
+            {
+              "name": "orders",
+              "row_count": 2500000,
+              "columns": [
+                {"name": "id", "type": "int"}
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code := Run([]string{
+		"generate-data-plans",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--object-uri-prefix", "s3://migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full",
+	}, &stdout, &stderr); code != 0 {
+		t.Fatalf("generate-data-plans code = %d, stderr = %s", code, stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"compute-payload-hash",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "export",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("compute-payload-hash export code = %d, stderr = %s", code, stderr.String())
+	}
+	writeCLIStageApproval(t, root, "export", parsePayloadHash(t, stdout.String()))
+
+	stdout.Reset()
+	stderr.Reset()
+	code = Run([]string{
+		"worker-reconcile",
+		"--root", root,
+		"--execute-next",
+		"--holder", "agent-a",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("worker-reconcile execute-next code = %d, stderr = %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "worker reconcile execute next") {
+		t.Fatalf("worker-reconcile stdout = %q, want execute-next header", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "selected: prod-sqlserver-a/sales-db-to-tidb-prod-a export") {
+		t.Fatalf("worker-reconcile stdout = %q, want selected export", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "status: planned") {
+		t.Fatalf("worker-reconcile stdout = %q, want planned status", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "wrote state/worker-lease.yaml") {
+		t.Fatalf("worker-reconcile stdout = %q, want lease write", stdout.String())
+	}
+	assertExists(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/export-chunks.yaml")
+	assertExists(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/precheck.json")
+	lease, err := os.ReadFile(filepath.Join(root, "clusters", "prod-sqlserver-a", "state", "worker-lease.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(lease), "holder: agent-a") {
+		t.Fatalf("worker lease = %q, want holder agent-a", string(lease))
+	}
+}
+
 func TestRunUnknownCommandReturnsUsageError(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 

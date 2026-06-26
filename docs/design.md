@@ -127,9 +127,9 @@ When approved, the worker writes:
 
 It marks the CDC phase as `planned`; it does not assert that CDC is enabled, caught up, or safe for cutover.
 
-## Worker Reconcile Dry Run
+## Worker Reconcile
 
-`worker-reconcile --dry-run` is the current bridge between explicit one-project workers and a future reconcile loop. It scans:
+`worker-reconcile` is the current bridge between explicit one-project workers and a future reconcile loop. In `--dry-run` mode, it scans:
 
 - `clusters/<source_cluster_id>/projects/<project_id>/project.yaml`
 - project approval files for `export`, `import`, `cdc`, and `validation`
@@ -141,7 +141,9 @@ For each project/stage pair, it reports:
 - `blocked` with the deterministic reason returned by the approval/hash gate
 - the exact single-project worker command for ready actions
 
-The command is read-only. It does not execute workers, acquire or renew `state/worker-lease.yaml`, create branches, open PRs, or write state/evidence. A future reconcile loop should keep the same approval/hash gate but add lease acquisition, one-step execution, and state write-back PR creation.
+In `--execute-next` mode, it selects the first ready action in source-cluster/project/stage order, acquires or renews the source-cluster `state/worker-lease.yaml`, and runs exactly one metadata-only worker action. The same holder can renew its own unexpired lease. A different holder is blocked until the lease expires. This mode writes the same state/evidence files that the selected explicit worker writes, plus the source-cluster lease file.
+
+The command still does not connect to SQL Server, TiDB, Kafka, or object storage. It also does not create branches, open PRs, inspect GitHub merge state, or push bot commits yet. A future reconcile loop should keep the same approval/hash gate and lease semantics, then add branch creation and state write-back PR creation.
 
 ## Metadata Boundary
 
@@ -200,7 +202,7 @@ LLMs may generate:
 - validation report narratives
 - incident diagnosis suggestions
 
-LLMs are not required for deterministic repository commands such as `validate-repo`, `discover-sqlserver --dry-run`, `analyze-compatibility`, `generate-schema-draft`, `generate-data-plans`, `generate-cdc-plan`, `generate-pr-draft`, `create-pr`, `compute-payload-hash`, `worker-export`, `worker-import`, `worker-cdc`, `worker-validate`, or `worker-reconcile --dry-run`. For schema work, the LLM may read `conversion-report.md` and `schema-diff.json` to propose candidate rewrites, but the candidate must be committed as reviewed files before any worker can use it. For export/import planning, the LLM may propose split keys or risk notes, but generated predicates and execution settings still need PR review before workers can use them. For CDC planning, the LLM may explain retention or connector risks, but LSN, offset, catch-up, and cutover gates must come from deterministic runtime checks and GitHub approvals. For PR work, the LLM may refine prose, but file lists, approval files, and stage gates must remain deterministic.
+LLMs are not required for deterministic repository commands such as `validate-repo`, `discover-sqlserver --dry-run`, `analyze-compatibility`, `generate-schema-draft`, `generate-data-plans`, `generate-cdc-plan`, `generate-pr-draft`, `create-pr`, `compute-payload-hash`, `worker-export`, `worker-import`, `worker-cdc`, `worker-validate`, `worker-reconcile --dry-run`, or `worker-reconcile --execute-next`. For schema work, the LLM may read `conversion-report.md` and `schema-diff.json` to propose candidate rewrites, but the candidate must be committed as reviewed files before any worker can use it. For export/import planning, the LLM may propose split keys or risk notes, but generated predicates and execution settings still need PR review before workers can use them. For CDC planning, the LLM may explain retention or connector risks, but LSN, offset, catch-up, and cutover gates must come from deterministic runtime checks and GitHub approvals. For PR work, the LLM may refine prose, but file lists, approval files, and stage gates must remain deterministic.
 
 LLMs must not decide:
 

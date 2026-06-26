@@ -1130,6 +1130,83 @@ func TestPlanWorkerReconcileReportsReadyAndBlockedProjectStages(t *testing.T) {
 	assertContains(t, validation.Reason, "validation approval is not approved")
 }
 
+func TestExecuteNextWorkerReconcileAcquiresLeaseAndRunsFirstReadyAction(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateDataPlansOnly(root))
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(export) error = %v", err)
+	}
+	writeStageApproval(t, root, "export", hash)
+
+	result, err := ExecuteNextWorkerReconcile(root, WorkerReconcileExecuteSpec{
+		Holder: "agent-a",
+	})
+	if err != nil {
+		t.Fatalf("ExecuteNextWorkerReconcile() error = %v", err)
+	}
+	if result.Action.Stage != "export" || result.Action.Status != "ready" {
+		t.Fatalf("action = %+v, want ready export", result.Action)
+	}
+	if result.Status != "planned" || result.StateFile != "state/export-chunks.yaml" || result.EvidenceFile != "evidence/precheck.json" {
+		t.Fatalf("result = %+v, want planned export state/evidence", result)
+	}
+
+	lease := readFile(t, root, "clusters/prod-sqlserver-a/state/worker-lease.yaml")
+	assertContains(t, lease, "source_cluster_id: prod-sqlserver-a")
+	assertContains(t, lease, "holder: agent-a")
+	assertContains(t, lease, "phase: export")
+	assertContains(t, lease, "project_id: sales-db-to-tidb-prod-a")
+	assertContains(t, lease, "lease_id: ")
+	assertContains(t, lease, "expires_at: ")
+
+	state := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/export-chunks.yaml")
+	assertContains(t, state, "phase: export")
+	assertContains(t, state, "status: planned")
+	assertContains(t, state, "payload_hash: "+hash)
+	evidence := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/precheck.json")
+	assertContains(t, evidence, `"stage": "export"`)
+	assertContains(t, evidence, `"status": "planned"`)
+}
+
+func TestExecuteNextWorkerReconcileBlocksWhenLeaseHeldByAnotherHolder(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateDataPlansOnly(root))
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(export) error = %v", err)
+	}
+	writeStageApproval(t, root, "export", hash)
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/state/worker-lease.yaml", `source_cluster_id: prod-sqlserver-a
+holder: other-agent
+lease_id: existing-lease
+phase: export
+project_id: sales-db-to-tidb-prod-a
+expires_at: "2999-01-01T00:00:00Z"
+renewed_at: "2026-06-26T00:00:00Z"
+`)
+	stateBefore := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/export-chunks.yaml")
+	evidenceBefore := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/precheck.json")
+
+	_, err = ExecuteNextWorkerReconcile(root, WorkerReconcileExecuteSpec{
+		Holder: "agent-a",
+	})
+	if err == nil {
+		t.Fatal("ExecuteNextWorkerReconcile() expected lease error")
+	}
+	assertContains(t, err.Error(), `worker lease for source cluster "prod-sqlserver-a" is held by "other-agent"`)
+	stateAfter := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/export-chunks.yaml")
+	evidenceAfter := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/precheck.json")
+	if stateAfter != stateBefore {
+		t.Fatalf("execute-next changed export state while lease was held\nbefore:\n%s\nafter:\n%s", stateBefore, stateAfter)
+	}
+	if evidenceAfter != evidenceBefore {
+		t.Fatalf("execute-next changed export evidence while lease was held\nbefore:\n%s\nafter:\n%s", evidenceBefore, evidenceAfter)
+	}
+}
+
 func TestRunValidationWorkerRequiresApprovedValidationApproval(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, `{
