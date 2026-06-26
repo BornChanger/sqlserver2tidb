@@ -135,6 +135,82 @@ func TestCreateProjectRequiresExistingSourceCluster(t *testing.T) {
 	}
 }
 
+func TestValidateRepoAcceptsInitializedRepository(t *testing.T) {
+	root := t.TempDir()
+	must(t, InitRepo(root))
+
+	report, err := ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
+	if !report.Valid {
+		t.Fatalf("ValidateRepo() valid = false, errors = %v", report.Errors)
+	}
+	if len(report.Errors) != 0 {
+		t.Fatalf("ValidateRepo() errors = %v, want none", report.Errors)
+	}
+}
+
+func TestValidateRepoReportsMissingRequiredGlobalFile(t *testing.T) {
+	root := t.TempDir()
+	must(t, InitRepo(root))
+	must(t, os.Remove(filepath.Join(root, "global", "schemas", "project.schema.json")))
+
+	report, err := ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("ValidateRepo() valid = true, want false")
+	}
+	assertContains(t, strings.Join(report.Errors, "\n"), "missing required file: global/schemas/project.schema.json")
+}
+
+func TestValidateRepoChecksClusterAndProjectDirectories(t *testing.T) {
+	root := t.TempDir()
+	must(t, InitRepo(root))
+	must(t, CreateCluster(root, ClusterSpec{
+		ClusterID:              "prod-sqlserver-a",
+		DisplayName:            "prod SQL Server A",
+		Listener:               "sqlserver-a.internal",
+		Port:                   1433,
+		SecretRef:              "vault://migration/prod-sqlserver-a/readonly",
+		CDCMode:                "sqlserver-cdc",
+		RetentionHoursRequired: 168,
+		Owners:                 []string{"dba-team"},
+	}))
+	must(t, CreateProject(root, ProjectSpec{
+		SourceClusterID: "prod-sqlserver-a",
+		ProjectID:       "sales-db-to-tidb-prod-a",
+		DisplayName:     "sales DB to TiDB prod A",
+		SourceDatabase:  "sales",
+		SourceSchemas:   []string{"dbo"},
+		TargetName:      "tidb-prod-a",
+		TargetDatabase:  "app",
+		TargetSecretRef: "vault://migration/tidb-prod-a/migrate-user",
+		Mode:            "short-downtime",
+		Owners:          []string{"dba-team"},
+	}))
+
+	report, err := ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
+	if !report.Valid {
+		t.Fatalf("ValidateRepo() valid = false, errors = %v", report.Errors)
+	}
+
+	must(t, os.Remove(filepath.Join(root, "clusters", "prod-sqlserver-a", "projects", "sales-db-to-tidb-prod-a", "plan", "migration-plan.yaml")))
+	report, err = ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("ValidateRepo() valid = true, want false")
+	}
+	assertContains(t, strings.Join(report.Errors, "\n"), "missing required file: clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/migration-plan.yaml")
+}
+
 func assertFile(t *testing.T, root, rel string) {
 	t.Helper()
 	info, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel)))

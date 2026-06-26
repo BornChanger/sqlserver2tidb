@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -60,6 +61,47 @@ func TestRunCreateClusterAndProjectCommands(t *testing.T) {
 
 	assertExists(t, root, "clusters/prod-sqlserver-a/cluster.yaml")
 	assertExists(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/project.yaml")
+}
+
+func TestRunValidateRepoCommand(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	if code := Run([]string{"init-repo", "--root", root}, &stdout, &stderr); code != 0 {
+		t.Fatalf("init-repo code = %d, stderr = %s", code, stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{"validate-repo", "--root", root}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("validate-repo code = %d, stderr = %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "repository is valid") {
+		t.Fatalf("validate-repo stdout = %q, want valid message", stdout.String())
+	}
+}
+
+func TestRunValidateRepoCommandReportsInvalidRepository(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	if code := Run([]string{"init-repo", "--root", root}, &stdout, &stderr); code != 0 {
+		t.Fatalf("init-repo code = %d, stderr = %s", code, stderr.String())
+	}
+	if err := os.Remove(filepath.Join(root, "global", "policies", "execution-policy.yaml")); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{"validate-repo", "--root", root}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("validate-repo code = 0, want non-zero")
+	}
+	if !strings.Contains(stderr.String(), "missing required file: global/policies/execution-policy.yaml") {
+		t.Fatalf("validate-repo stderr = %q, want missing file message", stderr.String())
+	}
 }
 
 func TestRunUnknownCommandReturnsUsageError(t *testing.T) {

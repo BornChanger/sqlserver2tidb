@@ -27,6 +27,7 @@ LLM 只生成解释、候选方案和文档，不直接执行迁移
 
 - `sqlserver2tidb` Go CLI。
 - 初始化 GitOps metadata 目录。
+- 校验 GitOps metadata 目录结构。
 - 创建上游 SQL Server 集群目录。
 - 在上游 SQL Server 集群下创建迁移项目目录。
 - 生成基础 YAML/JSON/Markdown 状态文件。
@@ -202,6 +203,25 @@ clusters/
 - `global/schemas/` 保存 JSON Schema。
 - `global/templates/` 保存模板。
 - `clusters/` 保存所有上游 SQL Server 集群。
+
+初始化后建议立即执行结构校验：
+
+```bash
+bin/sqlserver2tidb validate-repo --root .
+```
+
+如果仓库结构完整，命令会输出：
+
+```text
+repository is valid at . (5 dirs, 9 files checked)
+```
+
+如果缺少必需文件或目录，命令会返回非零退出码，并列出缺失项。示例：
+
+```text
+repository validation failed at .:
+- missing required file: global/policies/execution-policy.yaml
+```
 
 ## 7. 创建上游 SQL Server 集群
 
@@ -777,7 +797,13 @@ clusters/<source_cluster_id>/cluster.yaml
 bin/sqlserver2tidb init-repo --root .
 ```
 
-### 16.2 create-cluster
+### 16.2 validate-repo
+
+```bash
+bin/sqlserver2tidb validate-repo --root .
+```
+
+### 16.3 create-cluster
 
 ```bash
 bin/sqlserver2tidb create-cluster \
@@ -792,7 +818,7 @@ bin/sqlserver2tidb create-cluster \
   --owner dba-team,sre-team
 ```
 
-### 16.3 create-project
+### 16.4 create-project
 
 ```bash
 bin/sqlserver2tidb create-project \
@@ -812,12 +838,13 @@ bin/sqlserver2tidb create-project \
 ## 17. 推荐落地顺序
 
 1. 使用当前 CLI 初始化 repo。
-2. 为一个测试 SQL Server 集群创建 cluster。
-3. 为一个小 database 创建 project。
-4. 通过 PR review metadata 文件。
-5. 后续接入 discovery dry-run。
-6. 接入 compatibility analyzer。
-7. 接入 schema conversion draft。
-8. 接入 validation-only worker。
-9. 再接入 export/import/CDC。
-10. 最后接入 cutover orchestration。
+2. 执行 `validate-repo` 确认 metadata 结构完整。
+3. 为一个测试 SQL Server 集群创建 cluster。
+4. 为一个小 database 创建 project。
+5. 通过 PR review metadata 文件。
+6. 后续接入 discovery dry-run。
+7. 接入 compatibility analyzer。
+8. 接入 schema conversion draft。
+9. 接入 validation-only worker。
+10. 再接入 export/import/CDC。
+11. 最后接入 cutover orchestration。

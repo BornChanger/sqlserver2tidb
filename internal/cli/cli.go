@@ -19,6 +19,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "init-repo":
 		return runInitRepo(args[1:], stdout, stderr)
+	case "validate-repo":
+		return runValidateRepo(args[1:], stdout, stderr)
 	case "create-cluster":
 		return runCreateCluster(args[1:], stdout, stderr)
 	case "create-project":
@@ -45,6 +47,29 @@ func runInitRepo(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	fmt.Fprintf(stdout, "initialized migration repository at %s\n", *root)
+	return 0
+}
+
+func runValidateRepo(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("validate-repo", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	root := fs.String("root", ".", "repository root")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	report, err := gitops.ValidateRepo(*root)
+	if err != nil {
+		fmt.Fprintf(stderr, "validate repo: %v\n", err)
+		return 1
+	}
+	if !report.Valid {
+		fmt.Fprintf(stderr, "repository validation failed at %s:\n", *root)
+		for _, message := range report.Errors {
+			fmt.Fprintf(stderr, "- %s\n", message)
+		}
+		return 1
+	}
+	fmt.Fprintf(stdout, "repository is valid at %s (%d dirs, %d files checked)\n", *root, report.CheckedDirs, report.CheckedFiles)
 	return 0
 }
 
@@ -139,6 +164,7 @@ func printUsage(w io.Writer) {
 
 Usage:
   sqlserver2tidb init-repo --root .
+  sqlserver2tidb validate-repo --root .
   sqlserver2tidb create-cluster --cluster-id prod-sqlserver-a --display-name "prod SQL Server A" --listener sqlserver-a.internal --secret-ref vault://...
   sqlserver2tidb create-project --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --source-database sales --source-schema dbo --target-name tidb-prod-a --target-database app --target-secret-ref vault://...
 `)

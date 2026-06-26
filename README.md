@@ -10,6 +10,7 @@ This MVP provides:
 
 - A Go CLI named `sqlserver2tidb`.
 - Initialization of the GitOps metadata repository structure.
+- Validation of the GitOps metadata repository structure.
 - Source-cluster-first metadata organization:
 
   ```text
@@ -59,6 +60,12 @@ Initialize the repository metadata layout:
 go run ./cmd/sqlserver2tidb init-repo --root .
 ```
 
+Validate the repository metadata layout:
+
+```bash
+go run ./cmd/sqlserver2tidb validate-repo --root .
+```
+
 Create an upstream SQL Server cluster:
 
 ```bash
@@ -105,7 +112,6 @@ go run ./cmd/sqlserver2tidb create-project \
 
 ## Next Milestones
 
-- Add repository validation command.
 - Add SQL Server discovery in dry-run mode.
 - Add rule-based compatibility analyzer.
 - Add schema conversion draft generator.
