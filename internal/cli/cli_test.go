@@ -1803,7 +1803,10 @@ func TestRunExecutorEvidencePRDraftAndCreateDryRunCommands(t *testing.T) {
       "id": "schema/tidb-ddl/dbo.orders.sql",
       "shell_command": "sqlserver2tidb-executor apply-ddl --execute",
       "exit_code": 0,
-      "output": "applied\n"
+      "output": "applied\n",
+      "started_at": "2026-01-02T03:04:05Z",
+      "completed_at": "2026-01-02T03:04:06Z",
+      "duration_ms": 1000
     }
   ]
 }

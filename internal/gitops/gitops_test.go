@@ -1185,7 +1185,10 @@ func TestGenerateExecutorEvidencePRDraftWritesDDLBody(t *testing.T) {
       "id": "schema/tidb-ddl/dbo.orders.sql",
       "shell_command": "sqlserver2tidb-executor apply-ddl --execute",
       "exit_code": 0,
-      "output": "applied\n"
+      "output": "applied\n",
+      "started_at": "2026-01-02T03:04:05Z",
+      "completed_at": "2026-01-02T03:04:06Z",
+      "duration_ms": 1000
     }
   ]
 }
@@ -1291,7 +1294,10 @@ func TestGenerateExecutorEvidencePRDraftRejectsUnknownExecutorStatus(t *testing.
     {
       "id": "schema/tidb-ddl/dbo.orders.sql",
       "shell_command": "sqlserver2tidb-executor apply-ddl --execute",
-      "exit_code": 0
+      "exit_code": 0,
+      "started_at": "2026-01-02T03:04:05Z",
+      "completed_at": "2026-01-02T03:04:06Z",
+      "duration_ms": 1000
     }
   ]
 }
@@ -1323,7 +1329,10 @@ func TestGenerateExecutorEvidencePRDraftRejectsFailedStatusWithoutFailedCommand(
     {
       "id": "schema/tidb-ddl/dbo.orders.sql",
       "shell_command": "sqlserver2tidb-executor apply-ddl --execute",
-      "exit_code": 0
+      "exit_code": 0,
+      "started_at": "2026-01-02T03:04:05Z",
+      "completed_at": "2026-01-02T03:04:06Z",
+      "duration_ms": 1000
     }
   ]
 }
@@ -1334,6 +1343,38 @@ func TestGenerateExecutorEvidencePRDraftRejectsFailedStatusWithoutFailedCommand(
 		t.Fatal("GenerateExecutorEvidencePRDraft() expected failed status conflict error")
 	}
 	assertContains(t, err.Error(), "executor evidence status failed requires at least one non-zero command exit_code")
+}
+
+func TestGenerateExecutorEvidencePRDraftRejectsCommandWithoutTiming(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateSchemaDraftOnly(root))
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "ddl")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(ddl) error = %v", err)
+	}
+	writeStageApproval(t, root, "ddl", hash)
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-ddl-run.json", `{
+  "stage": "ddl",
+  "status": "succeeded",
+  "project_id": "sales-db-to-tidb-prod-a",
+  "source_cluster_id": "prod-sqlserver-a",
+  "payload_hash": "`+hash+`",
+  "commands": [
+    {
+      "id": "schema/tidb-ddl/dbo.orders.sql",
+      "shell_command": "sqlserver2tidb-executor apply-ddl --execute",
+      "exit_code": 0
+    }
+  ]
+}
+`)
+
+	_, err = GenerateExecutorEvidencePRDraft(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "ddl")
+	if err == nil {
+		t.Fatal("GenerateExecutorEvidencePRDraft() expected missing command timing error")
+	}
+	assertContains(t, err.Error(), "executor evidence command schema/tidb-ddl/dbo.orders.sql started_at is required")
 }
 
 func TestPrepareExecutorEvidencePRCreateBuildsGitAndGitHubCommands(t *testing.T) {
@@ -1356,7 +1397,10 @@ func TestPrepareExecutorEvidencePRCreateBuildsGitAndGitHubCommands(t *testing.T)
       "id": "schema/tidb-ddl/dbo.orders.sql",
       "shell_command": "sqlserver2tidb-executor apply-ddl --execute",
       "exit_code": 0,
-      "output": "applied\n"
+      "output": "applied\n",
+      "started_at": "2026-01-02T03:04:05Z",
+      "completed_at": "2026-01-02T03:04:06Z",
+      "duration_ms": 1000
     }
   ]
 }

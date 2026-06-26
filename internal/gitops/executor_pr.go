@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 type ExecutorEvidencePRDraft struct {
@@ -44,6 +45,9 @@ type executorEvidenceCommandSummary struct {
 	ID           string `json:"id"`
 	ShellCommand string `json:"shell_command"`
 	ExitCode     *int   `json:"exit_code"`
+	StartedAt    string `json:"started_at"`
+	CompletedAt  string `json:"completed_at"`
+	DurationMs   *int64 `json:"duration_ms"`
 }
 
 func GenerateExecutorEvidencePRDraft(root, sourceClusterID, projectID, stage string) (ExecutorEvidencePRDraft, error) {
@@ -221,11 +225,39 @@ func validateExecutorEvidenceCommands(status string, commands []executorEvidence
 		if *command.ExitCode != 0 {
 			hasFailedCommand = true
 		}
+		startedAt, err := parseExecutorEvidenceCommandTime(command.ID, "started_at", command.StartedAt)
+		if err != nil {
+			return err
+		}
+		completedAt, err := parseExecutorEvidenceCommandTime(command.ID, "completed_at", command.CompletedAt)
+		if err != nil {
+			return err
+		}
+		if completedAt.Before(startedAt) {
+			return fmt.Errorf("executor evidence command %s completed_at is before started_at", command.ID)
+		}
+		if command.DurationMs == nil {
+			return fmt.Errorf("executor evidence command %s duration_ms is required", command.ID)
+		}
+		if *command.DurationMs < 0 {
+			return fmt.Errorf("executor evidence command %s duration_ms must be non-negative", command.ID)
+		}
 	}
 	if strings.TrimSpace(status) == "failed" && !hasFailedCommand {
 		return fmt.Errorf("executor evidence status failed requires at least one non-zero command exit_code")
 	}
 	return nil
+}
+
+func parseExecutorEvidenceCommandTime(commandID, field, value string) (time.Time, error) {
+	if strings.TrimSpace(value) == "" {
+		return time.Time{}, fmt.Errorf("executor evidence command %s %s is required", commandID, field)
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("executor evidence command %s %s must be RFC3339Nano: %w", commandID, field, err)
+	}
+	return parsed, nil
 }
 
 func isExecutorEvidenceRunStatus(status string) bool {
