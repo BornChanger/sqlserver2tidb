@@ -264,6 +264,123 @@ func TestBuildSQLServerDiscoveryDryRunPlanRequiresExistingCluster(t *testing.T) 
 	assertContains(t, err.Error(), `source cluster "missing-cluster" does not exist`)
 }
 
+func TestAnalyzeSQLServerCompatibilityWritesFindings(t *testing.T) {
+	root := t.TempDir()
+	must(t, InitRepo(root))
+	must(t, CreateCluster(root, ClusterSpec{
+		ClusterID:              "prod-sqlserver-a",
+		DisplayName:            "prod SQL Server A",
+		Listener:               "sqlserver-a.internal",
+		Port:                   1433,
+		SecretRef:              "vault://migration/prod-sqlserver-a/readonly",
+		CDCMode:                "sqlserver-cdc",
+		RetentionHoursRequired: 168,
+		Owners:                 []string{"dba-team"},
+	}))
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/inventory/inventory.json", `{
+  "status": "discovered",
+  "databases": [
+    {
+      "name": "sales",
+      "schemas": [
+        {
+          "name": "dbo",
+          "tables": [
+            {
+              "name": "orders",
+              "columns": [
+                {"name": "id", "type": "int", "identity": true},
+                {"name": "payload", "type": "xml"},
+                {"name": "total", "type": "decimal", "computed": true},
+                {"name": "rv", "type": "rowversion"}
+              ],
+              "indexes": [
+                {"name": "ix_orders_active", "filtered": true, "included_columns": ["total"]}
+              ],
+              "triggers": [
+                {"name": "tr_orders_audit"}
+              ]
+            }
+          ],
+          "routines": [
+            {"name": "sync_orders", "type": "procedure"}
+          ]
+        }
+      ]
+    }
+  ]
+}
+`)
+
+	report, err := AnalyzeSQLServerCompatibility(root, "prod-sqlserver-a")
+	if err != nil {
+		t.Fatalf("AnalyzeSQLServerCompatibility() error = %v", err)
+	}
+
+	if report.SourceClusterID != "prod-sqlserver-a" {
+		t.Fatalf("SourceClusterID = %q, want prod-sqlserver-a", report.SourceClusterID)
+	}
+	if report.Summary.TotalFindings != 7 {
+		t.Fatalf("TotalFindings = %d, want 7\nfindings: %+v", report.Summary.TotalFindings, report.Findings)
+	}
+	if report.Summary.Blockers != 4 {
+		t.Fatalf("Blockers = %d, want 4\nfindings: %+v", report.Summary.Blockers, report.Findings)
+	}
+	assertFindingCode(t, report.Findings, "SQLSERVER_TYPE_XML")
+	assertFindingCode(t, report.Findings, "SQLSERVER_COMPUTED_COLUMN")
+	assertFindingCode(t, report.Findings, "SQLSERVER_TYPE_ROWVERSION")
+	assertFindingCode(t, report.Findings, "SQLSERVER_FILTERED_INDEX")
+	assertFindingCode(t, report.Findings, "SQLSERVER_INCLUDED_COLUMNS")
+	assertFindingCode(t, report.Findings, "SQLSERVER_TRIGGER")
+	assertFindingCode(t, report.Findings, "SQLSERVER_ROUTINE")
+
+	issuesYAML := readFile(t, root, "clusters/prod-sqlserver-a/inventory/schema-issues.yaml")
+	assertContains(t, issuesYAML, "code: SQLSERVER_TYPE_XML")
+	assertContains(t, issuesYAML, "object: sales.dbo.orders.payload")
+	assertContains(t, issuesYAML, "severity: blocker")
+
+	compatibilityReport := readFile(t, root, "clusters/prod-sqlserver-a/inventory/compatibility-report.md")
+	assertContains(t, compatibilityReport, "# Compatibility Report")
+	assertContains(t, compatibilityReport, "SQLSERVER_TRIGGER")
+	assertContains(t, compatibilityReport, "sales.dbo.orders.tr_orders_audit")
+}
+
+func TestAnalyzeSQLServerCompatibilityAllowsPendingInventory(t *testing.T) {
+	root := t.TempDir()
+	must(t, InitRepo(root))
+	must(t, CreateCluster(root, ClusterSpec{
+		ClusterID:              "prod-sqlserver-a",
+		DisplayName:            "prod SQL Server A",
+		Listener:               "sqlserver-a.internal",
+		Port:                   1433,
+		SecretRef:              "vault://migration/prod-sqlserver-a/readonly",
+		CDCMode:                "sqlserver-cdc",
+		RetentionHoursRequired: 168,
+		Owners:                 []string{"dba-team"},
+	}))
+
+	report, err := AnalyzeSQLServerCompatibility(root, "prod-sqlserver-a")
+	if err != nil {
+		t.Fatalf("AnalyzeSQLServerCompatibility() error = %v", err)
+	}
+	if report.Summary.TotalFindings != 0 {
+		t.Fatalf("TotalFindings = %d, want 0", report.Summary.TotalFindings)
+	}
+	assertContains(t, readFile(t, root, "clusters/prod-sqlserver-a/inventory/schema-issues.yaml"), "findings: []")
+	assertContains(t, readFile(t, root, "clusters/prod-sqlserver-a/inventory/compatibility-report.md"), "No compatibility findings.")
+}
+
+func TestAnalyzeSQLServerCompatibilityRequiresExistingCluster(t *testing.T) {
+	root := t.TempDir()
+	must(t, InitRepo(root))
+
+	_, err := AnalyzeSQLServerCompatibility(root, "missing-cluster")
+	if err == nil {
+		t.Fatal("AnalyzeSQLServerCompatibility() expected error for missing cluster")
+	}
+	assertContains(t, err.Error(), `source cluster "missing-cluster" does not exist`)
+}
+
 func assertFile(t *testing.T, root, rel string) {
 	t.Helper()
 	info, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel)))
@@ -310,6 +427,24 @@ func assertStringSliceContains(t *testing.T, got []string, want string) {
 		}
 	}
 	t.Fatalf("expected slice to contain %q\nslice:\n%v", want, got)
+}
+
+func assertFindingCode(t *testing.T, findings []CompatibilityFinding, code string) {
+	t.Helper()
+	for _, finding := range findings {
+		if finding.Code == code {
+			return
+		}
+	}
+	t.Fatalf("expected finding code %q\nfindings:\n%+v", code, findings)
+}
+
+func writeFileForTest(t *testing.T, root, rel, content string) {
+	t.Helper()
+	path := filepath.Join(root, filepath.FromSlash(rel))
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func must(t *testing.T, err error) {

@@ -12,6 +12,7 @@ This MVP provides:
 - Initialization of the GitOps metadata repository structure.
 - Validation of the GitOps metadata repository structure.
 - SQL Server discovery dry-run planning without opening a database connection.
+- Rule-based SQL Server compatibility analysis from `inventory/inventory.json`.
 - Source-cluster-first metadata organization:
 
   ```text
@@ -31,7 +32,7 @@ This MVP provides:
   ```
 
 - JSON Schema files for core metadata.
-- Tests for repository initialization, validation, discovery dry-run planning, upstream SQL Server cluster creation, and migration project creation.
+- Tests for repository initialization, validation, discovery dry-run planning, compatibility analysis, upstream SQL Server cluster creation, and migration project creation.
 
 This MVP intentionally does **not** connect to SQL Server or TiDB yet. Real database execution will be added behind explicit approvals and deterministic worker code.
 
@@ -89,6 +90,14 @@ go run ./cmd/sqlserver2tidb discover-sqlserver \
   --dry-run
 ```
 
+Analyze SQL Server compatibility findings from the current inventory file:
+
+```bash
+go run ./cmd/sqlserver2tidb analyze-compatibility \
+  --root . \
+  --source-cluster-id prod-sqlserver-a
+```
+
 Create a migration project under that upstream cluster:
 
 ```bash
@@ -122,7 +131,6 @@ go run ./cmd/sqlserver2tidb create-project \
 
 ## Next Milestones
 
-- Add rule-based compatibility analyzer.
 - Add SQL Server discovery executor backed by catalog queries.
 - Add schema conversion draft generator.
 - Add PR generation helpers.

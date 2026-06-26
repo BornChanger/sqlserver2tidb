@@ -23,6 +23,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runValidateRepo(args[1:], stdout, stderr)
 	case "discover-sqlserver":
 		return runDiscoverSQLServer(args[1:], stdout, stderr)
+	case "analyze-compatibility":
+		return runAnalyzeCompatibility(args[1:], stdout, stderr)
 	case "create-cluster":
 		return runCreateCluster(args[1:], stdout, stderr)
 	case "create-project":
@@ -104,6 +106,31 @@ func runDiscoverSQLServer(args []string, stdout, stderr io.Writer) int {
 	for _, query := range plan.CatalogQueries {
 		fmt.Fprintf(stdout, "- %s\n", query)
 	}
+	return 0
+}
+
+func runAnalyzeCompatibility(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("analyze-compatibility", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	root := fs.String("root", ".", "repository root")
+	sourceClusterID := fs.String("source-cluster-id", "", "upstream SQL Server cluster id")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	report, err := gitops.AnalyzeSQLServerCompatibility(*root, *sourceClusterID)
+	if err != nil {
+		fmt.Fprintf(stderr, "analyze compatibility: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "compatibility analysis completed for %s\n", report.SourceClusterID)
+	fmt.Fprintf(stdout, "findings: %d, blockers: %d, warnings: %d, info: %d\n",
+		report.Summary.TotalFindings,
+		report.Summary.Blockers,
+		report.Summary.Warnings,
+		report.Summary.Info,
+	)
+	fmt.Fprintf(stdout, "wrote %s\n", "inventory/schema-issues.yaml")
+	fmt.Fprintf(stdout, "wrote %s\n", "inventory/compatibility-report.md")
 	return 0
 }
 
@@ -200,6 +227,7 @@ Usage:
   sqlserver2tidb init-repo --root .
   sqlserver2tidb validate-repo --root .
   sqlserver2tidb discover-sqlserver --root . --source-cluster-id prod-sqlserver-a --dry-run
+  sqlserver2tidb analyze-compatibility --root . --source-cluster-id prod-sqlserver-a
   sqlserver2tidb create-cluster --cluster-id prod-sqlserver-a --display-name "prod SQL Server A" --listener sqlserver-a.internal --secret-ref vault://...
   sqlserver2tidb create-project --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --source-database sales --source-schema dbo --target-name tidb-prod-a --target-database app --target-secret-ref vault://...
 `)

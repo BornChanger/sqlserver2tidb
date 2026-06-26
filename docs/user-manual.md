@@ -29,13 +29,14 @@ LLM 只生成解释、候选方案和文档，不直接执行迁移
 - 初始化 GitOps metadata 目录。
 - 校验 GitOps metadata 目录结构。
 - 生成 SQL Server discovery dry-run 计划。
+- 基于 `inventory/inventory.json` 生成规则化兼容性分析报告。
 - 创建上游 SQL Server 集群目录。
 - 在上游 SQL Server 集群下创建迁移项目目录。
 - 生成基础 YAML/JSON/Markdown 状态文件。
 - 生成核心 JSON Schema 文件。
 - 单元测试和 CLI smoke test。
 
-当前 CLI 不会连接真实 SQL Server 或 TiDB，也不会执行真实导出、导入、CDC 或切流。`discover-sqlserver --dry-run` 只输出计划，不打开数据库连接，也不写 inventory 文件。
+当前 CLI 不会连接真实 SQL Server 或 TiDB，也不会执行真实导出、导入、CDC 或切流。`discover-sqlserver --dry-run` 只输出计划，不打开数据库连接，也不写 inventory 文件。`analyze-compatibility` 只读取并写回 GitHub metadata 文件。
 
 ### 2.2 终极目标
 
@@ -467,7 +468,38 @@ Agent 根据规则识别风险：
 - xml。
 - geometry/geography。
 
-LLM 可以把规则命中结果解释成报告，但不能决定是否忽略 blocker。
+当前 MVP 已支持确定性规则分析，输入是：
+
+```text
+clusters/<source_cluster_id>/inventory/inventory.json
+```
+
+输出是：
+
+```text
+clusters/<source_cluster_id>/inventory/schema-issues.yaml
+clusters/<source_cluster_id>/inventory/compatibility-report.md
+```
+
+命令：
+
+```bash
+bin/sqlserver2tidb analyze-compatibility \
+  --root . \
+  --source-cluster-id prod-sqlserver-a
+```
+
+当前内置规则覆盖：
+
+- `xml` column。
+- `rowversion` / `timestamp` column。
+- computed column。
+- filtered index。
+- included columns。
+- trigger。
+- procedure/function/routine。
+
+LLM 可以把规则命中结果解释成更易读的迁移建议，但不能决定是否忽略 blocker。
 
 ### 10.4 阶段 3：Schema 转换
 
@@ -864,6 +896,16 @@ bin/sqlserver2tidb discover-sqlserver \
 
 该命令不会连接 SQL Server，也不会写文件。它用于提前 review discovery 将覆盖的 catalog 范围和目标 inventory 文件。
 
+### 16.6 analyze-compatibility
+
+```bash
+bin/sqlserver2tidb analyze-compatibility \
+  --root . \
+  --source-cluster-id prod-sqlserver-a
+```
+
+该命令读取 `inventory/inventory.json`，写回 `inventory/schema-issues.yaml` 和 `inventory/compatibility-report.md`。
+
 ## 17. 推荐落地顺序
 
 1. 使用当前 CLI 初始化 repo。
@@ -872,7 +914,7 @@ bin/sqlserver2tidb discover-sqlserver \
 4. 对测试 SQL Server 集群执行 `discover-sqlserver --dry-run`，review discovery 范围。
 5. 为一个小 database 创建 project。
 6. 通过 PR review metadata 文件。
-7. 接入 compatibility analyzer。
+7. 对已有 inventory 执行 `analyze-compatibility`，生成规则化兼容性报告。
 8. 接入真实 SQL Server catalog discovery executor。
 9. 接入 schema conversion draft。
 10. 接入 validation-only worker。

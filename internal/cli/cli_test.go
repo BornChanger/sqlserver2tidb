@@ -157,6 +157,85 @@ func TestRunDiscoverSQLServerRequiresDryRun(t *testing.T) {
 	}
 }
 
+func TestRunAnalyzeCompatibilityCommand(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	if code := Run([]string{"init-repo", "--root", root}, &stdout, &stderr); code != 0 {
+		t.Fatalf("init-repo code = %d, stderr = %s", code, stderr.String())
+	}
+	if code := Run([]string{
+		"create-cluster",
+		"--root", root,
+		"--cluster-id", "prod-sqlserver-a",
+		"--display-name", "prod SQL Server A",
+		"--listener", "sqlserver-a.internal",
+		"--secret-ref", "vault://migration/prod-sqlserver-a/readonly",
+		"--owner", "dba-team",
+	}, &stdout, &stderr); code != 0 {
+		t.Fatalf("create-cluster code = %d, stderr = %s", code, stderr.String())
+	}
+	inventoryPath := filepath.Join(root, "clusters", "prod-sqlserver-a", "inventory", "inventory.json")
+	if err := os.WriteFile(inventoryPath, []byte(`{
+  "status": "discovered",
+  "databases": [
+    {
+      "name": "sales",
+      "schemas": [
+        {
+          "name": "dbo",
+          "tables": [
+            {
+              "name": "orders",
+              "columns": [
+                {"name": "payload", "type": "xml"}
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{"analyze-compatibility", "--root", root, "--source-cluster-id", "prod-sqlserver-a"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("analyze-compatibility code = %d, stderr = %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "compatibility analysis completed for prod-sqlserver-a") {
+		t.Fatalf("analyze-compatibility stdout = %q, want completed message", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "blockers: 1") {
+		t.Fatalf("analyze-compatibility stdout = %q, want blocker count", stdout.String())
+	}
+	assertExists(t, root, "clusters/prod-sqlserver-a/inventory/schema-issues.yaml")
+	assertExists(t, root, "clusters/prod-sqlserver-a/inventory/compatibility-report.md")
+}
+
+func TestRunAnalyzeCompatibilityReportsMissingCluster(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	if code := Run([]string{"init-repo", "--root", root}, &stdout, &stderr); code != 0 {
+		t.Fatalf("init-repo code = %d, stderr = %s", code, stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{"analyze-compatibility", "--root", root, "--source-cluster-id", "missing-cluster"}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatal("analyze-compatibility code = 0, want non-zero")
+	}
+	if !strings.Contains(stderr.String(), `source cluster "missing-cluster" does not exist`) {
+		t.Fatalf("analyze-compatibility stderr = %q, want missing cluster message", stderr.String())
+	}
+}
+
 func TestRunUnknownCommandReturnsUsageError(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 
