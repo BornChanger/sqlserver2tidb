@@ -1081,6 +1081,55 @@ func TestRunCDCWorkerWritesPlannedStateWhenApprovedHashMatches(t *testing.T) {
 	assertContains(t, evidence, `"payload_hash": "`+hash+`"`)
 }
 
+func TestPlanWorkerReconcileReportsReadyAndBlockedProjectStages(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateSchemaDraftOnly(root))
+	must(t, GenerateDataPlansOnly(root))
+	must(t, GenerateCDCPlanOnly(root))
+	exportHash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(export) error = %v", err)
+	}
+	writeStageApproval(t, root, "export", exportHash)
+	cdcHash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "cdc")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(cdc) error = %v", err)
+	}
+	writeStageApproval(t, root, "cdc", cdcHash)
+
+	report, err := PlanWorkerReconcile(root)
+	if err != nil {
+		t.Fatalf("PlanWorkerReconcile() error = %v", err)
+	}
+	if report.Projects != 1 {
+		t.Fatalf("Projects = %d, want 1", report.Projects)
+	}
+	if report.ReadyActions != 2 || report.BlockedActions != 2 {
+		t.Fatalf("ready/blocked = %d/%d, want 2/2\nreport: %+v", report.ReadyActions, report.BlockedActions, report)
+	}
+	export := findReconcileAction(t, report.Actions, "export")
+	if export.Status != "ready" || export.PayloadHash != exportHash {
+		t.Fatalf("export action = %+v, want ready with hash %s", export, exportHash)
+	}
+	assertContains(t, export.Command, "worker-export")
+	cdc := findReconcileAction(t, report.Actions, "cdc")
+	if cdc.Status != "ready" || cdc.PayloadHash != cdcHash {
+		t.Fatalf("cdc action = %+v, want ready with hash %s", cdc, cdcHash)
+	}
+	assertContains(t, cdc.Command, "worker-cdc")
+	importAction := findReconcileAction(t, report.Actions, "import")
+	if importAction.Status != "blocked" {
+		t.Fatalf("import action = %+v, want blocked", importAction)
+	}
+	assertContains(t, importAction.Reason, "import approval is not approved")
+	validation := findReconcileAction(t, report.Actions, "validation")
+	if validation.Status != "blocked" {
+		t.Fatalf("validation action = %+v, want blocked", validation)
+	}
+	assertContains(t, validation.Reason, "validation approval is not approved")
+}
+
 func TestRunValidationWorkerRequiresApprovedValidationApproval(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, `{
@@ -1279,6 +1328,17 @@ func assertFindingCode(t *testing.T, findings []CompatibilityFinding, code strin
 		}
 	}
 	t.Fatalf("expected finding code %q\nfindings:\n%+v", code, findings)
+}
+
+func findReconcileAction(t *testing.T, actions []WorkerReconcileAction, stage string) WorkerReconcileAction {
+	t.Helper()
+	for _, action := range actions {
+		if action.SourceClusterID == "prod-sqlserver-a" && action.ProjectID == "sales-db-to-tidb-prod-a" && action.Stage == stage {
+			return action
+		}
+	}
+	t.Fatalf("expected reconcile action for stage %q\n%+v", stage, actions)
+	return WorkerReconcileAction{}
 }
 
 func writeFileForTest(t *testing.T, root, rel, content string) {

@@ -21,6 +21,7 @@ This MVP provides:
 - Export, import, CDC, and validation payload hash calculation.
 - Approved metadata-only export/import/CDC worker state write-back.
 - Approved validation-only worker execution.
+- Read-only worker reconcile dry-run planning across source clusters and projects.
 - Source-cluster-first metadata organization:
 
   ```text
@@ -42,7 +43,7 @@ This MVP provides:
   ```
 
 - JSON Schema files for core metadata.
-- Tests for repository initialization, validation, discovery planning and execution, compatibility analysis, schema draft generation, data movement and CDC plan generation, PR draft generation, GitHub PR create dry-runs, export/import/CDC/validation worker gates, upstream SQL Server cluster creation, and migration project creation.
+- Tests for repository initialization, validation, discovery planning and execution, compatibility analysis, schema draft generation, data movement and CDC plan generation, PR draft generation, GitHub PR create dry-runs, export/import/CDC/validation worker gates, worker reconcile dry-runs, upstream SQL Server cluster creation, and migration project creation.
 
 This MVP connects to SQL Server only for read-only catalog discovery when a connection string is supplied through an environment variable. It does **not** connect to TiDB or execute generated DDL, real export, real import, CDC streaming/apply, cutover, cleanup, or source/target data validation yet.
 
@@ -209,6 +210,16 @@ go run ./cmd/sqlserver2tidb worker-cdc \
 
 These workers only convert approved plan files into planned state/evidence files. They do not export data, import data, start CDC, connect to databases, or write object storage.
 
+Preview ready and blocked worker actions across the repository:
+
+```bash
+go run ./cmd/sqlserver2tidb worker-reconcile \
+  --root . \
+  --dry-run
+```
+
+This scans cluster/project metadata and reports which `worker-export`, `worker-import`, `worker-cdc`, and `worker-validate` actions are ready or blocked by approval/hash checks. It does not execute workers, acquire leases, or write state.
+
 Generate a project-scoped PR draft for schema review:
 
 ```bash
@@ -271,5 +282,6 @@ This checks approved metadata, writes `state/validation-status.yaml`, and writes
 
 ## Next Milestones
 
+- Replace the read-only reconcile dry-run with a lease-backed reconcile loop.
 - Replace metadata-only export/import/CDC workers with real executors behind the same approval gates.
 - Add source/target data validation connectors after import support exists.

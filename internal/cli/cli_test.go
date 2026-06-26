@@ -913,6 +913,155 @@ func TestRunGenerateCDCPlanAndWorkerCDCCommands(t *testing.T) {
 	assertExists(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/cdc-catchup.json")
 }
 
+func TestRunWorkerReconcileDryRunCommand(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	if code := Run([]string{"init-repo", "--root", root}, &stdout, &stderr); code != 0 {
+		t.Fatalf("init-repo code = %d, stderr = %s", code, stderr.String())
+	}
+	if code := Run([]string{
+		"create-cluster",
+		"--root", root,
+		"--cluster-id", "prod-sqlserver-a",
+		"--display-name", "prod SQL Server A",
+		"--listener", "sqlserver-a.internal",
+		"--secret-ref", "vault://migration/prod-sqlserver-a/readonly",
+		"--owner", "dba-team",
+	}, &stdout, &stderr); code != 0 {
+		t.Fatalf("create-cluster code = %d, stderr = %s", code, stderr.String())
+	}
+	if code := Run([]string{
+		"create-project",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--display-name", "sales DB to TiDB prod A",
+		"--source-database", "sales",
+		"--source-schema", "dbo",
+		"--target-name", "tidb-prod-a",
+		"--target-database", "app",
+		"--target-secret-ref", "vault://migration/tidb-prod-a/migrate-user",
+		"--owner", "dba-team",
+	}, &stdout, &stderr); code != 0 {
+		t.Fatalf("create-project code = %d, stderr = %s", code, stderr.String())
+	}
+	inventoryPath := filepath.Join(root, "clusters", "prod-sqlserver-a", "inventory", "inventory.json")
+	if err := os.WriteFile(inventoryPath, []byte(`{
+  "status": "discovered",
+  "databases": [
+    {
+      "name": "sales",
+      "schemas": [
+        {
+          "name": "dbo",
+          "tables": [
+            {
+              "name": "orders",
+              "row_count": 2500000,
+              "columns": [
+                {"name": "id", "type": "int"}
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code := Run([]string{
+		"generate-schema-draft",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+	}, &stdout, &stderr); code != 0 {
+		t.Fatalf("generate-schema-draft code = %d, stderr = %s", code, stderr.String())
+	}
+	if code := Run([]string{
+		"generate-data-plans",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--object-uri-prefix", "s3://migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full",
+	}, &stdout, &stderr); code != 0 {
+		t.Fatalf("generate-data-plans code = %d, stderr = %s", code, stderr.String())
+	}
+	if code := Run([]string{
+		"generate-cdc-plan",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+	}, &stdout, &stderr); code != 0 {
+		t.Fatalf("generate-cdc-plan code = %d, stderr = %s", code, stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"compute-payload-hash",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "export",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("compute-payload-hash export code = %d, stderr = %s", code, stderr.String())
+	}
+	writeCLIStageApproval(t, root, "export", parsePayloadHash(t, stdout.String()))
+
+	stdout.Reset()
+	stderr.Reset()
+	code = Run([]string{
+		"compute-payload-hash",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "cdc",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("compute-payload-hash cdc code = %d, stderr = %s", code, stderr.String())
+	}
+	writeCLIStageApproval(t, root, "cdc", parsePayloadHash(t, stdout.String()))
+
+	stdout.Reset()
+	stderr.Reset()
+	code = Run([]string{
+		"worker-reconcile",
+		"--root", root,
+		"--dry-run",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("worker-reconcile code = %d, stderr = %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "worker reconcile dry run") {
+		t.Fatalf("worker-reconcile stdout = %q, want dry-run header", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "projects: 1") {
+		t.Fatalf("worker-reconcile stdout = %q, want project count", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "ready actions: 2") {
+		t.Fatalf("worker-reconcile stdout = %q, want ready count", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "[ready] prod-sqlserver-a/sales-db-to-tidb-prod-a export") {
+		t.Fatalf("worker-reconcile stdout = %q, want ready export action", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "command: sqlserver2tidb worker-export") {
+		t.Fatalf("worker-reconcile stdout = %q, want worker-export command", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "[ready] prod-sqlserver-a/sales-db-to-tidb-prod-a cdc") {
+		t.Fatalf("worker-reconcile stdout = %q, want ready cdc action", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "[blocked] prod-sqlserver-a/sales-db-to-tidb-prod-a import") {
+		t.Fatalf("worker-reconcile stdout = %q, want blocked import action", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "import approval is not approved") {
+		t.Fatalf("worker-reconcile stdout = %q, want import block reason", stdout.String())
+	}
+}
+
 func TestRunUnknownCommandReturnsUsageError(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 

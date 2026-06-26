@@ -50,6 +50,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runWorkerCDC(args[1:], stdout, stderr)
 	case "worker-validate":
 		return runWorkerValidate(args[1:], stdout, stderr)
+	case "worker-reconcile":
+		return runWorkerReconcile(args[1:], stdout, stderr)
 	case "create-cluster":
 		return runCreateCluster(args[1:], stdout, stderr)
 	case "create-project":
@@ -458,6 +460,42 @@ func runWorkerCDC(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+func runWorkerReconcile(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("worker-reconcile", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	root := fs.String("root", ".", "repository root")
+	dryRun := fs.Bool("dry-run", false, "plan worker actions without executing them")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if !*dryRun {
+		fmt.Fprintln(stderr, "worker-reconcile currently requires --dry-run")
+		return 2
+	}
+	report, err := gitops.PlanWorkerReconcile(*root)
+	if err != nil {
+		fmt.Fprintf(stderr, "worker reconcile: %v\n", err)
+		return 1
+	}
+	fmt.Fprintln(stdout, "worker reconcile dry run")
+	fmt.Fprintf(stdout, "projects: %d\n", report.Projects)
+	fmt.Fprintf(stdout, "ready actions: %d\n", report.ReadyActions)
+	fmt.Fprintf(stdout, "blocked actions: %d\n", report.BlockedActions)
+	for _, action := range report.Actions {
+		fmt.Fprintf(stdout, "- [%s] %s/%s %s\n", action.Status, action.SourceClusterID, action.ProjectID, action.Stage)
+		if action.PayloadHash != "" {
+			fmt.Fprintf(stdout, "  payload hash: %s\n", action.PayloadHash)
+		}
+		if action.Reason != "" {
+			fmt.Fprintf(stdout, "  reason: %s\n", action.Reason)
+		}
+		if action.Status == "ready" {
+			fmt.Fprintf(stdout, "  command: %s\n", action.Command)
+		}
+	}
+	return 0
+}
+
 func runCreateCluster(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("create-cluster", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -563,6 +601,7 @@ Usage:
   sqlserver2tidb worker-import --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
   sqlserver2tidb worker-cdc --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
   sqlserver2tidb worker-validate --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
+  sqlserver2tidb worker-reconcile --root . --dry-run
   sqlserver2tidb create-cluster --cluster-id prod-sqlserver-a --display-name "prod SQL Server A" --listener sqlserver-a.internal --secret-ref vault://...
   sqlserver2tidb create-project --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --source-database sales --source-schema dbo --target-name tidb-prod-a --target-database app --target-secret-ref vault://...
 `)

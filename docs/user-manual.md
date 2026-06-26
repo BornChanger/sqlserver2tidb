@@ -38,13 +38,14 @@ LLM 只生成解释、候选方案和文档，不直接执行迁移
 - 计算 export、import、cdc、validation payload hash。
 - 在 approval 通过后执行 metadata-only export/import/CDC worker，把 plan 写成 planned state/evidence。
 - 在 approval 通过后执行 metadata-only validation worker。
+- 执行只读 `worker-reconcile --dry-run`，扫描 ready/blocked worker actions。
 - 创建上游 SQL Server 集群目录。
 - 在上游 SQL Server 集群下创建迁移项目目录。
 - 生成基础 YAML/JSON/Markdown 状态文件。
 - 生成核心 JSON Schema 文件。
 - 单元测试和 CLI smoke test。
 
-当前 CLI 只有在执行 `discover-sqlserver --connection-string-env ...` 时会连接 SQL Server，并且只读取 catalog metadata。它不会连接 TiDB，也不会执行生成的 DDL、真实导出、导入、CDC 或切流。`discover-sqlserver --dry-run` 只输出计划，不打开数据库连接，也不写 inventory 文件。`analyze-compatibility`、`generate-schema-draft`、`generate-data-plans`、`generate-cdc-plan`、`generate-pr-draft`、`create-pr` 的默认 dry-run、`compute-payload-hash`、`worker-export`、`worker-import`、`worker-cdc` 和 `worker-validate` 只读取并写回 GitHub metadata 文件。`create-pr --execute` 会调用本地 `gh pr create`。
+当前 CLI 只有在执行 `discover-sqlserver --connection-string-env ...` 时会连接 SQL Server，并且只读取 catalog metadata。它不会连接 TiDB，也不会执行生成的 DDL、真实导出、导入、CDC 或切流。`discover-sqlserver --dry-run` 只输出计划，不打开数据库连接，也不写 inventory 文件。`analyze-compatibility`、`generate-schema-draft`、`generate-data-plans`、`generate-cdc-plan`、`generate-pr-draft`、`create-pr` 的默认 dry-run、`compute-payload-hash`、`worker-export`、`worker-import`、`worker-cdc`、`worker-validate` 和 `worker-reconcile --dry-run` 只读取并写回或汇报 GitHub metadata 文件。`create-pr --execute` 会调用本地 `gh pr create`。
 
 ### 2.2 终极目标
 
@@ -122,7 +123,7 @@ clusters/<source_cluster_id>/projects/<project_id>/prs/<stage>-pr.md
 
 Worker 是终极形态中的执行器。它从 GitHub repo 拉取已批准 instruction，执行确定性操作，并把状态和证据写回 repo。
 
-当前 MVP 实现了显式指定 project 的 `worker-export`、`worker-import`、`worker-cdc` 和 `worker-validate`。它们都需要 approval 和 payload hash 匹配。完整 reconcile worker 尚未实现。
+当前 MVP 实现了显式指定 project 的 `worker-export`、`worker-import`、`worker-cdc` 和 `worker-validate`。它们都需要 approval 和 payload hash 匹配。当前还实现了只读 `worker-reconcile --dry-run`，用于扫描 ready/blocked actions；完整执行型 reconcile worker 尚未实现。
 
 ### 3.5 LLM
 
@@ -1139,7 +1140,21 @@ clusters/<source_cluster_id>/state/worker-lease.yaml
 
 worker lease 是上游 SQL Server 集群级，避免多个 worker 同时操作同一个源集群。
 
-当前 MVP 实现了 `worker-export`、`worker-import`、`worker-cdc` 和 `worker-validate`。它们不是完整 reconcile loop，不会扫描所有项目，也不会抢占 worker lease。它们只针对一个显式指定的 project 执行 approval gate、payload hash 校验和 metadata-only 状态写回。
+当前 MVP 实现了 `worker-export`、`worker-import`、`worker-cdc` 和 `worker-validate`。它们不是完整 reconcile loop，也不会抢占 worker lease。它们只针对一个显式指定的 project 执行 approval gate、payload hash 校验和 metadata-only 状态写回。
+
+当前 MVP 也实现了只读：
+
+```bash
+bin/sqlserver2tidb worker-reconcile --root . --dry-run
+```
+
+该命令扫描所有 `clusters/<source_cluster_id>/projects/<project_id>/`，对 `export`、`import`、`cdc` 和 `validation` 分别执行 approval/hash gate，输出：
+
+- `ready`：approval 已通过、`approved_by` 非空且 payload hash 匹配。
+- `blocked`：approval 未通过、hash 不匹配或 payload 文件缺失，并给出原因。
+- ready action 对应的单项目 worker 命令。
+
+`worker-reconcile --dry-run` 不执行 worker，不获取 lease，不写 state/evidence，不创建分支或 PR。它是完整 reconcile loop 的只读预演。
 
 ## 12. LLM 使用说明
 
@@ -1522,6 +1537,16 @@ bin/sqlserver2tidb worker-validate \
 
 该命令先检查 `approvals/validation-approval.yaml`，只有 approval 通过且 payload hash 匹配时才执行 validation checks。执行后写回 `state/validation-status.yaml` 和 `evidence/validation-report.md`。
 
+### 16.17 worker-reconcile
+
+```bash
+bin/sqlserver2tidb worker-reconcile \
+  --root . \
+  --dry-run
+```
+
+该命令只支持 dry-run。它扫描所有 source cluster 和 project，对 `export`、`import`、`cdc`、`validation` 计算 ready/blocked 状态，并为 ready action 输出对应的单项目 worker 命令。它不执行 worker，不获取 worker lease，不写 state/evidence，也不创建 GitHub PR。
+
 ## 17. 推荐落地顺序
 
 1. 使用当前 CLI 初始化 repo。
@@ -1541,6 +1566,7 @@ bin/sqlserver2tidb worker-validate \
 15. 执行 `compute-payload-hash --stage import`，把 hash 写入 import approval，approval 通过后运行 `worker-import` 写 planned import state/evidence。
 16. 执行 `compute-payload-hash --stage cdc`，把 hash 写入 cdc approval，approval 通过后运行 `worker-cdc` 写 planned CDC state/evidence。
 17. 执行 `compute-payload-hash --stage validation`，把 hash 写入 validation approval。
-18. approval 通过后执行 `worker-validate`，生成 validation state 和 evidence。
-19. 再接入真实 export/import/CDC worker。
-20. 最后接入 cutover orchestration。
+18. 执行 `worker-reconcile --dry-run`，确认 ready/blocked action 与预期一致。
+19. approval 通过后执行 `worker-validate`，生成 validation state 和 evidence。
+20. 再接入 lease-backed reconcile loop 和真实 export/import/CDC worker。
+21. 最后接入 cutover orchestration。
