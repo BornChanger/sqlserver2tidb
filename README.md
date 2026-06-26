@@ -81,6 +81,12 @@ bin/sqlserver2tidb-executor version
 make test
 ```
 
+Run the same gate used by GitHub Actions:
+
+```bash
+make ci
+```
+
 ## Quick Start
 
 Initialize the repository metadata layout:
