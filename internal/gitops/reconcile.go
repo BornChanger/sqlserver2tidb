@@ -26,8 +26,9 @@ type WorkerReconcileAction struct {
 }
 
 type WorkerReconcileExecuteSpec struct {
-	Holder   string
-	LeaseTTL time.Duration
+	Holder        string
+	LeaseTTL      time.Duration
+	CreatePRDraft bool
 }
 
 type WorkerReconcileExecutionResult struct {
@@ -37,6 +38,9 @@ type WorkerReconcileExecutionResult struct {
 	Status       string
 	StateFile    string
 	EvidenceFile string
+	PRTitle      string
+	BranchName   string
+	PRBodyFile   string
 }
 
 type workerLeaseMetadata struct {
@@ -126,6 +130,15 @@ func ExecuteNextWorkerReconcile(root string, spec WorkerReconcileExecuteSpec) (W
 	}
 	result.LeaseID = lease.LeaseID
 	result.LeaseFile = "state/worker-lease.yaml"
+	if spec.CreatePRDraft {
+		draft, err := writeWorkerStatePRDraft(root, result)
+		if err != nil {
+			return WorkerReconcileExecutionResult{}, err
+		}
+		result.PRTitle = draft.Title
+		result.BranchName = draft.BranchName
+		result.PRBodyFile = draft.BodyFile
+	}
 	return result, nil
 }
 

@@ -1152,6 +1152,7 @@ func TestRunWorkerReconcileExecuteNextCommand(t *testing.T) {
 		"--root", root,
 		"--execute-next",
 		"--holder", "agent-a",
+		"--state-pr-draft",
 	}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("worker-reconcile execute-next code = %d, stderr = %s", code, stderr.String())
@@ -1168,8 +1169,22 @@ func TestRunWorkerReconcileExecuteNextCommand(t *testing.T) {
 	if !strings.Contains(stdout.String(), "wrote state/worker-lease.yaml") {
 		t.Fatalf("worker-reconcile stdout = %q, want lease write", stdout.String())
 	}
+	if !strings.Contains(stdout.String(), "state PR draft: clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/prs/reconcile-export-state-pr.md") {
+		t.Fatalf("worker-reconcile stdout = %q, want state PR draft path", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "branch: agent/sales-db-to-tidb-prod-a/reconcile-export-state") {
+		t.Fatalf("worker-reconcile stdout = %q, want state PR draft branch", stdout.String())
+	}
 	assertExists(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/export-chunks.yaml")
 	assertExists(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/precheck.json")
+	assertExists(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/prs/reconcile-export-state-pr.md")
+	prBody, err := os.ReadFile(filepath.Join(root, "clusters", "prod-sqlserver-a", "projects", "sales-db-to-tidb-prod-a", "prs", "reconcile-export-state-pr.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(prBody), "[worker-state:export] sales-db-to-tidb-prod-a") {
+		t.Fatalf("state PR draft = %q, want worker-state title", string(prBody))
+	}
 	lease, err := os.ReadFile(filepath.Join(root, "clusters", "prod-sqlserver-a", "state", "worker-lease.yaml"))
 	if err != nil {
 		t.Fatal(err)

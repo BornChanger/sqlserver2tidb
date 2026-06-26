@@ -1170,6 +1170,47 @@ func TestExecuteNextWorkerReconcileAcquiresLeaseAndRunsFirstReadyAction(t *testi
 	assertContains(t, evidence, `"status": "planned"`)
 }
 
+func TestExecuteNextWorkerReconcileWritesStatePRDraftWhenRequested(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateDataPlansOnly(root))
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(export) error = %v", err)
+	}
+	writeStageApproval(t, root, "export", hash)
+
+	result, err := ExecuteNextWorkerReconcile(root, WorkerReconcileExecuteSpec{
+		Holder:        "agent-a",
+		CreatePRDraft: true,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteNextWorkerReconcile() error = %v", err)
+	}
+	if result.PRBodyFile != "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/prs/reconcile-export-state-pr.md" {
+		t.Fatalf("PRBodyFile = %q, want reconcile export state PR draft", result.PRBodyFile)
+	}
+	if result.BranchName != "agent/sales-db-to-tidb-prod-a/reconcile-export-state" {
+		t.Fatalf("BranchName = %q, want reconcile export state branch", result.BranchName)
+	}
+	if result.PRTitle != "[worker-state:export] sales-db-to-tidb-prod-a" {
+		t.Fatalf("PRTitle = %q, want worker-state export title", result.PRTitle)
+	}
+
+	body := readFile(t, root, result.PRBodyFile)
+	assertContains(t, body, "# PR Draft: [worker-state:export] sales-db-to-tidb-prod-a")
+	assertContains(t, body, "Source cluster: `prod-sqlserver-a`")
+	assertContains(t, body, "Project: `sales-db-to-tidb-prod-a`")
+	assertContains(t, body, "Stage: `export`")
+	assertContains(t, body, "Status: `planned`")
+	assertContains(t, body, "Payload hash: `"+hash+"`")
+	assertContains(t, body, "Lease ID: `")
+	assertContains(t, body, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/export-chunks.yaml")
+	assertContains(t, body, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/precheck.json")
+	assertContains(t, body, "clusters/prod-sqlserver-a/state/worker-lease.yaml")
+	assertContains(t, body, "gh pr create --base main --head agent/sales-db-to-tidb-prod-a/reconcile-export-state")
+}
+
 func TestExecuteNextWorkerReconcileBlocksWhenLeaseHeldByAnotherHolder(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())

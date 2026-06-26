@@ -468,6 +468,7 @@ func runWorkerReconcile(args []string, stdout, stderr io.Writer) int {
 	executeNext := fs.Bool("execute-next", false, "execute the first ready metadata-only worker action")
 	holder := fs.String("holder", "", "worker lease holder id for --execute-next")
 	leaseTTL := fs.Duration("lease-ttl", 15*time.Minute, "worker lease ttl for --execute-next")
+	statePRDraft := fs.Bool("state-pr-draft", false, "write a PR draft for worker state and evidence changes after --execute-next")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -477,8 +478,9 @@ func runWorkerReconcile(args []string, stdout, stderr io.Writer) int {
 	}
 	if *executeNext {
 		result, err := gitops.ExecuteNextWorkerReconcile(*root, gitops.WorkerReconcileExecuteSpec{
-			Holder:   *holder,
-			LeaseTTL: *leaseTTL,
+			Holder:        *holder,
+			LeaseTTL:      *leaseTTL,
+			CreatePRDraft: *statePRDraft,
 		})
 		if err != nil {
 			fmt.Fprintf(stderr, "worker reconcile: %v\n", err)
@@ -492,6 +494,10 @@ func runWorkerReconcile(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "wrote %s\n", result.StateFile)
 		fmt.Fprintf(stdout, "wrote %s\n", result.EvidenceFile)
 		fmt.Fprintf(stdout, "wrote %s\n", result.LeaseFile)
+		if result.PRBodyFile != "" {
+			fmt.Fprintf(stdout, "state PR draft: %s\n", result.PRBodyFile)
+			fmt.Fprintf(stdout, "branch: %s\n", result.BranchName)
+		}
 		return 0
 	}
 	report, err := gitops.PlanWorkerReconcile(*root)
@@ -624,7 +630,7 @@ Usage:
   sqlserver2tidb worker-cdc --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
   sqlserver2tidb worker-validate --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
   sqlserver2tidb worker-reconcile --root . --dry-run
-  sqlserver2tidb worker-reconcile --root . --execute-next --holder agent-a
+  sqlserver2tidb worker-reconcile --root . --execute-next --holder agent-a --state-pr-draft
   sqlserver2tidb create-cluster --cluster-id prod-sqlserver-a --display-name "prod SQL Server A" --listener sqlserver-a.internal --secret-ref vault://...
   sqlserver2tidb create-project --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --source-database sales --source-schema dbo --target-name tidb-prod-a --target-database app --target-secret-ref vault://...
 `)

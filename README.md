@@ -226,10 +226,11 @@ Execute the first ready metadata-only worker action with a source-cluster lease:
 go run ./cmd/sqlserver2tidb worker-reconcile \
   --root . \
   --execute-next \
-  --holder agent-a
+  --holder agent-a \
+  --state-pr-draft
 ```
 
-This acquires or renews `state/worker-lease.yaml` for the selected source cluster, runs exactly one ready metadata-only worker action, and writes the same state/evidence files that the explicit single-project worker would write. A different holder is blocked until the lease expires.
+This acquires or renews `state/worker-lease.yaml` for the selected source cluster, runs exactly one ready metadata-only worker action, and writes the same state/evidence files that the explicit single-project worker would write. With `--state-pr-draft`, it also writes a deterministic Markdown PR body under the project `prs/` directory for reviewing the state/evidence/lease changes. It does not create a branch or call GitHub. A different holder is blocked until the lease expires.
 
 Generate a project-scoped PR draft for schema review:
 
@@ -293,6 +294,6 @@ This checks approved metadata, writes `state/validation-status.yaml`, and writes
 
 ## Next Milestones
 
-- Extend `worker-reconcile --execute-next` to create bot branches/PRs for state write-back.
+- Add a guarded bot wrapper that turns worker state PR drafts into branches and `gh pr create` calls.
 - Replace metadata-only export/import/CDC workers with real executors behind the same approval gates.
 - Add source/target data validation connectors after import support exists.
