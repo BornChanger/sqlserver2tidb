@@ -88,6 +88,11 @@ go run ./cmd/sqlserver2tidb create-project \
   --owner dba-team,app-team
 ```
 
+## Documentation
+
+- [User Manual](docs/user-manual.md): end-to-end operator guide for the target SQL Server to TiDB migration agent workflow.
+- [Design Notes](docs/design.md): control-plane, metadata, and LLM responsibility boundaries.
+
 ## Design Principles
 
 - `https://github.com/BornChanger/sqlserver2tidb` is the source of truth for migration control metadata.
