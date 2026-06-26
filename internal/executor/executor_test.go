@@ -2,6 +2,7 @@ package executor
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"os"
@@ -209,6 +210,19 @@ func TestRunImportExecuteRequiresPositiveImportBatchSize(t *testing.T) {
 		t.Fatalf("import execute code = 0, want non-zero")
 	}
 	assertOutputContains(t, stderr.String(), "executor import: import batch size must be positive")
+}
+
+func TestExecuteTiDBImportValidatesBatchSizeBeforeSourceURI(t *testing.T) {
+	err := executeTiDBImport(context.Background(), importExecuteSpec{
+		TargetObject:              "app.orders",
+		SourceURI:                 "s3://migration/prod/full/dbo.orders.000001.csv",
+		TargetConnectionStringEnv: "MISSING_TIDB_DSN",
+		ImportBatchSize:           0,
+	})
+	if err == nil {
+		t.Fatal("executeTiDBImport() error = nil, want import batch size error")
+	}
+	assertOutputContains(t, err.Error(), "executor import: import batch size must be positive")
 }
 
 func TestRunValidateCountDryRunCommand(t *testing.T) {

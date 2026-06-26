@@ -692,6 +692,10 @@ type importExecuteSpec struct {
 }
 
 func executeTiDBImport(ctx context.Context, spec importExecuteSpec) error {
+	if spec.ImportBatchSize <= 0 {
+		return fmt.Errorf("executor import: import batch size must be positive")
+	}
+
 	sourcePath, err := resolveImportSourceFile(spec.SourceURI)
 	if err != nil {
 		return fmt.Errorf("executor import: %w", err)
