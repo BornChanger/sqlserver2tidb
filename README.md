@@ -10,7 +10,7 @@ This MVP provides:
 
 - A Go CLI named `sqlserver2tidb`.
 - Initialization of the GitOps metadata repository structure.
-- Validation of the GitOps metadata repository structure, including required row-count validation plan fields.
+- Validation of the GitOps metadata repository structure, including required row-count validation plan fields and unresolved TODO predicates.
 - SQL Server discovery dry-run planning without opening a database connection.
 - SQL Server catalog discovery using a connection string supplied through an environment variable.
 - Rule-based SQL Server compatibility analysis from `inventory/inventory.json`.

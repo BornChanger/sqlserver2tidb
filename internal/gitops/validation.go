@@ -215,8 +215,18 @@ func validateValidationPlanContent(path string) error {
 		if strings.TrimSpace(check.TargetObject) == "" {
 			return fmt.Errorf("row_count check %s target_object is required", check.ID)
 		}
+		if containsTODOMarker(check.Predicate) {
+			return fmt.Errorf("row_count check %s predicate still contains TODO", check.ID)
+		}
+		if containsTODOMarker(check.TargetPredicate) {
+			return fmt.Errorf("row_count check %s target_predicate still contains TODO", check.ID)
+		}
 	}
 	return nil
+}
+
+func containsTODOMarker(value string) bool {
+	return strings.Contains(strings.ToUpper(value), "TODO")
 }
 
 func (report *ValidationReport) requireDir(root, rel string) {
