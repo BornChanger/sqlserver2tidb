@@ -251,6 +251,30 @@ tables:
 	assertContains(t, strings.Join(report.Errors, "\n"), "invalid export plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/export-plan.yaml: duplicate export chunk id dbo.orders.000001")
 }
 
+func TestValidateRepoReportsTODOExportPredicate(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/export-plan.yaml", `status: reviewed
+tables:
+  - source_object: sales.dbo.orders
+    target_object: app.orders
+    chunks:
+      - id: dbo.orders.000001
+        estimated_rows: 10
+        predicate: "TODO: choose split predicate"
+        output_uri: file:///tmp/dbo.orders.000001.csv
+`)
+
+	report, err := ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("ValidateRepo() valid = true, want false")
+	}
+	assertContains(t, strings.Join(report.Errors, "\n"), "invalid export plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/export-plan.yaml: export chunk dbo.orders.000001 predicate still contains TODO")
+}
+
 func TestValidateRepoReportsInvalidImportPlanContent(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())

@@ -319,6 +319,9 @@ func validateExportPlanContent(path string) error {
 		if strings.TrimSpace(chunk.OutputURI) == "" {
 			return fmt.Errorf("export chunk %s output_uri is required", chunk.ID)
 		}
+		if containsTODOMarker(chunk.Predicate) {
+			return fmt.Errorf("export chunk %s predicate still contains TODO", chunk.ID)
+		}
 	}
 	return nil
 }
