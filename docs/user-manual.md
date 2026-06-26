@@ -733,7 +733,7 @@ bin/sqlserver2tidb generate-data-plans \
 - 根据 inventory 中的 `row_count` 和 `--chunk-size-rows` 估算 export chunk 数。
 - 为每个 export chunk 生成对应 import job。
 - 单 schema project 默认保留原表名；多 schema project 会用 `<schema>_<table>` 作为目标表名。
-- 每个 chunk 的 split predicate 先写成 `TODO`，必须由 DBA 或 operator 根据主键、唯一键、时间列或分桶策略 review；approval 后 `worker-export` 和 `worker-executor --stage export` 会拒绝仍包含 `TODO` 的 predicate。
+- 单 chunk 表会生成 `1 = 1` predicate；需要拆成多个 chunk 的表仍会先写成 `TODO` split predicate，必须由 DBA 或 operator 根据主键、唯一键、时间列或分桶策略 review；approval 后 `worker-export` 和 `worker-executor --stage export` 会拒绝仍包含 `TODO` 的 predicate。
 - 不连接 SQL Server，不连接 TiDB，不读取业务数据，不写对象存储，也不执行 `IMPORT INTO`。
 
 示例 `plan/export-plan.yaml`：

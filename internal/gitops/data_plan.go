@@ -157,10 +157,14 @@ func buildDataExportTablePlan(project projectMetadata, databaseName, schemaName 
 	outputPrefix := strings.TrimRight(spec.ObjectURIPrefix, "/")
 	for i := int64(1); i <= chunkCount; i++ {
 		chunkID := fmt.Sprintf("%s.%06d", chunkPrefix, i)
+		predicate := "1 = 1"
+		if chunkCount > 1 {
+			predicate = fmt.Sprintf("TODO: choose stable split predicate for %s chunk %d", sourceObject, i)
+		}
 		tablePlan.Chunks = append(tablePlan.Chunks, dataExportChunkPlan{
 			ID:            chunkID,
 			EstimatedRows: estimatedRowsForChunk(table.RowCount, spec.ChunkSizeRows, i),
-			Predicate:     fmt.Sprintf("TODO: choose stable split predicate for %s chunk %d", sourceObject, i),
+			Predicate:     predicate,
 			OutputURI:     fmt.Sprintf("%s/%s.%s", outputPrefix, chunkID, spec.ExportFormat),
 		})
 	}

@@ -1163,6 +1163,65 @@ func TestGenerateDataMovementPlansWritesExportAndImportPlans(t *testing.T) {
 	assertContains(t, importPlan, "depends_on_export_chunk: dbo.orders.000003")
 }
 
+func TestGenerateDataMovementPlansUsesTrivialPredicateForSingleChunkTable(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, `{
+  "status": "discovered",
+  "databases": [
+    {
+      "name": "sales",
+      "schemas": [
+        {
+          "name": "dbo",
+          "tables": [
+            {
+              "name": "orders",
+              "row_count": 100,
+              "columns": [
+                {"name": "id", "type": "int"}
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+`)
+
+	result, err := GenerateDataMovementPlans(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", DataMovementPlanSpec{
+		ObjectURIPrefix: "s3://migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full",
+		ChunkSizeRows:   1000000,
+		ExportFormat:    "parquet",
+		ImportEngine:    "import-into",
+	})
+	if err != nil {
+		t.Fatalf("GenerateDataMovementPlans() error = %v", err)
+	}
+	if result.ExportChunks != 1 {
+		t.Fatalf("ExportChunks = %d, want 1", result.ExportChunks)
+	}
+
+	exportPlan := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/export-plan.yaml")
+	assertContains(t, exportPlan, `predicate: "1 = 1"`)
+	if strings.Contains(exportPlan, "TODO") {
+		t.Fatalf("single chunk export plan should not require a TODO predicate:\n%s", exportPlan)
+	}
+
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(export) error = %v", err)
+	}
+	writeStageApproval(t, root, "export", hash)
+	workerResult, err := RunExportWorker(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a")
+	if err != nil {
+		t.Fatalf("RunExportWorker() error = %v", err)
+	}
+	if workerResult.Items != 1 || workerResult.Status != "planned" {
+		t.Fatalf("RunExportWorker() result = %+v, want one planned item", workerResult)
+	}
+}
+
 func TestGenerateDataMovementPlansRequiresObjectURIPrefix(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, `{"status":"discovered","databases":[]}`)
