@@ -315,6 +315,8 @@ func renderExecutorEvidencePRDraftMarkdown(ctx executorEvidencePRContext, draft 
 		fmt.Fprintf(&b, "- `%s`\n", file)
 	}
 
+	writeExecutorEvidenceCommandTable(&b, ctx.evidence.Commands)
+
 	b.WriteString("\n## Operator Checklist\n\n")
 	b.WriteString("- [ ] Confirm the executor evidence corresponds to the approved payload hash.\n")
 	b.WriteString("- [ ] Confirm command output does not include plaintext secrets.\n")
@@ -332,4 +334,30 @@ func renderExecutorEvidencePRDraftMarkdown(ctx executorEvidencePRContext, draft 
 	)
 	b.WriteString("```\n")
 	return b.String()
+}
+
+func writeExecutorEvidenceCommandTable(b *strings.Builder, commands []executorEvidenceCommandSummary) {
+	b.WriteString("\n## Executor Commands\n\n")
+	b.WriteString("| Command ID | Exit code | Started at | Completed at | Duration ms |\n")
+	b.WriteString("| --- | ---: | --- | --- | ---: |\n")
+	for _, command := range commands {
+		duration := ""
+		if command.DurationMs != nil {
+			duration = fmt.Sprintf("%d", *command.DurationMs)
+		}
+		fmt.Fprintf(
+			b,
+			"| %s | %d | %s | %s | %s |\n",
+			escapeMarkdownTableCell(command.ID),
+			*command.ExitCode,
+			escapeMarkdownTableCell(command.StartedAt),
+			escapeMarkdownTableCell(command.CompletedAt),
+			duration,
+		)
+	}
+}
+
+func escapeMarkdownTableCell(value string) string {
+	replacer := strings.NewReplacer("|", "\\|", "\n", " ", "\r", " ")
+	return replacer.Replace(value)
 }

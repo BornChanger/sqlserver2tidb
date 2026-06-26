@@ -1213,6 +1213,8 @@ func TestGenerateExecutorEvidencePRDraftWritesDDLBody(t *testing.T) {
 	assertContains(t, body, "Stage: `ddl`")
 	assertContains(t, body, "Status: `succeeded`")
 	assertContains(t, body, "Payload hash: `"+hash+"`")
+	assertContains(t, body, "## Executor Commands")
+	assertContains(t, body, "| schema/tidb-ddl/dbo.orders.sql | 0 | 2026-01-02T03:04:05Z | 2026-01-02T03:04:06Z | 1000 |")
 	assertContains(t, body, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-ddl-run.json")
 	assertContains(t, body, "gh pr create --base main --head agent/sales-db-to-tidb-prod-a/executor-ddl-evidence")
 }
