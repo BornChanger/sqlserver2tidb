@@ -12,6 +12,7 @@ This MVP provides:
 - Initialization of the GitOps metadata repository structure.
 - Validation of the GitOps metadata repository structure.
 - SQL Server discovery dry-run planning without opening a database connection.
+- SQL Server catalog discovery using a connection string supplied through an environment variable.
 - Rule-based SQL Server compatibility analysis from `inventory/inventory.json`.
 - Source-cluster-first metadata organization:
 
@@ -32,9 +33,9 @@ This MVP provides:
   ```
 
 - JSON Schema files for core metadata.
-- Tests for repository initialization, validation, discovery dry-run planning, compatibility analysis, upstream SQL Server cluster creation, and migration project creation.
+- Tests for repository initialization, validation, discovery planning and execution, compatibility analysis, upstream SQL Server cluster creation, and migration project creation.
 
-This MVP intentionally does **not** connect to SQL Server or TiDB yet. Real database execution will be added behind explicit approvals and deterministic worker code.
+This MVP connects to SQL Server only for read-only catalog discovery when a connection string is supplied through an environment variable. It does **not** connect to TiDB or execute export, import, CDC, cutover, cleanup, or other migration actions yet.
 
 ## Build
 
@@ -90,6 +91,15 @@ go run ./cmd/sqlserver2tidb discover-sqlserver \
   --dry-run
 ```
 
+Run SQL Server catalog discovery. The connection string must come from the environment and must not be committed:
+
+```bash
+go run ./cmd/sqlserver2tidb discover-sqlserver \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --connection-string-env SQLSERVER2TIDB_SQLSERVER_DSN
+```
+
 Analyze SQL Server compatibility findings from the current inventory file:
 
 ```bash
@@ -131,7 +141,6 @@ go run ./cmd/sqlserver2tidb create-project \
 
 ## Next Milestones
 
-- Add SQL Server discovery executor backed by catalog queries.
 - Add schema conversion draft generator.
 - Add PR generation helpers.
 - Add deterministic worker execution for approved validation steps.

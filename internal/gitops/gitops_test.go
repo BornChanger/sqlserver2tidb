@@ -1,6 +1,7 @@
 package gitops
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -264,6 +265,93 @@ func TestBuildSQLServerDiscoveryDryRunPlanRequiresExistingCluster(t *testing.T) 
 	assertContains(t, err.Error(), `source cluster "missing-cluster" does not exist`)
 }
 
+func TestExecuteSQLServerDiscoveryWritesInventoryFromCatalogReader(t *testing.T) {
+	root := t.TempDir()
+	must(t, InitRepo(root))
+	must(t, CreateCluster(root, ClusterSpec{
+		ClusterID:              "prod-sqlserver-a",
+		DisplayName:            "prod SQL Server A",
+		Listener:               "sqlserver-a.internal",
+		Port:                   1433,
+		SecretRef:              "vault://migration/prod-sqlserver-a/readonly",
+		CDCMode:                "sqlserver-cdc",
+		RetentionHoursRequired: 168,
+		Owners:                 []string{"dba-team"},
+	}))
+
+	reader := fakeCatalogReader{
+		snapshot: SQLServerCatalogSnapshot{
+			Inventory: SQLServerInventory{
+				Databases: []SQLServerDatabase{
+					{
+						Name: "sales",
+						Schemas: []SQLServerSchema{
+							{
+								Name: "dbo",
+								Tables: []SQLServerTable{
+									{
+										Name:     "orders",
+										RowCount: 42,
+										Columns: []SQLServerColumn{
+											{Name: "id", Type: "int", Identity: true},
+											{Name: "payload", Type: "xml"},
+										},
+										Indexes: []SQLServerIndex{
+											{Name: "ix_orders_payload", Filtered: true, IncludedColumns: []string{"payload"}},
+										},
+										Triggers: []SQLServerDBObject{{Name: "tr_orders_audit"}},
+									},
+								},
+								Routines: []SQLServerRoutine{{Name: "sync_orders", Type: "procedure"}},
+							},
+						},
+					},
+				},
+			},
+			SourceDDLs: map[string]string{
+				"sales.dbo.orders": "CREATE TABLE dbo.orders (id int NOT NULL);\n",
+			},
+		},
+	}
+
+	result, err := ExecuteSQLServerDiscovery(context.Background(), root, "prod-sqlserver-a", &reader)
+	if err != nil {
+		t.Fatalf("ExecuteSQLServerDiscovery() error = %v", err)
+	}
+	if !reader.called {
+		t.Fatal("catalog reader was not called")
+	}
+	if result.Databases != 1 || result.Tables != 1 || result.Columns != 2 {
+		t.Fatalf("discovery counts = %+v, want 1 db, 1 table, 2 columns", result)
+	}
+
+	inventoryJSON := readFile(t, root, "clusters/prod-sqlserver-a/inventory/inventory.json")
+	assertContains(t, inventoryJSON, `"status": "discovered"`)
+	assertContains(t, inventoryJSON, `"name": "orders"`)
+	assertContains(t, inventoryJSON, `"type": "xml"`)
+	assertContains(t, inventoryJSON, `"filtered": true`)
+	assertContains(t, inventoryJSON, `"triggers"`)
+	assertContains(t, inventoryJSON, `"routines"`)
+
+	sourceDDL := readFile(t, root, "clusters/prod-sqlserver-a/inventory/source-ddl/sales.dbo.orders.sql")
+	assertContains(t, sourceDDL, "CREATE TABLE dbo.orders")
+}
+
+func TestExecuteSQLServerDiscoveryRequiresExistingCluster(t *testing.T) {
+	root := t.TempDir()
+	must(t, InitRepo(root))
+	reader := fakeCatalogReader{}
+
+	_, err := ExecuteSQLServerDiscovery(context.Background(), root, "missing-cluster", &reader)
+	if err == nil {
+		t.Fatal("ExecuteSQLServerDiscovery() expected error for missing cluster")
+	}
+	if reader.called {
+		t.Fatal("catalog reader should not be called when cluster is missing")
+	}
+	assertContains(t, err.Error(), `source cluster "missing-cluster" does not exist`)
+}
+
 func TestAnalyzeSQLServerCompatibilityWritesFindings(t *testing.T) {
 	root := t.TempDir()
 	must(t, InitRepo(root))
@@ -445,6 +533,16 @@ func writeFileForTest(t *testing.T, root, rel, content string) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+type fakeCatalogReader struct {
+	snapshot SQLServerCatalogSnapshot
+	called   bool
+}
+
+func (reader *fakeCatalogReader) DiscoverSQLServerCatalog(ctx context.Context) (SQLServerCatalogSnapshot, error) {
+	reader.called = true
+	return reader.snapshot, nil
 }
 
 func must(t *testing.T, err error) {

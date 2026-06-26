@@ -144,16 +144,29 @@ func TestRunDiscoverSQLServerDryRunCommand(t *testing.T) {
 	}
 }
 
-func TestRunDiscoverSQLServerRequiresDryRun(t *testing.T) {
+func TestRunDiscoverSQLServerRequiresConnectionStringEnv(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer
 
 	code := Run([]string{"discover-sqlserver", "--root", root, "--source-cluster-id", "prod-sqlserver-a"}, &stdout, &stderr)
 	if code == 0 {
-		t.Fatal("discover-sqlserver code = 0, want non-zero without --dry-run")
+		t.Fatal("discover-sqlserver code = 0, want non-zero without --dry-run or --connection-string-env")
 	}
-	if !strings.Contains(stderr.String(), "only --dry-run is supported") {
-		t.Fatalf("discover-sqlserver stderr = %q, want dry-run requirement", stderr.String())
+	if !strings.Contains(stderr.String(), "requires --connection-string-env unless --dry-run is set") {
+		t.Fatalf("discover-sqlserver stderr = %q, want connection env requirement", stderr.String())
+	}
+}
+
+func TestRunDiscoverSQLServerRequiresConnectionStringEnvValue(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{"discover-sqlserver", "--root", root, "--source-cluster-id", "prod-sqlserver-a", "--connection-string-env", "SQLSERVER2TIDB_TEST_DSN_MISSING"}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatal("discover-sqlserver code = 0, want non-zero for missing env value")
+	}
+	if !strings.Contains(stderr.String(), "environment variable SQLSERVER2TIDB_TEST_DSN_MISSING is not set") {
+		t.Fatalf("discover-sqlserver stderr = %q, want missing env message", stderr.String())
 	}
 }
 

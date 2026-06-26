@@ -48,6 +48,7 @@ type inventorySchema struct {
 
 type inventoryTable struct {
 	Name     string              `json:"name"`
+	RowCount int64               `json:"row_count,omitempty"`
 	Columns  []inventoryColumn   `json:"columns"`
 	Indexes  []inventoryIndex    `json:"indexes"`
 	Triggers []inventoryDBObject `json:"triggers"`
@@ -56,13 +57,14 @@ type inventoryTable struct {
 type inventoryColumn struct {
 	Name     string `json:"name"`
 	Type     string `json:"type"`
-	Computed bool   `json:"computed"`
+	Identity bool   `json:"identity,omitempty"`
+	Computed bool   `json:"computed,omitempty"`
 }
 
 type inventoryIndex struct {
 	Name            string   `json:"name"`
-	Filtered        bool     `json:"filtered"`
-	IncludedColumns []string `json:"included_columns"`
+	Filtered        bool     `json:"filtered,omitempty"`
+	IncludedColumns []string `json:"included_columns,omitempty"`
 }
 
 type inventoryRoutine struct {
@@ -73,6 +75,15 @@ type inventoryRoutine struct {
 type inventoryDBObject struct {
 	Name string `json:"name"`
 }
+
+type SQLServerInventory = sqlServerInventory
+type SQLServerDatabase = inventoryDatabase
+type SQLServerSchema = inventorySchema
+type SQLServerTable = inventoryTable
+type SQLServerColumn = inventoryColumn
+type SQLServerIndex = inventoryIndex
+type SQLServerRoutine = inventoryRoutine
+type SQLServerDBObject = inventoryDBObject
 
 func AnalyzeSQLServerCompatibility(root, sourceClusterID string) (CompatibilityReport, error) {
 	if !idPattern.MatchString(sourceClusterID) {

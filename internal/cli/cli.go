@@ -1,13 +1,17 @@
 package cli
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/BornChanger/sqlserver2tidb/internal/gitops"
+	sqlservercatalog "github.com/BornChanger/sqlserver2tidb/internal/sqlserver"
 )
 
 func Run(args []string, stdout, stderr io.Writer) int {
@@ -83,29 +87,61 @@ func runDiscoverSQLServer(args []string, stdout, stderr io.Writer) int {
 	root := fs.String("root", ".", "repository root")
 	sourceClusterID := fs.String("source-cluster-id", "", "upstream SQL Server cluster id")
 	dryRun := fs.Bool("dry-run", false, "print discovery plan without connecting to SQL Server or writing files")
+	connectionStringEnv := fs.String("connection-string-env", "", "environment variable containing the SQL Server connection string")
+	timeout := fs.Duration("timeout", 30*time.Second, "SQL Server discovery timeout")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if !*dryRun {
-		fmt.Fprintln(stderr, "discover-sqlserver: only --dry-run is supported in this version")
+	if *dryRun {
+		plan, err := gitops.BuildSQLServerDiscoveryDryRunPlan(*root, *sourceClusterID)
+		if err != nil {
+			fmt.Fprintf(stderr, "discover sqlserver: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "SQL Server discovery dry run for %s\n", plan.SourceClusterID)
+		fmt.Fprintln(stdout, "No database connection will be opened.")
+		fmt.Fprintf(stdout, "Writes files: %t\n", plan.WritesFiles)
+		fmt.Fprintln(stdout, "\nTarget files:")
+		for _, target := range plan.TargetFiles {
+			fmt.Fprintf(stdout, "- %s\n", target)
+		}
+		fmt.Fprintln(stdout, "\nCatalog queries:")
+		for _, query := range plan.CatalogQueries {
+			fmt.Fprintf(stdout, "- %s\n", query)
+		}
+		return 0
+	}
+	if strings.TrimSpace(*connectionStringEnv) == "" {
+		fmt.Fprintln(stderr, "discover-sqlserver: requires --connection-string-env unless --dry-run is set")
 		return 2
 	}
-	plan, err := gitops.BuildSQLServerDiscoveryDryRunPlan(*root, *sourceClusterID)
+	connectionString := os.Getenv(*connectionStringEnv)
+	if strings.TrimSpace(connectionString) == "" {
+		fmt.Fprintf(stderr, "discover-sqlserver: environment variable %s is not set\n", *connectionStringEnv)
+		return 1
+	}
+	reader, err := sqlservercatalog.NewCatalogReader(connectionString)
 	if err != nil {
 		fmt.Fprintf(stderr, "discover sqlserver: %v\n", err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "SQL Server discovery dry run for %s\n", plan.SourceClusterID)
-	fmt.Fprintln(stdout, "No database connection will be opened.")
-	fmt.Fprintf(stdout, "Writes files: %t\n", plan.WritesFiles)
-	fmt.Fprintln(stdout, "\nTarget files:")
-	for _, target := range plan.TargetFiles {
-		fmt.Fprintf(stdout, "- %s\n", target)
+	defer reader.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+	defer cancel()
+	result, err := gitops.ExecuteSQLServerDiscovery(ctx, *root, *sourceClusterID, reader)
+	if err != nil {
+		fmt.Fprintf(stderr, "discover sqlserver: %v\n", err)
+		return 1
 	}
-	fmt.Fprintln(stdout, "\nCatalog queries:")
-	for _, query := range plan.CatalogQueries {
-		fmt.Fprintf(stdout, "- %s\n", query)
-	}
+	fmt.Fprintf(stdout, "SQL Server discovery completed for %s\n", result.SourceClusterID)
+	fmt.Fprintf(stdout, "databases: %d, tables: %d, columns: %d, source DDL files: %d\n",
+		result.Databases,
+		result.Tables,
+		result.Columns,
+		result.SourceDDLs,
+	)
+	fmt.Fprintf(stdout, "wrote %s\n", result.InventoryFile)
 	return 0
 }
 
@@ -227,6 +263,7 @@ Usage:
   sqlserver2tidb init-repo --root .
   sqlserver2tidb validate-repo --root .
   sqlserver2tidb discover-sqlserver --root . --source-cluster-id prod-sqlserver-a --dry-run
+  sqlserver2tidb discover-sqlserver --root . --source-cluster-id prod-sqlserver-a --connection-string-env SQLSERVER2TIDB_SQLSERVER_DSN
   sqlserver2tidb analyze-compatibility --root . --source-cluster-id prod-sqlserver-a
   sqlserver2tidb create-cluster --cluster-id prod-sqlserver-a --display-name "prod SQL Server A" --listener sqlserver-a.internal --secret-ref vault://...
   sqlserver2tidb create-project --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --source-database sales --source-schema dbo --target-name tidb-prod-a --target-database app --target-secret-ref vault://...

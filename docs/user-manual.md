@@ -29,6 +29,7 @@ LLM 只生成解释、候选方案和文档，不直接执行迁移
 - 初始化 GitOps metadata 目录。
 - 校验 GitOps metadata 目录结构。
 - 生成 SQL Server discovery dry-run 计划。
+- 通过环境变量连接串执行只读 SQL Server catalog discovery。
 - 基于 `inventory/inventory.json` 生成规则化兼容性分析报告。
 - 创建上游 SQL Server 集群目录。
 - 在上游 SQL Server 集群下创建迁移项目目录。
@@ -36,7 +37,7 @@ LLM 只生成解释、候选方案和文档，不直接执行迁移
 - 生成核心 JSON Schema 文件。
 - 单元测试和 CLI smoke test。
 
-当前 CLI 不会连接真实 SQL Server 或 TiDB，也不会执行真实导出、导入、CDC 或切流。`discover-sqlserver --dry-run` 只输出计划，不打开数据库连接，也不写 inventory 文件。`analyze-compatibility` 只读取并写回 GitHub metadata 文件。
+当前 CLI 只有在执行 `discover-sqlserver --connection-string-env ...` 时会连接 SQL Server，并且只读取 catalog metadata。它不会连接 TiDB，也不会执行真实导出、导入、CDC 或切流。`discover-sqlserver --dry-run` 只输出计划，不打开数据库连接，也不写 inventory 文件。`analyze-compatibility` 只读取并写回 GitHub metadata 文件。
 
 ### 2.2 终极目标
 
@@ -425,9 +426,12 @@ inventory/compatibility-report.md
 inventory/schema-issues.yaml
 ```
 
-当前 MVP 会创建占位文件，并支持 discovery dry-run。dry-run 只根据 `cluster.yaml` 和目录结构输出计划，不连接 SQL Server，不写入 inventory 文件。
+当前 MVP 会创建占位文件，并支持两种 discovery 模式：
 
-命令：
+- dry-run：只根据 `cluster.yaml` 和目录结构输出计划，不连接 SQL Server，不写入 inventory 文件。
+- catalog discovery：通过环境变量中的 SQL Server 连接串读取当前连接数据库的 `sys.*` catalog，并写回 `inventory/inventory.json`。
+
+dry-run 命令：
 
 ```bash
 bin/sqlserver2tidb discover-sqlserver \
@@ -436,11 +440,27 @@ bin/sqlserver2tidb discover-sqlserver \
   --dry-run
 ```
 
-输出包括：
+dry-run 输出包括：
 
 - 将来真实 discovery 会更新的目标文件。
 - 将来真实 discovery 会读取的 SQL Server catalog 范围。
 - 明确的 no-write/no-connect 说明。
+
+真实 catalog discovery 命令：
+
+```bash
+bin/sqlserver2tidb discover-sqlserver \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --connection-string-env SQLSERVER2TIDB_SQLSERVER_DSN
+```
+
+要求：
+
+- `SQLSERVER2TIDB_SQLSERVER_DSN` 由 secret manager、CI secret 或本地安全方式注入。
+- 连接串不得提交到 GitHub。
+- SQL Server 账号只需要读取 catalog 的权限。
+- 当前实现发现的是连接串指向的当前数据库。
 
 Discovery 应覆盖：
 
@@ -831,7 +851,7 @@ clusters/<source_cluster_id>/cluster.yaml
 
 ### 15.4 当前能直接迁移数据吗？
 
-当前 MVP 不能直接连接 SQL Server 或 TiDB。它先提供 GitOps metadata 结构和 CLI。真实 discovery、export、import、CDC、validation、worker 将作为后续能力加入。
+当前 MVP 可以只读连接 SQL Server catalog 生成 inventory，但不能迁移数据，也不会连接 TiDB。export、import、CDC、validation、worker 将作为后续能力加入。
 
 ### 15.5 可以把 LLM 接进来吗？
 
@@ -885,7 +905,7 @@ bin/sqlserver2tidb create-project \
 
 ### 16.5 discover-sqlserver
 
-当前版本只支持 dry-run：
+dry-run：
 
 ```bash
 bin/sqlserver2tidb discover-sqlserver \
@@ -895,6 +915,17 @@ bin/sqlserver2tidb discover-sqlserver \
 ```
 
 该命令不会连接 SQL Server，也不会写文件。它用于提前 review discovery 将覆盖的 catalog 范围和目标 inventory 文件。
+
+真实 catalog discovery：
+
+```bash
+bin/sqlserver2tidb discover-sqlserver \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --connection-string-env SQLSERVER2TIDB_SQLSERVER_DSN
+```
+
+该命令会连接 SQL Server，读取当前数据库的 catalog metadata，并写回 `inventory/inventory.json`。连接串只从环境变量读取，不会写入 repo。
 
 ### 16.6 analyze-compatibility
 
@@ -912,10 +943,10 @@ bin/sqlserver2tidb analyze-compatibility \
 2. 执行 `validate-repo` 确认 metadata 结构完整。
 3. 为一个测试 SQL Server 集群创建 cluster。
 4. 对测试 SQL Server 集群执行 `discover-sqlserver --dry-run`，review discovery 范围。
-5. 为一个小 database 创建 project。
-6. 通过 PR review metadata 文件。
-7. 对已有 inventory 执行 `analyze-compatibility`，生成规则化兼容性报告。
-8. 接入真实 SQL Server catalog discovery executor。
+5. 通过安全环境变量执行真实 `discover-sqlserver`，生成 inventory。
+6. 为一个小 database 创建 project。
+7. 通过 PR review metadata 文件。
+8. 对已有 inventory 执行 `analyze-compatibility`，生成规则化兼容性报告。
 9. 接入 schema conversion draft。
 10. 接入 validation-only worker。
 11. 再接入 export/import/CDC。
