@@ -740,6 +740,34 @@ func TestRunWorkerExportAndImportCommands(t *testing.T) {
 	stdout.Reset()
 	stderr.Reset()
 	code = Run([]string{
+		"worker-executor",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "export",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("worker-executor export code = %d, stderr = %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "worker executor dry run") {
+		t.Fatalf("worker-executor stdout = %q, want dry-run header", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "stage: export") {
+		t.Fatalf("worker-executor stdout = %q, want export stage", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "commands: 3") {
+		t.Fatalf("worker-executor stdout = %q, want command count", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "sqlserver2tidb-executor export") {
+		t.Fatalf("worker-executor stdout = %q, want executor command", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "--chunk-id dbo.orders.000001") {
+		t.Fatalf("worker-executor stdout = %q, want first chunk id", stdout.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = Run([]string{
 		"worker-export",
 		"--root", root,
 		"--source-cluster-id", "prod-sqlserver-a",

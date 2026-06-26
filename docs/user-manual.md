@@ -37,6 +37,7 @@ LLM 只生成解释、候选方案和文档，不直接执行迁移
 - 基于 stage 生成本地 PR draft 文件，并通过 dry-run-by-default wrapper 准备 `gh pr create`。
 - 计算 export、import、cdc、validation payload hash。
 - 在 approval 通过后执行 metadata-only export/import/CDC worker，把 plan 写成 planned state/evidence。
+- 在 approval 通过后执行 `worker-executor` dry-run，生成外部 export/import/CDC 执行器命令。
 - 在 approval 通过后执行 metadata-only validation worker。
 - 执行只读 `worker-reconcile --dry-run`，扫描 ready/blocked worker actions。
 - 执行 `worker-reconcile --execute-next`，在源集群 lease 保护下执行第一个 ready metadata-only worker action。
@@ -48,7 +49,7 @@ LLM 只生成解释、候选方案和文档，不直接执行迁移
 - 生成核心 JSON Schema 文件。
 - 单元测试和 CLI smoke test。
 
-当前 CLI 只有在执行 `discover-sqlserver --connection-string-env ...` 时会连接 SQL Server，并且只读取 catalog metadata。它不会连接 TiDB，也不会执行生成的 DDL、真实导出、导入、CDC 或切流。`discover-sqlserver --dry-run` 只输出计划，不打开数据库连接，也不写 inventory 文件。`analyze-compatibility`、`generate-schema-draft`、`generate-data-plans`、`generate-cdc-plan`、`generate-pr-draft`、`create-pr` 的默认 dry-run、`create-worker-state-pr` 的默认 dry-run、`compute-payload-hash`、`worker-export`、`worker-import`、`worker-cdc`、`worker-validate`、`worker-reconcile --dry-run` 和 `worker-reconcile --execute-next` 只读取并写回或汇报 GitHub metadata 文件。`worker-reconcile --state-pr-draft` 只生成 Markdown PR body，不调用 GitHub。`create-pr --execute` 会调用本地 `gh pr create`；`create-worker-state-pr --execute` 会调用本地 `git` 和 `gh`。
+当前 CLI 只有在执行 `discover-sqlserver --connection-string-env ...` 时会连接 SQL Server，并且只读取 catalog metadata。它不会连接 TiDB，也不会执行生成的 DDL、真实导出、导入、CDC 或切流。`discover-sqlserver --dry-run` 只输出计划，不打开数据库连接，也不写 inventory 文件。`analyze-compatibility`、`generate-schema-draft`、`generate-data-plans`、`generate-cdc-plan`、`generate-pr-draft`、`create-pr` 的默认 dry-run、`create-worker-state-pr` 的默认 dry-run、`worker-executor` 的默认 dry-run、`compute-payload-hash`、`worker-export`、`worker-import`、`worker-cdc`、`worker-validate`、`worker-reconcile --dry-run` 和 `worker-reconcile --execute-next` 只读取并写回或汇报 GitHub metadata 文件。`worker-reconcile --state-pr-draft` 只生成 Markdown PR body，不调用 GitHub。`create-pr --execute` 会调用本地 `gh pr create`；`create-worker-state-pr --execute` 会调用本地 `git` 和 `gh`；`worker-executor --execute` 会调用外部执行器 binary。
 
 ### 2.2 终极目标
 
@@ -126,7 +127,7 @@ clusters/<source_cluster_id>/projects/<project_id>/prs/<stage>-pr.md
 
 Worker 是终极形态中的执行器。它从 GitHub repo 拉取已批准 instruction，执行确定性操作，并把状态和证据写回 repo。
 
-当前 MVP 实现了显式指定 project 的 `worker-export`、`worker-import`、`worker-cdc` 和 `worker-validate`。它们都需要 approval 和 payload hash 匹配。当前还实现了 `worker-reconcile --dry-run` 和 `worker-reconcile --execute-next`；后者会获取源集群级 lease，并执行第一个 ready metadata-only action。加上 `--state-pr-draft` 后，reconcile 单步执行可以生成 state/evidence/lease 写回的 PR body 草稿。`create-worker-state-pr` 可以默认 dry-run 地准备 bot branch、commit、push 和 GitHub PR 命令；只有显式 `--execute` 时才会调用本地 `git` 和 `gh`。
+当前 MVP 实现了显式指定 project 的 `worker-export`、`worker-import`、`worker-cdc` 和 `worker-validate`。它们都需要 approval 和 payload hash 匹配。当前还实现了 `worker-executor`，用于在同一 approval/hash gate 后生成外部执行器命令，默认 dry-run。当前还实现了 `worker-reconcile --dry-run` 和 `worker-reconcile --execute-next`；后者会获取源集群级 lease，并执行第一个 ready metadata-only action。加上 `--state-pr-draft` 后，reconcile 单步执行可以生成 state/evidence/lease 写回的 PR body 草稿。`create-worker-state-pr` 可以默认 dry-run 地准备 bot branch、commit、push 和 GitHub PR 命令；只有显式 `--execute` 时才会调用本地 `git` 和 `gh`。
 
 ### 3.5 LLM
 
@@ -853,6 +854,18 @@ bin/sqlserver2tidb worker-export \
 - `state/export-chunks.yaml`
 - `evidence/precheck.json`
 
+预览真实导出执行器命令：
+
+```bash
+bin/sqlserver2tidb worker-executor \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --stage export
+```
+
+默认只打印 `sqlserver2tidb-executor export ...` 命令。只有显式加 `--execute`，才会调用外部执行器 binary。
+
 示例：
 
 ```yaml
@@ -924,6 +937,18 @@ bin/sqlserver2tidb worker-import \
 - `state/import-jobs.yaml`
 - `evidence/import-summary.json`
 
+预览真实导入执行器命令：
+
+```bash
+bin/sqlserver2tidb worker-executor \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --stage import
+```
+
+默认只打印 `sqlserver2tidb-executor import ...` 命令。只有显式加 `--execute`，才会调用外部执行器 binary。
+
 ### 10.8 阶段 7：CDC 增量回放
 
 CDC checkpoint 是源集群级：
@@ -978,6 +1003,18 @@ bin/sqlserver2tidb worker-cdc \
 - 项目级 `state/migration-state.yaml`
 - 源集群级 `state/cdc-checkpoint.yaml`
 - 项目级 `evidence/cdc-catchup.json`
+
+预览真实 CDC 执行器命令：
+
+```bash
+bin/sqlserver2tidb worker-executor \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --stage cdc
+```
+
+默认只打印 `sqlserver2tidb-executor cdc ...` 命令。只有显式加 `--execute`，才会调用外部执行器 binary。
 
 示例项目状态：
 
@@ -1323,7 +1360,7 @@ clusters/<source_cluster_id>/cluster.yaml
 
 ### 15.4 当前能直接迁移数据吗？
 
-当前 MVP 可以只读连接 SQL Server catalog 生成 inventory，可以从 inventory 生成 TiDB DDL 草稿、全量导出/导入计划草稿和 CDC 计划草稿，并执行 metadata-only export/import/CDC/validation worker；但不能迁移数据，也不会连接 TiDB。真实 export、真实 import、CDC apply 和源/目标数据校验将作为后续能力加入。
+当前 MVP 可以只读连接 SQL Server catalog 生成 inventory，可以从 inventory 生成 TiDB DDL 草稿、全量导出/导入计划草稿和 CDC 计划草稿，并执行 metadata-only export/import/CDC/validation worker。`worker-executor` 可以在 approval/hash gate 后生成外部执行器命令，`--execute` 会调用外部 binary；但本仓库尚未实现该外部 binary，也不会内置连接 TiDB、写对象存储或回放 CDC。源/目标数据校验也仍是后续能力。
 
 ### 15.5 可以把 LLM 接进来吗？
 
@@ -1553,7 +1590,32 @@ bin/sqlserver2tidb worker-validate \
 
 该命令先检查 `approvals/validation-approval.yaml`，只有 approval 通过且 payload hash 匹配时才执行 validation checks。执行后写回 `state/validation-status.yaml` 和 `evidence/validation-report.md`。
 
-### 16.17 worker-reconcile
+### 16.17 worker-executor
+
+dry-run：
+
+```bash
+bin/sqlserver2tidb worker-executor \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --stage export
+```
+
+真实调用外部执行器：
+
+```bash
+bin/sqlserver2tidb worker-executor \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --stage export \
+  --execute
+```
+
+该命令支持 `export`、`import` 和 `cdc`。它复用对应 stage 的 approval/hash gate，只有 approval 通过且 payload hash 匹配时才生成执行器命令。默认外部 binary 是 `sqlserver2tidb-executor`，可以通过 `--executor-binary` 覆盖。默认 dry-run 只打印命令；只有加 `--execute` 才会调用外部 binary。
+
+### 16.18 worker-reconcile
 
 只读扫描：
 
@@ -1586,7 +1648,7 @@ clusters/<source_cluster_id>/projects/<project_id>/prs/reconcile-<stage>-state-p
 
 该 PR body 会列出 payload hash、lease id、建议 branch、项目 state/evidence 文件、源集群 `state/worker-lease.yaml`；如果 stage 是 `cdc`，还会列出源集群 `state/cdc-checkpoint.yaml`。它只是 PR 草稿，不会创建 branch、commit、push 或 GitHub PR。
 
-### 16.18 create-worker-state-pr
+### 16.19 create-worker-state-pr
 
 dry-run：
 
@@ -1633,6 +1695,7 @@ bin/sqlserver2tidb create-worker-state-pr \
 18. 执行 `worker-reconcile --dry-run`，确认 ready/blocked action 与预期一致。
 19. 执行 `worker-reconcile --execute-next --holder <agent-id> --state-pr-draft`，用 lease-backed 单步 reconcile 执行第一个 ready metadata-only action，并生成 state PR body。
 20. 执行 `create-worker-state-pr` dry-run 检查 git/gh 命令，再按需执行 `create-worker-state-pr --execute` 创建 state/evidence 写回 PR。
-21. approval 通过后执行 `worker-validate`，生成 validation state 和 evidence。
-22. 再接入真实 export/import/CDC worker。
-23. 最后接入 cutover orchestration。
+21. 对 export/import/cdc 执行 `worker-executor` dry-run，检查外部执行器命令和当前 plan 是否一致。
+22. approval 通过后执行 `worker-validate`，生成 validation state 和 evidence。
+23. 接入并审查真实外部执行器 binary，再按需执行 `worker-executor --execute`。
+24. 最后接入 cutover orchestration。

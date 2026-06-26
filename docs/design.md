@@ -106,6 +106,19 @@ The export worker reads `plan/export-plan.yaml` and writes planned chunk state t
 
 These workers establish the approval and state write-back contract for future real executors. They intentionally mark items as `planned`; they do not mark chunks as exported or jobs as imported.
 
+## Worker Executor Shell
+
+`worker-executor` is the current external executor shell. It is deterministic and file-backed:
+
+- Input: approved `export`, `import`, or `cdc` stage metadata.
+- Input: the matching plan file under `plan/`.
+- Output: dry-run command lines by default.
+- Optional execution: external command invocation only when `--execute` is explicitly set.
+
+The command reuses `requireApprovedStage`, so it refuses to produce executor commands unless the stage approval is approved, has reviewers, and the payload hash matches the current repository files. The default external binary is `sqlserver2tidb-executor`; operators can override it with `--executor-binary`.
+
+For export, it produces one command per export chunk. For import, it produces one command per import job. For CDC, it produces one command per tracked source table. The executor shell does not itself connect to SQL Server, TiDB, Kafka, or object storage; the external binary is responsible for those side effects, and should be introduced separately behind the same GitOps approval boundary.
+
 ## CDC Plan And Worker
 
 `generate-cdc-plan` is deterministic and file-backed:
@@ -214,7 +227,7 @@ LLMs may generate:
 - validation report narratives
 - incident diagnosis suggestions
 
-LLMs are not required for deterministic repository commands such as `validate-repo`, `discover-sqlserver --dry-run`, `analyze-compatibility`, `generate-schema-draft`, `generate-data-plans`, `generate-cdc-plan`, `generate-pr-draft`, `create-pr`, `create-worker-state-pr`, `compute-payload-hash`, `worker-export`, `worker-import`, `worker-cdc`, `worker-validate`, `worker-reconcile --dry-run`, or `worker-reconcile --execute-next`. For schema work, the LLM may read `conversion-report.md` and `schema-diff.json` to propose candidate rewrites, but the candidate must be committed as reviewed files before any worker can use it. For export/import planning, the LLM may propose split keys or risk notes, but generated predicates and execution settings still need PR review before workers can use them. For CDC planning, the LLM may explain retention or connector risks, but LSN, offset, catch-up, and cutover gates must come from deterministic runtime checks and GitHub approvals. For PR work, the LLM may refine prose, but file lists, approval files, state/evidence files, lease files, git commands, GitHub CLI arguments, and stage gates must remain deterministic.
+LLMs are not required for deterministic repository commands such as `validate-repo`, `discover-sqlserver --dry-run`, `analyze-compatibility`, `generate-schema-draft`, `generate-data-plans`, `generate-cdc-plan`, `generate-pr-draft`, `create-pr`, `create-worker-state-pr`, `compute-payload-hash`, `worker-export`, `worker-import`, `worker-cdc`, `worker-validate`, `worker-executor`, `worker-reconcile --dry-run`, or `worker-reconcile --execute-next`. For schema work, the LLM may read `conversion-report.md` and `schema-diff.json` to propose candidate rewrites, but the candidate must be committed as reviewed files before any worker can use it. For export/import planning, the LLM may propose split keys or risk notes, but generated predicates and execution settings still need PR review before workers can use them. For CDC planning, the LLM may explain retention or connector risks, but LSN, offset, catch-up, and cutover gates must come from deterministic runtime checks and GitHub approvals. For PR work, the LLM may refine prose, but file lists, approval files, state/evidence files, lease files, git commands, GitHub CLI arguments, executor command arguments, and stage gates must remain deterministic.
 
 LLMs must not decide:
 

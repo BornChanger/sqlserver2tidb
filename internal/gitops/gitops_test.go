@@ -977,6 +977,108 @@ func TestRunExportWorkerWritesPlannedStateWhenApprovedHashMatches(t *testing.T) 
 	assertContains(t, evidence, `"payload_hash": "`+hash+`"`)
 }
 
+func TestPrepareWorkerExecutorBuildsExportCommandsWhenApprovedHashMatches(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateDataPlansOnly(root))
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(export) error = %v", err)
+	}
+	writeStageApproval(t, root, "export", hash)
+
+	spec, err := PrepareWorkerExecutor(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export", WorkerExecutorPrepareSpec{})
+	if err != nil {
+		t.Fatalf("PrepareWorkerExecutor() error = %v", err)
+	}
+	if spec.Stage != "export" || spec.PayloadHash != hash {
+		t.Fatalf("executor spec = %+v, want export with hash %s", spec, hash)
+	}
+	if len(spec.Commands) != 3 {
+		t.Fatalf("Commands = %d, want 3", len(spec.Commands))
+	}
+	first := spec.Commands[0]
+	if first.ID != "dbo.orders.000001" {
+		t.Fatalf("first command ID = %q, want first export chunk", first.ID)
+	}
+	assertContains(t, first.ShellCommand, "sqlserver2tidb-executor export")
+	assertContains(t, first.ShellCommand, "--root .")
+	assertContains(t, first.ShellCommand, "--source-cluster-id prod-sqlserver-a")
+	assertContains(t, first.ShellCommand, "--project-id sales-db-to-tidb-prod-a")
+	assertContains(t, first.ShellCommand, "--chunk-id dbo.orders.000001")
+	assertContains(t, first.ShellCommand, "--source-object sales.dbo.orders")
+	assertContains(t, first.ShellCommand, "--target-object app.orders")
+	assertContains(t, first.ShellCommand, "--output-uri s3://migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full/dbo.orders.000001.parquet")
+}
+
+func TestPrepareWorkerExecutorRequiresApprovedStage(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateDataPlansOnly(root))
+
+	_, err := PrepareWorkerExecutor(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export", WorkerExecutorPrepareSpec{})
+	if err == nil {
+		t.Fatal("PrepareWorkerExecutor() expected approval error")
+	}
+	assertContains(t, err.Error(), "export approval is not approved")
+}
+
+func TestPrepareWorkerExecutorBuildsImportCommandsWhenApprovedHashMatches(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateSchemaDraftOnly(root))
+	must(t, GenerateDataPlansOnly(root))
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(import) error = %v", err)
+	}
+	writeStageApproval(t, root, "import", hash)
+
+	spec, err := PrepareWorkerExecutor(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import", WorkerExecutorPrepareSpec{})
+	if err != nil {
+		t.Fatalf("PrepareWorkerExecutor() error = %v", err)
+	}
+	if spec.Stage != "import" || spec.PayloadHash != hash || len(spec.Commands) != 3 {
+		t.Fatalf("executor spec = %+v, want import with 3 commands and hash %s", spec, hash)
+	}
+	first := spec.Commands[0]
+	if first.ID != "import-dbo.orders.000001" {
+		t.Fatalf("first command ID = %q, want first import job", first.ID)
+	}
+	assertContains(t, first.ShellCommand, "sqlserver2tidb-executor import")
+	assertContains(t, first.ShellCommand, "--job-id import-dbo.orders.000001")
+	assertContains(t, first.ShellCommand, "--target-object app.orders")
+	assertContains(t, first.ShellCommand, "--source-uri s3://migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full/dbo.orders.000001.parquet")
+	assertContains(t, first.ShellCommand, "--depends-on-export-chunk dbo.orders.000001")
+}
+
+func TestPrepareWorkerExecutorBuildsCDCCommandsWhenApprovedHashMatches(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateCDCPlanOnly(root))
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "cdc")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(cdc) error = %v", err)
+	}
+	writeStageApproval(t, root, "cdc", hash)
+
+	spec, err := PrepareWorkerExecutor(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "cdc", WorkerExecutorPrepareSpec{})
+	if err != nil {
+		t.Fatalf("PrepareWorkerExecutor() error = %v", err)
+	}
+	if spec.Stage != "cdc" || spec.PayloadHash != hash || len(spec.Commands) != 1 {
+		t.Fatalf("executor spec = %+v, want cdc with 1 command and hash %s", spec, hash)
+	}
+	first := spec.Commands[0]
+	if first.ID != "sales.dbo.orders" {
+		t.Fatalf("first command ID = %q, want CDC source object", first.ID)
+	}
+	assertContains(t, first.ShellCommand, "sqlserver2tidb-executor cdc")
+	assertContains(t, first.ShellCommand, "--source-object sales.dbo.orders")
+	assertContains(t, first.ShellCommand, "--target-object app.orders")
+	assertContains(t, first.ShellCommand, "--apply-batch-size 1000")
+}
+
 func TestRunImportWorkerWritesPlannedStateWhenApprovedHashMatches(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())

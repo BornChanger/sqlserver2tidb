@@ -52,6 +52,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runWorkerCDC(args[1:], stdout, stderr)
 	case "worker-validate":
 		return runWorkerValidate(args[1:], stdout, stderr)
+	case "worker-executor":
+		return runWorkerExecutor(args[1:], stdout, stderr)
 	case "worker-reconcile":
 		return runWorkerReconcile(args[1:], stdout, stderr)
 	case "create-cluster":
@@ -515,6 +517,58 @@ func runWorkerCDC(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+func runWorkerExecutor(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("worker-executor", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	root := fs.String("root", ".", "repository root")
+	sourceClusterID := fs.String("source-cluster-id", "", "upstream SQL Server cluster id")
+	projectID := fs.String("project-id", "", "migration project id")
+	stage := fs.String("stage", "", "executor stage: export, import, or cdc")
+	executorBinary := fs.String("executor-binary", "", "external executor binary; default is sqlserver2tidb-executor")
+	execute := fs.Bool("execute", false, "run external executor commands; default is dry-run")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	spec, err := gitops.PrepareWorkerExecutor(*root, *sourceClusterID, *projectID, *stage, gitops.WorkerExecutorPrepareSpec{
+		Binary: *executorBinary,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "worker executor: %v\n", err)
+		return 1
+	}
+	if !*execute {
+		fmt.Fprintln(stdout, "worker executor dry run")
+		fmt.Fprintf(stdout, "stage: %s\n", spec.Stage)
+		fmt.Fprintf(stdout, "payload hash: %s\n", spec.PayloadHash)
+		fmt.Fprintf(stdout, "commands: %d\n", len(spec.Commands))
+		for _, command := range spec.Commands {
+			fmt.Fprintf(stdout, "command: %s\n", command.ShellCommand)
+		}
+		return 0
+	}
+
+	for _, command := range spec.Commands {
+		if len(command.Args) == 0 {
+			fmt.Fprintf(stderr, "worker executor: empty command for %s\n", command.ID)
+			return 1
+		}
+		cmd := exec.Command(command.Args[0], command.Args[1:]...)
+		cmd.Dir = *root
+		output, err := cmd.CombinedOutput()
+		if len(output) > 0 {
+			fmt.Fprint(stdout, string(output))
+		}
+		if err != nil {
+			fmt.Fprintf(stderr, "worker executor: command %s failed: %v\n", command.ID, err)
+			return 1
+		}
+	}
+	fmt.Fprintf(stdout, "worker executor completed for %s\n", spec.ProjectID)
+	fmt.Fprintf(stdout, "stage: %s\n", spec.Stage)
+	fmt.Fprintf(stdout, "commands: %d\n", len(spec.Commands))
+	return 0
+}
+
 func runWorkerReconcile(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("worker-reconcile", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -685,6 +739,7 @@ Usage:
   sqlserver2tidb worker-import --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
   sqlserver2tidb worker-cdc --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
   sqlserver2tidb worker-validate --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
+  sqlserver2tidb worker-executor --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage export
   sqlserver2tidb worker-reconcile --root . --dry-run
   sqlserver2tidb worker-reconcile --root . --execute-next --holder agent-a --state-pr-draft
   sqlserver2tidb create-cluster --cluster-id prod-sqlserver-a --display-name "prod SQL Server A" --listener sqlserver-a.internal --secret-ref vault://...

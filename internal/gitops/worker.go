@@ -393,6 +393,8 @@ func readExportPlanChunks(path string) ([]dataExportChunkState, error) {
 			chunks[len(chunks)-1].EstimatedRows = rows
 		case strings.HasPrefix(trimmed, "output_uri:") && len(chunks) > 0:
 			chunks[len(chunks)-1].OutputURI = trimYAMLScalar(strings.TrimPrefix(trimmed, "output_uri:"))
+		case strings.HasPrefix(trimmed, "predicate:") && len(chunks) > 0:
+			chunks[len(chunks)-1].Predicate = trimYAMLScalar(strings.TrimPrefix(trimmed, "predicate:"))
 		}
 	}
 	return chunks, nil
@@ -428,6 +430,7 @@ type dataExportChunkState struct {
 	SourceObject  string
 	TargetObject  string
 	OutputURI     string
+	Predicate     string
 	EstimatedRows int64
 	Status        string
 }
@@ -446,8 +449,9 @@ type cdcPlanSummary struct {
 }
 
 type cdcTrackedTableState struct {
-	SourceObject string
-	TargetObject string
+	SourceObject   string
+	TargetObject   string
+	ApplyBatchSize int
 }
 
 func readCDCPlanSummary(path string) (cdcPlanSummary, error) {
@@ -470,6 +474,13 @@ func readCDCPlanSummary(path string) (cdcPlanSummary, error) {
 			})
 		case strings.HasPrefix(trimmed, "target_object:") && len(plan.Tables) > 0:
 			plan.Tables[len(plan.Tables)-1].TargetObject = trimYAMLScalar(strings.TrimPrefix(trimmed, "target_object:"))
+		case strings.HasPrefix(trimmed, "apply_batch_size:") && len(plan.Tables) > 0:
+			value := trimYAMLScalar(strings.TrimPrefix(trimmed, "apply_batch_size:"))
+			batchSize, err := strconv.Atoi(value)
+			if err != nil {
+				return cdcPlanSummary{}, fmt.Errorf("parse cdc apply_batch_size %q: %w", value, err)
+			}
+			plan.Tables[len(plan.Tables)-1].ApplyBatchSize = batchSize
 		}
 	}
 	return plan, nil

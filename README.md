@@ -20,6 +20,7 @@ This MVP provides:
 - PR draft generation and a dry-run-by-default GitHub PR creation wrapper.
 - Export, import, CDC, and validation payload hash calculation.
 - Approved metadata-only export/import/CDC worker state write-back.
+- Dry-run-by-default external executor command generation for approved export/import/CDC plans.
 - Approved validation-only worker execution.
 - Read-only worker reconcile dry-run planning across source clusters and projects.
 - Worker state PR draft generation and a dry-run-by-default branch/commit/push/GitHub PR wrapper.
@@ -44,9 +45,9 @@ This MVP provides:
   ```
 
 - JSON Schema files for core metadata.
-- Tests for repository initialization, validation, discovery planning and execution, compatibility analysis, schema draft generation, data movement and CDC plan generation, PR draft generation, GitHub PR create dry-runs, export/import/CDC/validation worker gates, worker reconcile dry-runs and execute-next state PR drafts, worker state PR create dry-runs, upstream SQL Server cluster creation, and migration project creation.
+- Tests for repository initialization, validation, discovery planning and execution, compatibility analysis, schema draft generation, data movement and CDC plan generation, PR draft generation, GitHub PR create dry-runs, export/import/CDC/validation worker gates, external executor command dry-runs, worker reconcile dry-runs and execute-next state PR drafts, worker state PR create dry-runs, upstream SQL Server cluster creation, and migration project creation.
 
-This MVP connects to SQL Server only for read-only catalog discovery when a connection string is supplied through an environment variable. It does **not** connect to TiDB or execute generated DDL, real export, real import, CDC streaming/apply, cutover, cleanup, or source/target data validation yet.
+This MVP connects to SQL Server only for read-only catalog discovery when a connection string is supplied through an environment variable. It does **not** connect to TiDB or execute generated DDL, real export, real import, CDC streaming/apply, cutover, cleanup, or source/target data validation unless an operator explicitly uses `worker-executor --execute` with a separately installed external executor binary.
 
 ## Build
 
@@ -211,6 +212,18 @@ go run ./cmd/sqlserver2tidb worker-cdc \
 
 These workers only convert approved plan files into planned state/evidence files. They do not export data, import data, start CDC, connect to databases, or write object storage.
 
+Preview external executor commands for an approved stage:
+
+```bash
+go run ./cmd/sqlserver2tidb worker-executor \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --stage export
+```
+
+This command reuses the same approval/hash gate and is dry-run by default. It prints `sqlserver2tidb-executor` commands for export chunks, import jobs, or CDC table apply work. Add `--execute` only when the external executor binary is installed and reviewed.
+
 Preview ready and blocked worker actions across the repository:
 
 ```bash
@@ -307,5 +320,5 @@ This checks approved metadata, writes `state/validation-status.yaml`, and writes
 
 ## Next Milestones
 
-- Replace metadata-only export/import/CDC workers with real executors behind the same approval gates.
+- Implement the external `sqlserver2tidb-executor` binary behind the existing `worker-executor` approval/hash gate.
 - Add source/target data validation connectors after import support exists.
