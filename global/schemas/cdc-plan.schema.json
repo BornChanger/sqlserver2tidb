@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CDC plan",
+  "type": "object",
+  "required": ["status", "mode"],
+  "properties": {
+    "status": {"enum": ["draft", "reviewed", "approved"]},
+    "project_id": {"type": "string"},
+    "source_cluster_id": {"type": "string"},
+    "mode": {"type": "string"},
+    "retention_hours_required": {"type": "integer", "minimum": 1},
+    "source_database": {"type": "string"},
+    "source_schemas": {"type": "array", "items": {"type": "string"}},
+    "target_database": {"type": "string"},
+    "checkpoint_scope": {"type": "string"},
+    "checkpoint_file": {"type": "string"},
+    "tracked_tables": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["source_object", "target_object", "apply_batch_size"],
+        "properties": {
+          "source_object": {"type": "string", "minLength": 1},
+          "target_object": {"type": "string", "minLength": 1},
+          "apply_batch_size": {"type": "integer", "minimum": 1},
+          "status": {"type": "string"}
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

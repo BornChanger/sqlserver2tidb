@@ -226,7 +226,7 @@ clusters/
 其中：
 
 - `global/policies/` 保存审批和执行策略。
-- `global/schemas/` 保存 JSON Schema，包括 cluster、project、migration plan 和 validation plan metadata。
+- `global/schemas/` 保存 JSON Schema，包括 cluster、project、migration、export、import、CDC 和 validation plan metadata。
 - `global/templates/` 保存模板。
 - `clusters/` 保存所有上游 SQL Server 集群。
 
@@ -239,10 +239,10 @@ bin/sqlserver2tidb validate-repo --root .
 如果仓库结构完整，命令会输出：
 
 ```text
-repository is valid at . (5 dirs, 9 files checked)
+repository is valid at . (5 dirs, 13 files checked)
 ```
 
-如果缺少必需文件、必需目录，或者 `plan/validation-plan.yaml` 中的 `row_count` / `row-count` 检查项缺少 `id`、`source_object`、`target_object`，或 predicate / target predicate 仍包含 `TODO`，命令会返回非零退出码，并列出问题。示例：
+如果缺少必需文件、必需目录、file schema policy 映射，或者 export/import/CDC plan 中已有 work item 但缺少执行必需字段，或者 `plan/validation-plan.yaml` 中的 `row_count` / `row-count` 检查项缺少 `id`、`source_object`、`target_object`，或 predicate / target predicate 仍包含 `TODO`，命令会返回非零退出码，并列出问题。空的 draft plan 列表仍然是合法的初始化状态。示例：
 
 ```text
 repository validation failed at .:
@@ -1413,7 +1413,7 @@ clusters/<source_cluster_id>/cluster.yaml
 
 - CODEOWNERS 是否要求额外审批。
 - approval 文件是否存在。
-- 文件 schema 是否通过，包括 `validation_plan: global/schemas/validation-plan.schema.json`。
+- 文件 schema 是否通过，包括 migration/export/import/CDC/validation plan 的 policy 映射。
 - 是否修改了受保护路径。
 
 ### 14.3 CDC checkpoint 过期
@@ -1485,6 +1485,8 @@ bin/sqlserver2tidb init-repo --root .
 ```bash
 bin/sqlserver2tidb validate-repo --root .
 ```
+
+该命令检查必需目录、必需文件、`global/policies/file-schema-policy.yaml` 中的 plan schema 映射，以及已填写的 export/import/CDC/validation plan work item 的关键字段。它不会连接 SQL Server 或 TiDB，也不会执行数据迁移。
 
 ### 16.3 create-cluster
 

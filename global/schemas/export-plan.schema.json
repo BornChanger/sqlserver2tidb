@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Full export plan",
+  "type": "object",
+  "required": ["status"],
+  "properties": {
+    "status": {"enum": ["draft", "reviewed", "approved"]},
+    "project_id": {"type": "string"},
+    "source_cluster_id": {"type": "string"},
+    "format": {"type": "string"},
+    "object_uri_prefix": {"type": "string"},
+    "chunk_size_rows": {"type": "integer", "minimum": 1},
+    "tables": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["source_object", "target_object", "chunks"],
+        "properties": {
+          "source_object": {"type": "string", "minLength": 1},
+          "target_object": {"type": "string", "minLength": 1},
+          "row_count_estimate": {"type": "integer", "minimum": 0},
+          "chunks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["id", "output_uri"],
+              "properties": {
+                "id": {"type": "string", "minLength": 1},
+                "estimated_rows": {"type": "integer", "minimum": 0},
+                "predicate": {"type": "string"},
+                "output_uri": {"type": "string", "minLength": 1}
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "chunks": {"type": "array"}
+  },
+  "additionalProperties": true
+}

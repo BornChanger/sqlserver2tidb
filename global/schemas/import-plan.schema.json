@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Full import plan",
+  "type": "object",
+  "required": ["status"],
+  "properties": {
+    "status": {"enum": ["draft", "reviewed", "approved"]},
+    "project_id": {"type": "string"},
+    "source_cluster_id": {"type": "string"},
+    "engine": {"type": "string"},
+    "mode": {"type": "string"},
+    "jobs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "target_object", "source_uri", "depends_on_export_chunk"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "target_object": {"type": "string", "minLength": 1},
+          "source_uri": {"type": "string", "minLength": 1},
+          "depends_on_export_chunk": {"type": "string", "minLength": 1}
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

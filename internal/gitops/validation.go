@@ -22,6 +22,9 @@ var requiredGlobalFiles = []string{
 	"global/schemas/cluster.schema.json",
 	"global/schemas/project.schema.json",
 	"global/schemas/migration-plan.schema.json",
+	"global/schemas/export-plan.schema.json",
+	"global/schemas/import-plan.schema.json",
+	"global/schemas/cdc-plan.schema.json",
 	"global/schemas/validation-plan.schema.json",
 	"global/templates/project.yaml",
 	"global/templates/migration-plan.yaml",
@@ -42,6 +45,9 @@ var requiredFileSchemaPolicyMappings = []struct {
 	{Key: "cluster", Path: "global/schemas/cluster.schema.json"},
 	{Key: "project", Path: "global/schemas/project.schema.json"},
 	{Key: "migration_plan", Path: "global/schemas/migration-plan.schema.json"},
+	{Key: "export_plan", Path: "global/schemas/export-plan.schema.json"},
+	{Key: "import_plan", Path: "global/schemas/import-plan.schema.json"},
+	{Key: "cdc_plan", Path: "global/schemas/cdc-plan.schema.json"},
 	{Key: "validation_plan", Path: "global/schemas/validation-plan.schema.json"},
 }
 
@@ -251,6 +257,30 @@ func validateProjects(root, projectsRel string, report *ValidationReport) {
 }
 
 func validateProjectContent(root, projectRel string, report *ValidationReport) {
+	exportPlanRel := filepath.ToSlash(filepath.Join(projectRel, "plan", "export-plan.yaml"))
+	exportPlanPath := filepath.Join(root, filepath.FromSlash(exportPlanRel))
+	if info, err := os.Stat(exportPlanPath); err == nil && !info.IsDir() {
+		if err := validateExportPlanContent(exportPlanPath); err != nil {
+			report.addError(fmt.Sprintf("invalid export plan %s: %v", exportPlanRel, err))
+		}
+	}
+
+	importPlanRel := filepath.ToSlash(filepath.Join(projectRel, "plan", "import-plan.yaml"))
+	importPlanPath := filepath.Join(root, filepath.FromSlash(importPlanRel))
+	if info, err := os.Stat(importPlanPath); err == nil && !info.IsDir() {
+		if err := validateImportPlanContent(importPlanPath); err != nil {
+			report.addError(fmt.Sprintf("invalid import plan %s: %v", importPlanRel, err))
+		}
+	}
+
+	cdcPlanRel := filepath.ToSlash(filepath.Join(projectRel, "plan", "cdc-plan.yaml"))
+	cdcPlanPath := filepath.Join(root, filepath.FromSlash(cdcPlanRel))
+	if info, err := os.Stat(cdcPlanPath); err == nil && !info.IsDir() {
+		if err := validateCDCPlanContent(cdcPlanPath); err != nil {
+			report.addError(fmt.Sprintf("invalid cdc plan %s: %v", cdcPlanRel, err))
+		}
+	}
+
 	validationPlanRel := filepath.ToSlash(filepath.Join(projectRel, "plan", "validation-plan.yaml"))
 	validationPlanPath := filepath.Join(root, filepath.FromSlash(validationPlanRel))
 	info, err := os.Stat(validationPlanPath)
@@ -260,6 +290,53 @@ func validateProjectContent(root, projectRel string, report *ValidationReport) {
 	if err := validateValidationPlanContent(validationPlanPath); err != nil {
 		report.addError(fmt.Sprintf("invalid validation plan %s: %v", validationPlanRel, err))
 	}
+}
+
+func validateExportPlanContent(path string) error {
+	chunks, err := readExportPlanChunks(path)
+	if err != nil {
+		return err
+	}
+	if len(chunks) == 0 {
+		return nil
+	}
+	for _, chunk := range chunks {
+		if strings.TrimSpace(chunk.ID) == "" {
+			return fmt.Errorf("export chunk id is required")
+		}
+		if strings.TrimSpace(chunk.SourceObject) == "" {
+			return fmt.Errorf("export chunk %s source_object is required", chunk.ID)
+		}
+		if strings.TrimSpace(chunk.TargetObject) == "" {
+			return fmt.Errorf("export chunk %s target_object is required", chunk.ID)
+		}
+		if strings.TrimSpace(chunk.OutputURI) == "" {
+			return fmt.Errorf("export chunk %s output_uri is required", chunk.ID)
+		}
+	}
+	return nil
+}
+
+func validateImportPlanContent(path string) error {
+	jobs, err := readImportPlanJobs(path)
+	if err != nil {
+		return err
+	}
+	if len(jobs) == 0 {
+		return nil
+	}
+	return validateImportPlanJobs(jobs)
+}
+
+func validateCDCPlanContent(path string) error {
+	plan, err := readCDCPlanSummary(path)
+	if err != nil {
+		return err
+	}
+	if len(plan.Tables) == 0 {
+		return nil
+	}
+	return validateCDCPlanSummary(plan)
 }
 
 func validateValidationPlanContent(path string) error {

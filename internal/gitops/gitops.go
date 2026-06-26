@@ -66,6 +66,9 @@ schemas:
   cluster: global/schemas/cluster.schema.json
   project: global/schemas/project.schema.json
   migration_plan: global/schemas/migration-plan.schema.json
+  export_plan: global/schemas/export-plan.schema.json
+  import_plan: global/schemas/import-plan.schema.json
+  cdc_plan: global/schemas/cdc-plan.schema.json
   validation_plan: global/schemas/validation-plan.schema.json
 `,
 		"global/templates/project.yaml": `project_id: example-project
@@ -169,6 +172,113 @@ approval_required:
       "items": {"enum": ["ddl", "export", "import", "cdc", "cutover"]}
     }
   }
+}
+`,
+		"global/schemas/export-plan.schema.json": `{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Full export plan",
+  "type": "object",
+  "required": ["status"],
+  "properties": {
+    "status": {"enum": ["draft", "reviewed", "approved"]},
+    "project_id": {"type": "string"},
+    "source_cluster_id": {"type": "string"},
+    "format": {"type": "string"},
+    "object_uri_prefix": {"type": "string"},
+    "chunk_size_rows": {"type": "integer", "minimum": 1},
+    "tables": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["source_object", "target_object", "chunks"],
+        "properties": {
+          "source_object": {"type": "string", "minLength": 1},
+          "target_object": {"type": "string", "minLength": 1},
+          "row_count_estimate": {"type": "integer", "minimum": 0},
+          "chunks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["id", "output_uri"],
+              "properties": {
+                "id": {"type": "string", "minLength": 1},
+                "estimated_rows": {"type": "integer", "minimum": 0},
+                "predicate": {"type": "string"},
+                "output_uri": {"type": "string", "minLength": 1}
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "chunks": {"type": "array"}
+  },
+  "additionalProperties": true
+}
+`,
+		"global/schemas/import-plan.schema.json": `{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Full import plan",
+  "type": "object",
+  "required": ["status"],
+  "properties": {
+    "status": {"enum": ["draft", "reviewed", "approved"]},
+    "project_id": {"type": "string"},
+    "source_cluster_id": {"type": "string"},
+    "engine": {"type": "string"},
+    "mode": {"type": "string"},
+    "jobs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "target_object", "source_uri", "depends_on_export_chunk"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "target_object": {"type": "string", "minLength": 1},
+          "source_uri": {"type": "string", "minLength": 1},
+          "depends_on_export_chunk": {"type": "string", "minLength": 1}
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}
+`,
+		"global/schemas/cdc-plan.schema.json": `{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CDC plan",
+  "type": "object",
+  "required": ["status", "mode"],
+  "properties": {
+    "status": {"enum": ["draft", "reviewed", "approved"]},
+    "project_id": {"type": "string"},
+    "source_cluster_id": {"type": "string"},
+    "mode": {"type": "string"},
+    "retention_hours_required": {"type": "integer", "minimum": 1},
+    "source_database": {"type": "string"},
+    "source_schemas": {"type": "array", "items": {"type": "string"}},
+    "target_database": {"type": "string"},
+    "checkpoint_scope": {"type": "string"},
+    "checkpoint_file": {"type": "string"},
+    "tracked_tables": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["source_object", "target_object", "apply_batch_size"],
+        "properties": {
+          "source_object": {"type": "string", "minLength": 1},
+          "target_object": {"type": "string", "minLength": 1},
+          "apply_batch_size": {"type": "integer", "minimum": 1},
+          "status": {"type": "string"}
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
 }
 `,
 		"global/schemas/validation-plan.schema.json": `{

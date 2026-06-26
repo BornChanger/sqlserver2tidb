@@ -3,4 +3,7 @@ schemas:
   cluster: global/schemas/cluster.schema.json
   project: global/schemas/project.schema.json
   migration_plan: global/schemas/migration-plan.schema.json
+  export_plan: global/schemas/export-plan.schema.json
+  import_plan: global/schemas/import-plan.schema.json
+  cdc_plan: global/schemas/cdc-plan.schema.json
   validation_plan: global/schemas/validation-plan.schema.json
