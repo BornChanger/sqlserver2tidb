@@ -776,6 +776,7 @@ func newCSVImportReader(r io.Reader) (*csvImportReader, error) {
 		hasNullBitmap = true
 		columns = append([]string(nil), columns[:len(columns)-1]...)
 	}
+	seenColumns := make(map[string]struct{}, len(columns))
 	for _, column := range columns {
 		if strings.TrimSpace(column) == "" {
 			return nil, fmt.Errorf("CSV header contains an empty column name")
@@ -783,6 +784,11 @@ func newCSVImportReader(r io.Reader) (*csvImportReader, error) {
 		if column == csvNullBitmapColumn {
 			return nil, fmt.Errorf("CSV header contains reserved column name %q outside the final null bitmap position", csvNullBitmapColumn)
 		}
+		normalizedColumn := strings.ToLower(column)
+		if _, ok := seenColumns[normalizedColumn]; ok {
+			return nil, fmt.Errorf("CSV header contains duplicate column name %q", column)
+		}
+		seenColumns[normalizedColumn] = struct{}{}
 	}
 	return &csvImportReader{reader: reader, columns: columns, hasNullBitmap: hasNullBitmap}, nil
 }

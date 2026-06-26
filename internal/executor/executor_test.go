@@ -439,6 +439,14 @@ func TestCSVImportReaderRestoresNullBitmapValues(t *testing.T) {
 	}
 }
 
+func TestCSVImportReaderRejectsDuplicateHeaderColumns(t *testing.T) {
+	_, err := newCSVImportReader(strings.NewReader("id,name,ID\n1,Ada,2\n"))
+	if err == nil {
+		t.Fatal("newCSVImportReader() error = nil, want duplicate column error")
+	}
+	assertOutputContains(t, err.Error(), `CSV header contains duplicate column name "ID"`)
+}
+
 func TestRunCDCDryRunCommand(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 
