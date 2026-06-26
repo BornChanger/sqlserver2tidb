@@ -1801,6 +1801,7 @@ func TestRunExecutorEvidencePRDraftAndCreateDryRunCommands(t *testing.T) {
   "commands": [
     {
       "id": "schema/tidb-ddl/dbo.orders.sql",
+      "args": ["sqlserver2tidb-executor", "apply-ddl", "--execute"],
       "shell_command": "sqlserver2tidb-executor apply-ddl --execute",
       "exit_code": 0,
       "output": "applied\n",

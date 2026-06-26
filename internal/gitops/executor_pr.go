@@ -42,12 +42,13 @@ type executorEvidenceSummary struct {
 }
 
 type executorEvidenceCommandSummary struct {
-	ID           string `json:"id"`
-	ShellCommand string `json:"shell_command"`
-	ExitCode     *int   `json:"exit_code"`
-	StartedAt    string `json:"started_at"`
-	CompletedAt  string `json:"completed_at"`
-	DurationMs   *int64 `json:"duration_ms"`
+	ID           string   `json:"id"`
+	Args         []string `json:"args"`
+	ShellCommand string   `json:"shell_command"`
+	ExitCode     *int     `json:"exit_code"`
+	StartedAt    string   `json:"started_at"`
+	CompletedAt  string   `json:"completed_at"`
+	DurationMs   *int64   `json:"duration_ms"`
 }
 
 func GenerateExecutorEvidencePRDraft(root, sourceClusterID, projectID, stage string) (ExecutorEvidencePRDraft, error) {
@@ -224,6 +225,14 @@ func validateExecutorEvidenceCommands(status string, commands []executorEvidence
 		}
 		if *command.ExitCode != 0 {
 			hasFailedCommand = true
+		}
+		if len(command.Args) == 0 {
+			return fmt.Errorf("executor evidence command %s args must contain at least one argument", command.ID)
+		}
+		for argIndex, arg := range command.Args {
+			if strings.TrimSpace(arg) == "" {
+				return fmt.Errorf("executor evidence command %s args[%d] is required", command.ID, argIndex)
+			}
 		}
 		startedAt, err := parseExecutorEvidenceCommandTime(command.ID, "started_at", command.StartedAt)
 		if err != nil {
