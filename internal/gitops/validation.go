@@ -300,10 +300,16 @@ func validateExportPlanContent(path string) error {
 	if len(chunks) == 0 {
 		return nil
 	}
+	seenIDs := make(map[string]struct{}, len(chunks))
 	for _, chunk := range chunks {
-		if strings.TrimSpace(chunk.ID) == "" {
+		chunkID := strings.TrimSpace(chunk.ID)
+		if chunkID == "" {
 			return fmt.Errorf("export chunk id is required")
 		}
+		if _, ok := seenIDs[chunkID]; ok {
+			return fmt.Errorf("duplicate export chunk id %s", chunkID)
+		}
+		seenIDs[chunkID] = struct{}{}
 		if strings.TrimSpace(chunk.SourceObject) == "" {
 			return fmt.Errorf("export chunk %s source_object is required", chunk.ID)
 		}
@@ -344,13 +350,19 @@ func validateValidationPlanContent(path string) error {
 	if err != nil {
 		return err
 	}
+	seenIDs := make(map[string]struct{}, len(checks))
 	for _, check := range checks {
 		if check.Type != "row_count" && check.Type != "row-count" {
 			continue
 		}
-		if strings.TrimSpace(check.ID) == "" {
+		checkID := strings.TrimSpace(check.ID)
+		if checkID == "" {
 			return fmt.Errorf("row_count check id is required")
 		}
+		if _, ok := seenIDs[checkID]; ok {
+			return fmt.Errorf("duplicate validation check id %s", checkID)
+		}
+		seenIDs[checkID] = struct{}{}
 		if strings.TrimSpace(check.SourceObject) == "" {
 			return fmt.Errorf("row_count check %s source_object is required", check.ID)
 		}

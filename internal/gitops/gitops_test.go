@@ -223,6 +223,34 @@ tables:
 	assertContains(t, strings.Join(report.Errors, "\n"), "invalid export plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/export-plan.yaml: export chunk dbo.orders.000001 output_uri is required")
 }
 
+func TestValidateRepoReportsDuplicateExportChunkID(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/export-plan.yaml", `status: reviewed
+tables:
+  - source_object: sales.dbo.orders
+    target_object: app.orders
+    chunks:
+      - id: dbo.orders.000001
+        estimated_rows: 10
+        predicate: id >= 1 and id < 11
+        output_uri: file:///tmp/dbo.orders.000001.csv
+      - id: dbo.orders.000001
+        estimated_rows: 10
+        predicate: id >= 11 and id < 21
+        output_uri: file:///tmp/dbo.orders.000001-copy.csv
+`)
+
+	report, err := ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("ValidateRepo() valid = true, want false")
+	}
+	assertContains(t, strings.Join(report.Errors, "\n"), "invalid export plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/export-plan.yaml: duplicate export chunk id dbo.orders.000001")
+}
+
 func TestValidateRepoReportsInvalidImportPlanContent(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
@@ -241,6 +269,31 @@ jobs:
 		t.Fatalf("ValidateRepo() valid = true, want false")
 	}
 	assertContains(t, strings.Join(report.Errors, "\n"), "invalid import plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml: import job import-dbo.orders.000001 source_uri is required")
+}
+
+func TestValidateRepoReportsDuplicateImportJobID(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml", `status: reviewed
+jobs:
+  - id: import-dbo.orders.000001
+    target_object: app.orders
+    source_uri: file:///tmp/dbo.orders.000001.csv
+    depends_on_export_chunk: dbo.orders.000001
+  - id: import-dbo.orders.000001
+    target_object: app.orders
+    source_uri: file:///tmp/dbo.orders.000001-copy.csv
+    depends_on_export_chunk: dbo.orders.000001-copy
+`)
+
+	report, err := ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("ValidateRepo() valid = true, want false")
+	}
+	assertContains(t, strings.Join(report.Errors, "\n"), "invalid import plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml: duplicate import job id import-dbo.orders.000001")
 }
 
 func TestValidateRepoReportsInvalidCDCPlanContent(t *testing.T) {
@@ -348,6 +401,31 @@ checks:
 		t.Fatalf("ValidateRepo() valid = true, want false")
 	}
 	assertContains(t, strings.Join(report.Errors, "\n"), "invalid validation plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/validation-plan.yaml: row_count check orders-row-count target_object is required")
+}
+
+func TestValidateRepoReportsDuplicateValidationCheckID(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/validation-plan.yaml", `status: reviewed
+checks:
+  - id: orders-row-count
+    type: row_count
+    source_object: sales.dbo.orders
+    target_object: app.orders
+  - id: orders-row-count
+    type: row_count
+    source_object: sales.dbo.orders_archive
+    target_object: app.orders_archive
+`)
+
+	report, err := ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("ValidateRepo() valid = true, want false")
+	}
+	assertContains(t, strings.Join(report.Errors, "\n"), "invalid validation plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/validation-plan.yaml: duplicate validation check id orders-row-count")
 }
 
 func TestValidateRepoReportsTODOValidationPlanPredicate(t *testing.T) {

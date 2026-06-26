@@ -474,10 +474,16 @@ func validateImportPlanJobs(jobs []dataImportJobState) error {
 	if len(jobs) == 0 {
 		return fmt.Errorf("import plan contains no jobs")
 	}
+	seenIDs := make(map[string]struct{}, len(jobs))
 	for _, job := range jobs {
-		if strings.TrimSpace(job.ID) == "" {
+		jobID := strings.TrimSpace(job.ID)
+		if jobID == "" {
 			return fmt.Errorf("import job id is required")
 		}
+		if _, ok := seenIDs[jobID]; ok {
+			return fmt.Errorf("duplicate import job id %s", jobID)
+		}
+		seenIDs[jobID] = struct{}{}
 		if strings.TrimSpace(job.TargetObject) == "" {
 			return fmt.Errorf("import job %s target_object is required", job.ID)
 		}
