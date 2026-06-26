@@ -32,7 +32,7 @@ LLM 只生成解释、候选方案和文档，不直接执行迁移
 - 通过环境变量连接串执行只读 SQL Server catalog discovery。
 - 基于 `inventory/inventory.json` 生成规则化兼容性分析报告。
 - 基于 SQL Server inventory 和 project metadata 生成项目级 TiDB DDL 草稿。
-- 基于 stage 生成本地 PR draft 文件和建议的 `gh pr create` 命令。
+- 基于 stage 生成本地 PR draft 文件，并通过 dry-run-by-default wrapper 准备 `gh pr create`。
 - 计算 validation payload hash，并在 approval 通过后执行 metadata-only validation worker。
 - 创建上游 SQL Server 集群目录。
 - 在上游 SQL Server 集群下创建迁移项目目录。
@@ -40,7 +40,7 @@ LLM 只生成解释、候选方案和文档，不直接执行迁移
 - 生成核心 JSON Schema 文件。
 - 单元测试和 CLI smoke test。
 
-当前 CLI 只有在执行 `discover-sqlserver --connection-string-env ...` 时会连接 SQL Server，并且只读取 catalog metadata。它不会连接 TiDB，也不会执行生成的 DDL、真实导出、导入、CDC 或切流。`discover-sqlserver --dry-run` 只输出计划，不打开数据库连接，也不写 inventory 文件。`analyze-compatibility`、`generate-schema-draft`、`generate-pr-draft`、`compute-payload-hash` 和 `worker-validate` 只读取并写回 GitHub metadata 文件。
+当前 CLI 只有在执行 `discover-sqlserver --connection-string-env ...` 时会连接 SQL Server，并且只读取 catalog metadata。它不会连接 TiDB，也不会执行生成的 DDL、真实导出、导入、CDC 或切流。`discover-sqlserver --dry-run` 只输出计划，不打开数据库连接，也不写 inventory 文件。`analyze-compatibility`、`generate-schema-draft`、`generate-pr-draft`、`create-pr` 的默认 dry-run、`compute-payload-hash` 和 `worker-validate` 只读取并写回 GitHub metadata 文件。`create-pr --execute` 会调用本地 `gh pr create`。
 
 ### 2.2 终极目标
 
@@ -460,6 +460,39 @@ clusters/prod-sqlserver-a/prs/discovery-pr.md
 | `cutover` | project | review 切流 runbook、approval 和 evidence |
 
 注意：该命令只生成 PR 正文草稿和建议命令，不会创建 GitHub PR，不会 merge PR，也不会检查 GitHub approval 状态。
+
+### 9.5 创建 GitHub PR
+
+`create-pr` 会读取已经生成的 PR draft，并构造确定性的 `gh pr create` 命令。
+
+默认 dry-run：
+
+```bash
+bin/sqlserver2tidb create-pr \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --stage schema
+```
+
+dry-run 只打印命令，不调用 GitHub API。确认分支已经 push 且 body file 正确后，显式执行：
+
+```bash
+bin/sqlserver2tidb create-pr \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --stage schema \
+  --execute
+```
+
+限制：
+
+- 必须先运行 `generate-pr-draft`。
+- 不会自动创建或 push 分支。
+- 不会 merge PR。
+- 不会 approval PR。
+- 不会绕过 GitHub branch protection 或 CODEOWNERS。
 
 ## 10. 终极迁移流程
 
@@ -1140,7 +1173,32 @@ bin/sqlserver2tidb generate-pr-draft \
 
 该命令生成本地 PR body draft，并在 stdout 输出 PR 标题、建议分支名、body file 路径和 review 文件数量。它不会调用 GitHub API。
 
-### 16.9 compute-payload-hash
+### 16.9 create-pr
+
+dry-run：
+
+```bash
+bin/sqlserver2tidb create-pr \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --stage schema
+```
+
+真实调用 `gh pr create`：
+
+```bash
+bin/sqlserver2tidb create-pr \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --stage schema \
+  --execute
+```
+
+该命令要求对应 PR draft 已存在。默认 dry-run，只打印将执行的 `gh pr create`。只有加 `--execute` 才会调用本地 GitHub CLI。
+
+### 16.10 compute-payload-hash
 
 ```bash
 bin/sqlserver2tidb compute-payload-hash \
@@ -1152,7 +1210,7 @@ bin/sqlserver2tidb compute-payload-hash \
 
 该命令计算指定 stage 的 payload hash。当前只支持 `validation` stage。这个 hash 应写入对应 approval 文件，防止审批后 payload 文件被修改。
 
-### 16.10 worker-validate
+### 16.11 worker-validate
 
 ```bash
 bin/sqlserver2tidb worker-validate \
@@ -1175,7 +1233,8 @@ bin/sqlserver2tidb worker-validate \
 8. 对已有 inventory 执行 `analyze-compatibility`，生成规则化兼容性报告。
 9. 执行 `generate-schema-draft`，生成 DDL 草稿、转换报告和 schema diff，并通过 Schema PR review。
 10. 对 discovery/schema/plan 等阶段执行 `generate-pr-draft`，生成 PR body 草稿和建议命令。
-11. 执行 `compute-payload-hash --stage validation`，把 hash 写入 validation approval。
-12. approval 通过后执行 `worker-validate`，生成 validation state 和 evidence。
-13. 再接入 export/import/CDC。
-14. 最后接入 cutover orchestration。
+11. 执行 `create-pr` dry-run 检查命令，再用 `create-pr --execute` 创建 GitHub PR。
+12. 执行 `compute-payload-hash --stage validation`，把 hash 写入 validation approval。
+13. approval 通过后执行 `worker-validate`，生成 validation state 和 evidence。
+14. 再接入 export/import/CDC。
+15. 最后接入 cutover orchestration。

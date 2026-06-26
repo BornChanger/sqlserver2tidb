@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -33,6 +34,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runGenerateSchemaDraft(args[1:], stdout, stderr)
 	case "generate-pr-draft":
 		return runGeneratePRDraft(args[1:], stdout, stderr)
+	case "create-pr":
+		return runCreatePR(args[1:], stdout, stderr)
 	case "compute-payload-hash":
 		return runComputePayloadHash(args[1:], stdout, stderr)
 	case "worker-validate":
@@ -227,6 +230,43 @@ func runGeneratePRDraft(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+func runCreatePR(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("create-pr", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	root := fs.String("root", ".", "repository root")
+	sourceClusterID := fs.String("source-cluster-id", "", "upstream SQL Server cluster id")
+	projectID := fs.String("project-id", "", "migration project id; omit for cluster-level stages such as discovery")
+	stage := fs.String("stage", "", "PR stage: discovery, schema, plan, export, import, cdc, validation, cutover")
+	execute := fs.Bool("execute", false, "call gh pr create; default is dry-run")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	spec, err := gitops.PrepareGitHubPRCreate(*root, *sourceClusterID, *projectID, *stage)
+	if err != nil {
+		fmt.Fprintf(stderr, "create PR: %v\n", err)
+		return 1
+	}
+	if !*execute {
+		fmt.Fprintln(stdout, "dry run: not calling GitHub")
+		fmt.Fprintf(stdout, "command: %s\n", spec.ShellCommand)
+		fmt.Fprintf(stdout, "title: %s\n", spec.Title)
+		fmt.Fprintf(stdout, "body file: %s\n", spec.BodyFile)
+		return 0
+	}
+
+	cmd := exec.Command("gh", spec.Args...)
+	cmd.Dir = *root
+	output, err := cmd.CombinedOutput()
+	if len(output) > 0 {
+		fmt.Fprint(stdout, string(output))
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "create PR: gh pr create failed: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
 func runComputePayloadHash(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("compute-payload-hash", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -375,6 +415,7 @@ Usage:
   sqlserver2tidb analyze-compatibility --root . --source-cluster-id prod-sqlserver-a
   sqlserver2tidb generate-schema-draft --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
   sqlserver2tidb generate-pr-draft --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage schema
+  sqlserver2tidb create-pr --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage schema
   sqlserver2tidb compute-payload-hash --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage validation
   sqlserver2tidb worker-validate --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
   sqlserver2tidb create-cluster --cluster-id prod-sqlserver-a --display-name "prod SQL Server A" --listener sqlserver-a.internal --secret-ref vault://...

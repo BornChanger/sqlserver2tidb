@@ -709,6 +709,94 @@ func TestGeneratePRDraftRejectsProjectStageWithoutProject(t *testing.T) {
 	assertContains(t, err.Error(), "project id is required for schema PR draft")
 }
 
+func TestPrepareGitHubPRCreateBuildsCommandFromGeneratedDraft(t *testing.T) {
+	root := t.TempDir()
+	must(t, InitRepo(root))
+	must(t, CreateCluster(root, ClusterSpec{
+		ClusterID:              "prod-sqlserver-a",
+		DisplayName:            "prod SQL Server A",
+		Listener:               "sqlserver-a.internal",
+		Port:                   1433,
+		SecretRef:              "vault://migration/prod-sqlserver-a/readonly",
+		CDCMode:                "sqlserver-cdc",
+		RetentionHoursRequired: 168,
+		Owners:                 []string{"dba-team"},
+	}))
+	must(t, CreateProject(root, ProjectSpec{
+		SourceClusterID: "prod-sqlserver-a",
+		ProjectID:       "sales-db-to-tidb-prod-a",
+		DisplayName:     "sales DB to TiDB prod A",
+		SourceDatabase:  "sales",
+		SourceSchemas:   []string{"dbo"},
+		TargetName:      "tidb-prod-a",
+		TargetDatabase:  "app",
+		TargetSecretRef: "vault://migration/tidb-prod-a/migrate-user",
+		Mode:            "short-downtime",
+		Owners:          []string{"dba-team"},
+	}))
+	_, err := GeneratePRDraft(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "schema")
+	if err != nil {
+		t.Fatalf("GeneratePRDraft() error = %v", err)
+	}
+
+	spec, err := PrepareGitHubPRCreate(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "schema")
+	if err != nil {
+		t.Fatalf("PrepareGitHubPRCreate() error = %v", err)
+	}
+	if spec.Title != "[schema] sales-db-to-tidb-prod-a" {
+		t.Fatalf("Title = %q, want schema title", spec.Title)
+	}
+	if spec.BodyFile != "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/prs/schema-pr.md" {
+		t.Fatalf("BodyFile = %q, want project schema body file", spec.BodyFile)
+	}
+	wantArgs := []string{
+		"pr", "create",
+		"--base", "main",
+		"--head", "agent/sales-db-to-tidb-prod-a/schema",
+		"--title", "[schema] sales-db-to-tidb-prod-a",
+		"--body-file", "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/prs/schema-pr.md",
+	}
+	if strings.Join(spec.Args, "\n") != strings.Join(wantArgs, "\n") {
+		t.Fatalf("Args = %#v, want %#v", spec.Args, wantArgs)
+	}
+	assertContains(t, spec.ShellCommand, "gh pr create --base main --head agent/sales-db-to-tidb-prod-a/schema")
+	assertContains(t, spec.ShellCommand, "--title '[schema] sales-db-to-tidb-prod-a'")
+}
+
+func TestPrepareGitHubPRCreateRequiresGeneratedDraft(t *testing.T) {
+	root := t.TempDir()
+	must(t, InitRepo(root))
+	must(t, CreateCluster(root, ClusterSpec{
+		ClusterID:              "prod-sqlserver-a",
+		DisplayName:            "prod SQL Server A",
+		Listener:               "sqlserver-a.internal",
+		Port:                   1433,
+		SecretRef:              "vault://migration/prod-sqlserver-a/readonly",
+		CDCMode:                "sqlserver-cdc",
+		RetentionHoursRequired: 168,
+		Owners:                 []string{"dba-team"},
+	}))
+	must(t, CreateProject(root, ProjectSpec{
+		SourceClusterID: "prod-sqlserver-a",
+		ProjectID:       "sales-db-to-tidb-prod-a",
+		DisplayName:     "sales DB to TiDB prod A",
+		SourceDatabase:  "sales",
+		SourceSchemas:   []string{"dbo"},
+		TargetName:      "tidb-prod-a",
+		TargetDatabase:  "app",
+		TargetSecretRef: "vault://migration/tidb-prod-a/migrate-user",
+		Mode:            "short-downtime",
+		Owners:          []string{"dba-team"},
+	}))
+
+	_, err := PrepareGitHubPRCreate(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "schema")
+	if err == nil {
+		t.Fatal("PrepareGitHubPRCreate() expected missing draft error")
+	}
+	assertContains(t, err.Error(), "PR draft clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/prs/schema-pr.md does not exist")
+	assertContains(t, err.Error(), "run generate-pr-draft first")
+}
+
 func TestRunValidationWorkerRequiresApprovedValidationApproval(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, `{

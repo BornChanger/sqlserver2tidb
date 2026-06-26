@@ -34,6 +34,17 @@ Supported stages are `discovery`, `schema`, `plan`, `export`, `import`, `cdc`, `
 
 It does not call the GitHub API, open a PR, merge a PR, or infer approval state.
 
+## PR Creation Wrapper
+
+`create-pr` wraps generated PR drafts with a guarded `gh pr create` command. It:
+
+- requires an existing PR draft body file;
+- reconstructs the deterministic title, branch, and body-file arguments;
+- defaults to dry-run and prints the exact command;
+- calls `gh pr create` only when `--execute` is explicitly set.
+
+The wrapper does not merge PRs, approve PRs, bypass branch protection, or inspect GitHub approval state. GitHub branch protection and CODEOWNERS remain the approval boundary.
+
 ## Validation Worker
 
 The current worker implementation is validation-only and metadata-only. It does not connect to SQL Server or TiDB. It executes only after `approvals/validation-approval.yaml` has:
@@ -101,7 +112,7 @@ LLMs may generate:
 - validation report narratives
 - incident diagnosis suggestions
 
-LLMs are not required for deterministic repository commands such as `validate-repo`, `discover-sqlserver --dry-run`, `analyze-compatibility`, `generate-schema-draft`, `generate-pr-draft`, `compute-payload-hash`, or `worker-validate`. For schema work, the LLM may read `conversion-report.md` and `schema-diff.json` to propose candidate rewrites, but the candidate must be committed as reviewed files before any worker can use it. For PR work, the LLM may refine prose, but file lists, approval files, and stage gates must remain deterministic.
+LLMs are not required for deterministic repository commands such as `validate-repo`, `discover-sqlserver --dry-run`, `analyze-compatibility`, `generate-schema-draft`, `generate-pr-draft`, `create-pr`, `compute-payload-hash`, or `worker-validate`. For schema work, the LLM may read `conversion-report.md` and `schema-diff.json` to propose candidate rewrites, but the candidate must be committed as reviewed files before any worker can use it. For PR work, the LLM may refine prose, but file lists, approval files, and stage gates must remain deterministic.
 
 LLMs must not decide:
 

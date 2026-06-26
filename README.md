@@ -15,7 +15,7 @@ This MVP provides:
 - SQL Server catalog discovery using a connection string supplied through an environment variable.
 - Rule-based SQL Server compatibility analysis from `inventory/inventory.json`.
 - Project-scoped TiDB schema draft generation from SQL Server inventory and project metadata.
-- PR draft generation for review stages without calling the GitHub API.
+- PR draft generation and a dry-run-by-default GitHub PR creation wrapper.
 - Validation payload hash calculation and approved validation-only worker execution.
 - Source-cluster-first metadata organization:
 
@@ -38,7 +38,7 @@ This MVP provides:
   ```
 
 - JSON Schema files for core metadata.
-- Tests for repository initialization, validation, discovery planning and execution, compatibility analysis, schema draft generation, PR draft generation, validation worker gates, upstream SQL Server cluster creation, and migration project creation.
+- Tests for repository initialization, validation, discovery planning and execution, compatibility analysis, schema draft generation, PR draft generation, GitHub PR create dry-runs, validation worker gates, upstream SQL Server cluster creation, and migration project creation.
 
 This MVP connects to SQL Server only for read-only catalog discovery when a connection string is supplied through an environment variable. It does **not** connect to TiDB or execute generated DDL, export, import, CDC, cutover, cleanup, or source/target data validation yet.
 
@@ -152,6 +152,18 @@ go run ./cmd/sqlserver2tidb generate-pr-draft \
 
 This writes a Markdown PR body under `prs/` and prints the suggested `gh pr create` command. It does not call the GitHub API.
 
+Prepare a GitHub PR create command from the generated draft:
+
+```bash
+go run ./cmd/sqlserver2tidb create-pr \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --stage schema
+```
+
+This is a dry-run by default. Add `--execute` to call `gh pr create`.
+
 Compute the validation payload hash before approving validation:
 
 ```bash
@@ -190,5 +202,5 @@ This checks approved metadata, writes `state/validation-status.yaml`, and writes
 
 ## Next Milestones
 
-- Add GitHub PR creation wrappers around generated PR drafts.
+- Add export/import plan generation.
 - Add source/target data validation connectors after import support exists.

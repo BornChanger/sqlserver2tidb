@@ -18,6 +18,17 @@ type PRDraftResult struct {
 	Reviewers       []string
 }
 
+type GitHubPRCreateSpec struct {
+	SourceClusterID string
+	ProjectID       string
+	Stage           string
+	Title           string
+	BranchName      string
+	BodyFile        string
+	Args            []string
+	ShellCommand    string
+}
+
 type prStageDefinition struct {
 	Stage           string
 	Scope           string
@@ -210,6 +221,70 @@ func GeneratePRDraft(root, sourceClusterID, projectID, stage string) (PRDraftRes
 	return generateClusterPRDraft(root, sourceClusterID, definition)
 }
 
+func PrepareGitHubPRCreate(root, sourceClusterID, projectID, stage string) (GitHubPRCreateSpec, error) {
+	sourceClusterID = strings.TrimSpace(sourceClusterID)
+	projectID = strings.TrimSpace(projectID)
+	stage = strings.ToLower(strings.TrimSpace(stage))
+
+	if !idPattern.MatchString(sourceClusterID) {
+		return GitHubPRCreateSpec{}, fmt.Errorf("invalid source cluster id %q", sourceClusterID)
+	}
+	definition, ok := prStageDefinitions[stage]
+	if !ok {
+		return GitHubPRCreateSpec{}, fmt.Errorf("unsupported PR stage %q", stage)
+	}
+	clusterDir := filepath.Join(root, "clusters", sourceClusterID)
+	if info, err := os.Stat(clusterDir); err != nil || !info.IsDir() {
+		return GitHubPRCreateSpec{}, fmt.Errorf("source cluster %q does not exist", sourceClusterID)
+	}
+
+	var title, branchName, bodyFile string
+	if definition.RequiresProject {
+		if projectID == "" {
+			return GitHubPRCreateSpec{}, fmt.Errorf("project id is required for %s PR create", stage)
+		}
+		if !idPattern.MatchString(projectID) {
+			return GitHubPRCreateSpec{}, fmt.Errorf("invalid project id %q", projectID)
+		}
+		projectDir := filepath.Join(clusterDir, "projects", projectID)
+		if info, err := os.Stat(projectDir); err != nil || !info.IsDir() {
+			return GitHubPRCreateSpec{}, fmt.Errorf("project %q does not exist under source cluster %q", projectID, sourceClusterID)
+		}
+		title = fmt.Sprintf("[%s] %s", definition.Stage, projectID)
+		branchName = fmt.Sprintf("agent/%s/%s", projectID, definition.Stage)
+		bodyFile = filepath.ToSlash(filepath.Join("clusters", sourceClusterID, "projects", projectID, "prs", definition.Stage+"-pr.md"))
+	} else {
+		if projectID != "" {
+			return GitHubPRCreateSpec{}, fmt.Errorf("%s PR create is cluster-level and does not accept project id", stage)
+		}
+		title = fmt.Sprintf("[%s] %s", definition.Stage, sourceClusterID)
+		branchName = fmt.Sprintf("agent/%s/%s", sourceClusterID, definition.Stage)
+		bodyFile = filepath.ToSlash(filepath.Join("clusters", sourceClusterID, "prs", definition.Stage+"-pr.md"))
+	}
+
+	bodyPath := filepath.Join(root, filepath.FromSlash(bodyFile))
+	if info, err := os.Stat(bodyPath); err != nil || info.IsDir() {
+		return GitHubPRCreateSpec{}, fmt.Errorf("PR draft %s does not exist; run generate-pr-draft first", bodyFile)
+	}
+	args := []string{
+		"pr", "create",
+		"--base", "main",
+		"--head", branchName,
+		"--title", title,
+		"--body-file", bodyFile,
+	}
+	return GitHubPRCreateSpec{
+		SourceClusterID: sourceClusterID,
+		ProjectID:       projectID,
+		Stage:           definition.Stage,
+		Title:           title,
+		BranchName:      branchName,
+		BodyFile:        bodyFile,
+		Args:            args,
+		ShellCommand:    renderShellCommand(append([]string{"gh"}, args...)),
+	}, nil
+}
+
 func generateProjectPRDraft(root, sourceClusterID, projectID string, definition prStageDefinition) (PRDraftResult, error) {
 	projectDir := filepath.Join(root, "clusters", sourceClusterID, "projects", projectID)
 	if info, err := os.Stat(projectDir); err != nil || !info.IsDir() {
@@ -336,4 +411,30 @@ func prefixPaths(prefix string, values []string) []string {
 		out = append(out, joined)
 	}
 	return out
+}
+
+func renderShellCommand(args []string) string {
+	quoted := make([]string, 0, len(args))
+	for _, arg := range args {
+		quoted = append(quoted, shellQuote(arg))
+	}
+	return strings.Join(quoted, " ")
+}
+
+func shellQuote(arg string) string {
+	if arg == "" {
+		return "''"
+	}
+	for _, r := range arg {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			continue
+		}
+		switch r {
+		case '-', '_', '.', '/', ':', '=':
+			continue
+		default:
+			return "'" + strings.ReplaceAll(arg, "'", "'\"'\"'") + "'"
+		}
+	}
+	return arg
 }
