@@ -1985,7 +1985,7 @@ bin/sqlserver2tidb create-executor-evidence-pr \
   --execute
 ```
 
-`generate-executor-evidence-pr-draft` 要求 `evidence/executor-<stage>-run.json` 已存在，并要求对应 stage approval 已通过、payload hash 与当前 metadata 匹配。它会校验 evidence 内的 `source_cluster_id`、`project_id`、`stage` 和 `payload_hash`，并拒绝没有 executor command 记录的 evidence；每条 command 记录必须包含 `id`、`shell_command` 和 `exit_code`。当 evidence status 是 `succeeded` 时，所有 command 的 `exit_code` 都必须是 `0`。校验通过后，它会写入 `prs/executor-<stage>-evidence-pr.md`。`create-executor-evidence-pr` 默认 dry-run，只打印 `git switch`、`git add`、`git commit`、`git push` 和 `gh pr create` 命令；只有加 `--execute` 才会修改本地 git checkout、推送分支并调用 GitHub CLI。它不会 merge PR、approve PR、绕过 branch protection，也不会判断 executor 输出是否业务正确。
+`generate-executor-evidence-pr-draft` 要求 `evidence/executor-<stage>-run.json` 已存在，并要求对应 stage approval 已通过、payload hash 与当前 metadata 匹配。它会校验 evidence 内的 `source_cluster_id`、`project_id`、`stage` 和 `payload_hash`；evidence status 只接受 `succeeded` 或 `failed`。它会拒绝没有 executor command 记录的 evidence；每条 command 记录必须包含 `id`、`shell_command` 和 `exit_code`。当 evidence status 是 `succeeded` 时，所有 command 的 `exit_code` 都必须是 `0`。校验通过后，它会写入 `prs/executor-<stage>-evidence-pr.md`。`create-executor-evidence-pr` 默认 dry-run，只打印 `git switch`、`git add`、`git commit`、`git push` 和 `gh pr create` 命令；只有加 `--execute` 才会修改本地 git checkout、推送分支并调用 GitHub CLI。它不会 merge PR、approve PR、绕过 branch protection，也不会判断 executor 输出是否业务正确。
 
 ## 17. 推荐落地顺序
 
