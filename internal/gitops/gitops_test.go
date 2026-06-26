@@ -447,6 +447,24 @@ func TestValidateRepoReportsProjectIDMismatch(t *testing.T) {
 	assertContains(t, strings.Join(report.Errors, "\n"), `invalid project metadata clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/project.yaml: project_id "inventory-db-to-tidb-prod-a" does not match directory id "sales-db-to-tidb-prod-a"`)
 }
 
+func TestValidateRepoReportsProjectSourceClusterIDMismatch(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)
+	projectRel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/project.yaml"
+	projectYAML := readFile(t, root, projectRel)
+	projectYAML = strings.Replace(projectYAML, "source_cluster_id: prod-sqlserver-a", "source_cluster_id: prod-sqlserver-b", 1)
+	writeFileForTest(t, root, projectRel, projectYAML)
+
+	report, err := ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
+	if report.Valid {
+		t.Fatal("ValidateRepo() valid = true, want source cluster id mismatch")
+	}
+	assertContains(t, strings.Join(report.Errors, "\n"), `invalid project metadata clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/project.yaml: source_cluster_id "prod-sqlserver-b" does not match parent cluster id "prod-sqlserver-a"`)
+}
+
 func TestValidateRepoReportsMissingRequiredGlobalFile(t *testing.T) {
 	root := t.TempDir()
 	must(t, InitRepo(root))
