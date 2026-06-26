@@ -122,7 +122,16 @@ func prepareDDLExecutorCommands(projectDir, binary, sourceClusterID, projectID s
 }
 
 func prepareExportExecutorCommands(projectDir, binary, sourceClusterID, projectID string, spec WorkerExecutorPrepareSpec) ([]WorkerExecutorCommand, error) {
-	chunks, err := readExportPlanChunks(filepath.Join(projectDir, "plan", "export-plan.yaml"))
+	planPath := filepath.Join(projectDir, "plan", "export-plan.yaml")
+	format, err := readPlanTopLevelScalar(planPath, "format")
+	if err != nil {
+		return nil, err
+	}
+	format = strings.ToLower(strings.TrimSpace(format))
+	if format != "" && format != "csv" {
+		return nil, fmt.Errorf("export format %s is not supported by sqlserver2tidb-executor; supported format: csv", format)
+	}
+	chunks, err := readExportPlanChunks(planPath)
 	if err != nil {
 		return nil, err
 	}
@@ -154,7 +163,16 @@ func prepareExportExecutorCommands(projectDir, binary, sourceClusterID, projectI
 }
 
 func prepareImportExecutorCommands(projectDir, binary, sourceClusterID, projectID string, spec WorkerExecutorPrepareSpec) ([]WorkerExecutorCommand, error) {
-	jobs, err := readImportPlanJobs(filepath.Join(projectDir, "plan", "import-plan.yaml"))
+	planPath := filepath.Join(projectDir, "plan", "import-plan.yaml")
+	engine, err := readPlanTopLevelScalar(planPath, "engine")
+	if err != nil {
+		return nil, err
+	}
+	engine = strings.ToLower(strings.TrimSpace(engine))
+	if engine != "" && engine != "sql-insert" {
+		return nil, fmt.Errorf("import engine %s is not supported by sqlserver2tidb-executor; supported engine: sql-insert", engine)
+	}
+	jobs, err := readImportPlanJobs(planPath)
 	if err != nil {
 		return nil, err
 	}

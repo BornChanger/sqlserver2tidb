@@ -1842,7 +1842,7 @@ func TestRunExportWorkerWritesPlannedStateWhenApprovedHashMatches(t *testing.T) 
 	assertContains(t, state, "payload_hash: "+hash)
 	assertContains(t, state, "id: dbo.orders.000001")
 	assertContains(t, state, "id: dbo.orders.000003")
-	assertContains(t, state, "output_uri: s3://migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full/dbo.orders.000003.parquet")
+	assertContains(t, state, "output_uri: https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full/dbo.orders.000003.csv")
 
 	evidence := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/precheck.json")
 	assertContains(t, evidence, `"stage": "export"`)
@@ -1900,7 +1900,33 @@ func TestPrepareWorkerExecutorBuildsExportCommandsWhenApprovedHashMatches(t *tes
 	assertContains(t, first.ShellCommand, "--chunk-id dbo.orders.000001")
 	assertContains(t, first.ShellCommand, "--source-object sales.dbo.orders")
 	assertContains(t, first.ShellCommand, "--target-object app.orders")
-	assertContains(t, first.ShellCommand, "--output-uri s3://migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full/dbo.orders.000001.parquet")
+	assertContains(t, first.ShellCommand, "--output-uri https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full/dbo.orders.000001.csv")
+}
+
+func TestPrepareWorkerExecutorRejectsUnsupportedExportFormat(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	_, err := GenerateDataMovementPlans(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", DataMovementPlanSpec{
+		ObjectURIPrefix: "https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full",
+		ChunkSizeRows:   1000000,
+		ExportFormat:    "parquet",
+		ImportEngine:    "sql-insert",
+	})
+	if err != nil {
+		t.Fatalf("GenerateDataMovementPlans() error = %v", err)
+	}
+	reviewExportPlanPredicates(t, root)
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(export) error = %v", err)
+	}
+	writeStageApproval(t, root, "export", hash)
+
+	_, err = PrepareWorkerExecutor(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export", WorkerExecutorPrepareSpec{})
+	if err == nil {
+		t.Fatal("PrepareWorkerExecutor() expected unsupported export format error")
+	}
+	assertContains(t, err.Error(), "export format parquet is not supported by sqlserver2tidb-executor")
 }
 
 func TestPrepareWorkerExecutorRejectsTODOExportPredicate(t *testing.T) {
@@ -1980,8 +2006,34 @@ func TestPrepareWorkerExecutorBuildsImportCommandsWhenApprovedHashMatches(t *tes
 	assertContains(t, first.ShellCommand, "sqlserver2tidb-executor import")
 	assertContains(t, first.ShellCommand, "--job-id import-dbo.orders.000001")
 	assertContains(t, first.ShellCommand, "--target-object app.orders")
-	assertContains(t, first.ShellCommand, "--source-uri s3://migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full/dbo.orders.000001.parquet")
+	assertContains(t, first.ShellCommand, "--source-uri https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full/dbo.orders.000001.csv")
 	assertContains(t, first.ShellCommand, "--depends-on-export-chunk dbo.orders.000001")
+}
+
+func TestPrepareWorkerExecutorRejectsUnsupportedImportEngine(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateSchemaDraftOnly(root))
+	_, err := GenerateDataMovementPlans(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", DataMovementPlanSpec{
+		ObjectURIPrefix: "https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full",
+		ChunkSizeRows:   1000000,
+		ExportFormat:    "csv",
+		ImportEngine:    "import-into",
+	})
+	if err != nil {
+		t.Fatalf("GenerateDataMovementPlans() error = %v", err)
+	}
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(import) error = %v", err)
+	}
+	writeStageApproval(t, root, "import", hash)
+
+	_, err = PrepareWorkerExecutor(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import", WorkerExecutorPrepareSpec{})
+	if err == nil {
+		t.Fatal("PrepareWorkerExecutor() expected unsupported import engine error")
+	}
+	assertContains(t, err.Error(), "import engine import-into is not supported by sqlserver2tidb-executor")
 }
 
 func TestPrepareWorkerExecutorAddsImportConnectionStringEnvAndBatchSize(t *testing.T) {
@@ -2986,10 +3038,10 @@ func GenerateSchemaDraftOnly(root string) error {
 
 func GenerateDataPlansOnly(root string) error {
 	_, err := GenerateDataMovementPlans(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", DataMovementPlanSpec{
-		ObjectURIPrefix: "s3://migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full",
+		ObjectURIPrefix: "https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full",
 		ChunkSizeRows:   1000000,
-		ExportFormat:    "parquet",
-		ImportEngine:    "import-into",
+		ExportFormat:    "csv",
+		ImportEngine:    "sql-insert",
 	})
 	return err
 }

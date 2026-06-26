@@ -421,6 +421,24 @@ func readExportPlanChunks(path string) ([]dataExportChunkState, error) {
 	return chunks, nil
 }
 
+func readPlanTopLevelScalar(path, key string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read plan: %w", err)
+	}
+	prefix := key + ":"
+	for _, raw := range strings.Split(string(data), "\n") {
+		if strings.TrimLeft(raw, " \t") != raw {
+			continue
+		}
+		trimmed := strings.TrimSpace(raw)
+		if strings.HasPrefix(trimmed, prefix) {
+			return trimYAMLScalar(strings.TrimPrefix(trimmed, prefix)), nil
+		}
+	}
+	return "", nil
+}
+
 func validateExportPlanChunks(chunks []dataExportChunkState) error {
 	if len(chunks) == 0 {
 		return fmt.Errorf("export plan contains no chunks")
