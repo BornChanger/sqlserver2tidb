@@ -332,6 +332,11 @@ func CreateCluster(root string, spec ClusterSpec) error {
 	}
 
 	base := filepath.Join("clusters", spec.ClusterID)
+	if _, err := os.Stat(filepath.Join(root, base)); err == nil {
+		return fmt.Errorf("source cluster %q already exists", spec.ClusterID)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("check source cluster %q: %w", spec.ClusterID, err)
+	}
 	if err := ensureDirs(root,
 		base,
 		filepath.Join(base, "inventory", "source-ddl"),
@@ -418,6 +423,11 @@ func CreateProject(root string, spec ProjectSpec) error {
 	}
 
 	base := filepath.Join("clusters", spec.SourceClusterID, "projects", spec.ProjectID)
+	if _, err := os.Stat(filepath.Join(root, base)); err == nil {
+		return fmt.Errorf("migration project %q already exists", spec.ProjectID)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("check migration project %q: %w", spec.ProjectID, err)
+	}
 	if err := ensureDirs(root,
 		base,
 		filepath.Join(base, "schema", "tidb-ddl"),

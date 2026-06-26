@@ -136,6 +136,8 @@ go run ./cmd/sqlserver2tidb create-cluster \
   --owner dba-team,sre-team
 ```
 
+The command refuses to overwrite an existing `clusters/<source_cluster_id>/` directory.
+
 Preview the SQL Server discovery scope without connecting to SQL Server or writing inventory files:
 
 ```bash
@@ -177,6 +179,8 @@ go run ./cmd/sqlserver2tidb create-project \
   --target-secret-ref vault://migration/tidb-prod-a/migrate-user \
   --owner dba-team,app-team
 ```
+
+The command refuses to overwrite an existing `clusters/<source_cluster_id>/projects/<project_id>/` directory.
 
 Generate project-scoped TiDB DDL drafts from the current SQL Server inventory and project metadata:
 

@@ -70,6 +70,35 @@ func TestCreateClusterCreatesUpstreamSQLServerClusterDirectory(t *testing.T) {
 	assertContains(t, clusterYAML, "secret_ref: vault://migration/prod-sqlserver-a/readonly")
 }
 
+func TestCreateClusterRejectsExistingClusterDirectory(t *testing.T) {
+	root := t.TempDir()
+	must(t, InitRepo(root))
+	spec := ClusterSpec{
+		ClusterID:              "prod-sqlserver-a",
+		DisplayName:            "prod SQL Server A",
+		Listener:               "sqlserver-a.internal",
+		Port:                   1433,
+		SecretRef:              "vault://migration/prod-sqlserver-a/readonly",
+		CDCMode:                "sqlserver-cdc",
+		RetentionHoursRequired: 168,
+		Owners:                 []string{"dba-team"},
+	}
+	must(t, CreateCluster(root, spec))
+	before := readFile(t, root, "clusters/prod-sqlserver-a/cluster.yaml")
+
+	spec.DisplayName = "replacement"
+	spec.Listener = "replacement.internal"
+	err := CreateCluster(root, spec)
+	if err == nil {
+		t.Fatal("CreateCluster() error = nil, want duplicate cluster error")
+	}
+	assertContains(t, err.Error(), `source cluster "prod-sqlserver-a" already exists`)
+	after := readFile(t, root, "clusters/prod-sqlserver-a/cluster.yaml")
+	if after != before {
+		t.Fatalf("CreateCluster() overwrote existing cluster.yaml\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
 func TestCreateProjectCreatesProjectUnderSourceCluster(t *testing.T) {
 	root := t.TempDir()
 	must(t, InitRepo(root))
@@ -127,6 +156,47 @@ func TestCreateProjectCreatesProjectUnderSourceCluster(t *testing.T) {
 	migrationPlan := readFile(t, root, base+"/plan/migration-plan.yaml")
 	assertContains(t, migrationPlan, "format: csv")
 	assertContains(t, migrationPlan, "engine: sql-insert")
+}
+
+func TestCreateProjectRejectsExistingProjectDirectory(t *testing.T) {
+	root := t.TempDir()
+	must(t, InitRepo(root))
+	must(t, CreateCluster(root, ClusterSpec{
+		ClusterID:              "prod-sqlserver-a",
+		DisplayName:            "prod SQL Server A",
+		Listener:               "sqlserver-a.internal",
+		Port:                   1433,
+		SecretRef:              "vault://migration/prod-sqlserver-a/readonly",
+		CDCMode:                "sqlserver-cdc",
+		RetentionHoursRequired: 168,
+		Owners:                 []string{"dba-team"},
+	}))
+	spec := ProjectSpec{
+		SourceClusterID: "prod-sqlserver-a",
+		ProjectID:       "sales-db-to-tidb-prod-a",
+		DisplayName:     "sales DB to TiDB prod A",
+		SourceDatabase:  "sales",
+		SourceSchemas:   []string{"dbo"},
+		TargetName:      "tidb-prod-a",
+		TargetDatabase:  "app",
+		TargetSecretRef: "vault://migration/tidb-prod-a/migrate-user",
+		Mode:            "short-downtime",
+		Owners:          []string{"dba-team", "app-team"},
+	}
+	must(t, CreateProject(root, spec))
+	before := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/project.yaml")
+
+	spec.DisplayName = "replacement"
+	spec.TargetDatabase = "replacement"
+	err := CreateProject(root, spec)
+	if err == nil {
+		t.Fatal("CreateProject() error = nil, want duplicate project error")
+	}
+	assertContains(t, err.Error(), `migration project "sales-db-to-tidb-prod-a" already exists`)
+	after := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/project.yaml")
+	if after != before {
+		t.Fatalf("CreateProject() overwrote existing project.yaml\nbefore:\n%s\nafter:\n%s", before, after)
+	}
 }
 
 func TestCreateProjectRequiresExistingSourceCluster(t *testing.T) {
