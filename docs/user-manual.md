@@ -243,7 +243,7 @@ bin/sqlserver2tidb validate-repo --root .
 repository is valid at . (5 dirs, 13 files checked)
 ```
 
-如果缺少必需文件、必需目录、file schema policy 映射，或者 export/import/CDC plan 中已有 work item 但缺少执行必需字段，或者 export chunk / import job / CDC source / validation check 出现重复标识，或者 import job 引用了不存在的 export chunk，或者 export chunk predicate 仍包含 `TODO`，或者 `plan/validation-plan.yaml` 中的 `row_count` / `row-count` 检查项缺少 `id`、`source_object`、`target_object`，或 predicate / target predicate 仍包含 `TODO`，命令会返回非零退出码，并列出问题。空的 draft plan 列表仍然是合法的初始化状态。示例：
+如果缺少必需文件、必需目录、file schema policy 映射，或者 export/import/CDC plan 中已有 work item 但缺少执行必需字段，或者 export chunk / import job / CDC source / validation check 出现重复标识，或者 import job 引用了不存在的 export chunk，或者 import job 的 `source_uri` 与所依赖 export chunk 的 `output_uri` 不一致，或者 export chunk predicate 仍包含 `TODO`，或者 `plan/validation-plan.yaml` 中的 `row_count` / `row-count` 检查项缺少 `id`、`source_object`、`target_object`，或 predicate / target predicate 仍包含 `TODO`，命令会返回非零退出码，并列出问题。空的 draft plan 列表仍然是合法的初始化状态。示例：
 
 ```text
 repository validation failed at .:
@@ -1488,7 +1488,7 @@ bin/sqlserver2tidb init-repo --root .
 bin/sqlserver2tidb validate-repo --root .
 ```
 
-该命令检查必需目录、必需文件、`global/policies/file-schema-policy.yaml` 中的 plan schema 映射，以及已填写的 export/import/CDC/validation plan work item 的关键字段、唯一性、import/export 依赖关系和未清理的 `TODO` predicate。它不会连接 SQL Server 或 TiDB，也不会执行数据迁移。
+该命令检查必需目录、必需文件、`global/policies/file-schema-policy.yaml` 中的 plan schema 映射，以及已填写的 export/import/CDC/validation plan work item 的关键字段、唯一性、import/export 依赖关系、import source URI 与 export output URI 的一致性和未清理的 `TODO` predicate。它不会连接 SQL Server 或 TiDB，也不会执行数据迁移。
 
 ### 16.3 create-cluster
 
