@@ -6,7 +6,7 @@ BINDIR ?= $(PREFIX)/bin
 BUILDINFO_PACKAGE := github.com/BornChanger/sqlserver2tidb/internal/buildinfo
 LDFLAGS := -X $(BUILDINFO_PACKAGE).Version=$(VERSION) -X $(BUILDINFO_PACKAGE).Commit=$(COMMIT) -X $(BUILDINFO_PACKAGE).BuildDate=$(BUILD_DATE)
 
-.PHONY: test vet check build install dist validate-repo ci fmt fmt-check script-check
+.PHONY: test vet check build install dist validate-repo ci fmt fmt-check script-check smoke-check
 
 test:
 	go test -count=1 ./...
@@ -31,6 +31,10 @@ build:
 	go build -ldflags "$(LDFLAGS)" -o bin/sqlserver2tidb ./cmd/sqlserver2tidb
 	go build -ldflags "$(LDFLAGS)" -o bin/sqlserver2tidb-executor ./cmd/sqlserver2tidb-executor
 
+smoke-check: build
+	bin/sqlserver2tidb version
+	bin/sqlserver2tidb-executor version
+
 install: build
 	mkdir -p "$(BINDIR)"
 	install -m 0755 bin/sqlserver2tidb "$(BINDIR)/sqlserver2tidb"
@@ -42,4 +46,4 @@ dist:
 validate-repo: build
 	bin/sqlserver2tidb validate-repo --root .
 
-ci: fmt-check script-check test vet check build validate-repo
+ci: fmt-check script-check test vet check build smoke-check validate-repo
