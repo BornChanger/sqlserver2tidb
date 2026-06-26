@@ -1012,6 +1012,15 @@ func TestRunWorkerExecutorExecutePassesExecuteFlagToExternalExecutor(t *testing.
 	if !strings.Contains(evidence, `"exit_code": 0`) {
 		t.Fatalf("executor evidence = %q, want zero exit code", evidence)
 	}
+	if !strings.Contains(evidence, `"started_at": "`) {
+		t.Fatalf("executor evidence = %q, want command started_at", evidence)
+	}
+	if !strings.Contains(evidence, `"completed_at": "`) {
+		t.Fatalf("executor evidence = %q, want command completed_at", evidence)
+	}
+	if !strings.Contains(evidence, `"duration_ms": `) {
+		t.Fatalf("executor evidence = %q, want command duration_ms", evidence)
+	}
 	if !strings.Contains(evidence, `fake executor completed: export`) {
 		t.Fatalf("executor evidence = %q, want executor output", evidence)
 	}

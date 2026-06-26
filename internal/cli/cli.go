@@ -683,7 +683,9 @@ func runWorkerExecutor(args []string, stdout, stderr io.Writer) int {
 		args := withExternalExecutorExecuteFlag(command.Args)
 		cmd := exec.Command(args[0], args[1:]...)
 		cmd.Dir = *root
+		startedAt := time.Now().UTC()
 		output, err := cmd.CombinedOutput()
+		completedAt := time.Now().UTC()
 		if len(output) > 0 {
 			fmt.Fprint(stdout, string(output))
 		}
@@ -693,6 +695,9 @@ func runWorkerExecutor(args []string, stdout, stderr io.Writer) int {
 			ShellCommand: renderArgsForEvidence(args),
 			ExitCode:     exitCodeForCommandError(err),
 			Output:       string(output),
+			StartedAt:    startedAt.Format(time.RFC3339Nano),
+			CompletedAt:  completedAt.Format(time.RFC3339Nano),
+			DurationMs:   completedAt.Sub(startedAt).Milliseconds(),
 		})
 		if err != nil {
 			if _, evidenceErr := writeWorkerExecutorRunEvidence(*root, spec, "failed", results); evidenceErr != nil {
@@ -720,6 +725,9 @@ type workerExecutorRunCommandEvidence struct {
 	ShellCommand string   `json:"shell_command"`
 	ExitCode     int      `json:"exit_code"`
 	Output       string   `json:"output"`
+	StartedAt    string   `json:"started_at"`
+	CompletedAt  string   `json:"completed_at"`
+	DurationMs   int64    `json:"duration_ms"`
 }
 
 type workerExecutorRunEvidence struct {
