@@ -220,6 +220,12 @@ $HOME/.local/bin/sqlserver2tidb-executor
 make dist VERSION=v0.1.0
 ```
 
+只构建指定平台归档：
+
+```bash
+DIST_TARGETS="linux/amd64 darwin/arm64" make dist VERSION=v0.1.0
+```
+
 归档会写入 `dist/`。
 
 发布二进制时，推送形如 `v0.1.0` 的 tag 会触发 release workflow，为 Linux、macOS 和 Windows 构建归档、生成 checksums，并创建 GitHub Release。

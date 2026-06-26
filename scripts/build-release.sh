@@ -12,7 +12,7 @@ fi
 buildinfo_pkg="github.com/BornChanger/sqlserver2tidb/internal/buildinfo"
 ldflags="-X ${buildinfo_pkg}.Version=${version} -X ${buildinfo_pkg}.Commit=${commit} -X ${buildinfo_pkg}.BuildDate=${build_date}"
 
-targets=(
+default_targets=(
   "linux/amd64"
   "linux/arm64"
   "darwin/amd64"
@@ -20,9 +20,23 @@ targets=(
   "windows/amd64"
 )
 
+targets=("${default_targets[@]}")
+if [ -n "${DIST_TARGETS:-}" ]; then
+  read -r -a targets <<<"${DIST_TARGETS}"
+fi
+if [ "${#targets[@]}" -eq 0 ]; then
+  echo "DIST_TARGETS must include at least one GOOS/GOARCH target" >&2
+  exit 2
+fi
+
 mkdir -p "${dist_dir}"
 
 for target in "${targets[@]}"; do
+  if [[ "${target}" != */* || "${target}" == /* || "${target}" == */ || "${target}" == */*/* ]]; then
+    echo "invalid target ${target}; expected GOOS/GOARCH" >&2
+    exit 2
+  fi
+
   goos="${target%/*}"
   goarch="${target#*/}"
   suffix=""

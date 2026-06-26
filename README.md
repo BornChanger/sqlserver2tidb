@@ -87,6 +87,12 @@ Build local release archives under `dist/`:
 make dist VERSION=v0.1.0
 ```
 
+Limit local release builds to selected `GOOS/GOARCH` targets:
+
+```bash
+DIST_TARGETS="linux/amd64 darwin/arm64" make dist VERSION=v0.1.0
+```
+
 Pushing a tag like `v0.1.0` runs the release workflow, builds Linux/macOS/Windows archives, publishes checksums, and creates a GitHub Release.
 
 ## Test

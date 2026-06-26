@@ -6,7 +6,7 @@ BINDIR ?= $(PREFIX)/bin
 BUILDINFO_PACKAGE := github.com/BornChanger/sqlserver2tidb/internal/buildinfo
 LDFLAGS := -X $(BUILDINFO_PACKAGE).Version=$(VERSION) -X $(BUILDINFO_PACKAGE).Commit=$(COMMIT) -X $(BUILDINFO_PACKAGE).BuildDate=$(BUILD_DATE)
 
-.PHONY: test vet check build install dist validate-repo ci fmt fmt-check script-check smoke-check
+.PHONY: test vet check build install dist dist-check validate-repo ci fmt fmt-check script-check smoke-check
 
 test:
 	go test -count=1 ./...
@@ -43,7 +43,16 @@ install: build
 dist:
 	VERSION="$(VERSION)" COMMIT="$(COMMIT)" BUILD_DATE="$(BUILD_DATE)" DIST_DIR="$(DIST_DIR)" bash scripts/build-release.sh
 
+dist-check:
+	@set -e; \
+	dist_dir="$$(mktemp -d)"; \
+	VERSION="$(VERSION)" COMMIT="$(COMMIT)" BUILD_DATE="$(BUILD_DATE)" DIST_TARGETS="linux/amd64" DIST_DIR="$$dist_dir" bash scripts/build-release.sh; \
+	archive_count="$$(find "$$dist_dir" -maxdepth 1 -name '*.tar.gz' -print | wc -l | tr -d ' ')"; \
+	if [ "$$archive_count" != "1" ]; then echo "expected one release archive, found $$archive_count in $$dist_dir" >&2; exit 1; fi; \
+	test -s "$$dist_dir/sqlserver2tidb_$(VERSION)_linux_amd64.tar.gz"; \
+	test -s "$$dist_dir/checksums.txt"
+
 validate-repo: build
 	bin/sqlserver2tidb validate-repo --root .
 
-ci: fmt-check script-check test vet check build smoke-check validate-repo
+ci: fmt-check script-check test vet check build smoke-check dist-check validate-repo
