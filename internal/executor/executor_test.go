@@ -132,6 +132,24 @@ func TestRunApplyDDLExecuteRequiresConnectionStringEnv(t *testing.T) {
 	assertOutputContains(t, stderr.String(), "executor apply-ddl: target connection string env MISSING_TIDB_DSN is not set")
 }
 
+func TestSplitSQLStatementsIgnoresSemicolonsInLiteralsAndComments(t *testing.T) {
+	script := `CREATE TABLE one (note VARCHAR(32) DEFAULT 'a;b');
+-- comment with ; semicolon
+CREATE TABLE two (note VARCHAR(32) DEFAULT "c;d");
+/* block comment ; semicolon */
+CREATE TABLE three (note VARCHAR(32) DEFAULT 'it''s; ok');
+`
+	statements := splitSQLStatements(script)
+	if len(statements) != 3 {
+		t.Fatalf("splitSQLStatements() returned %d statements, want 3: %#v", len(statements), statements)
+	}
+	assertOutputContains(t, statements[0], "'a;b'")
+	assertOutputContains(t, statements[1], "-- comment with ; semicolon")
+	assertOutputContains(t, statements[1], `"c;d"`)
+	assertOutputContains(t, statements[2], "/* block comment ; semicolon */")
+	assertOutputContains(t, statements[2], "'it''s; ok'")
+}
+
 func TestRunImportExecuteRejectsNonFileSourceURI(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 

@@ -138,16 +138,121 @@ func executeTiDBDDL(ctx context.Context, spec applyDDLExecuteSpec) error {
 }
 
 func splitSQLStatements(script string) []string {
-	parts := strings.Split(script, ";")
-	statements := make([]string, 0, len(parts))
-	for _, part := range parts {
-		statement := strings.TrimSpace(part)
-		if statement == "" {
+	var statements []string
+	var current strings.Builder
+	inSingleQuote := false
+	inDoubleQuote := false
+	inBacktick := false
+	inLineComment := false
+	inBlockComment := false
+
+	for i := 0; i < len(script); i++ {
+		ch := script[i]
+
+		if inLineComment {
+			current.WriteByte(ch)
+			if ch == '\n' {
+				inLineComment = false
+			}
 			continue
 		}
+		if inBlockComment {
+			current.WriteByte(ch)
+			if ch == '*' && i+1 < len(script) && script[i+1] == '/' {
+				current.WriteByte(script[i+1])
+				i++
+				inBlockComment = false
+			}
+			continue
+		}
+		if inSingleQuote {
+			current.WriteByte(ch)
+			if ch == '\'' {
+				if i+1 < len(script) && script[i+1] == '\'' {
+					current.WriteByte(script[i+1])
+					i++
+					continue
+				}
+				if !isEscapedByBackslash(script, i) {
+					inSingleQuote = false
+				}
+			}
+			continue
+		}
+		if inDoubleQuote {
+			current.WriteByte(ch)
+			if ch == '"' {
+				if i+1 < len(script) && script[i+1] == '"' {
+					current.WriteByte(script[i+1])
+					i++
+					continue
+				}
+				if !isEscapedByBackslash(script, i) {
+					inDoubleQuote = false
+				}
+			}
+			continue
+		}
+		if inBacktick {
+			current.WriteByte(ch)
+			if ch == '`' {
+				if i+1 < len(script) && script[i+1] == '`' {
+					current.WriteByte(script[i+1])
+					i++
+					continue
+				}
+				inBacktick = false
+			}
+			continue
+		}
+
+		switch {
+		case ch == '-' && i+1 < len(script) && script[i+1] == '-':
+			current.WriteByte(ch)
+			current.WriteByte(script[i+1])
+			i++
+			inLineComment = true
+		case ch == '#':
+			current.WriteByte(ch)
+			inLineComment = true
+		case ch == '/' && i+1 < len(script) && script[i+1] == '*':
+			current.WriteByte(ch)
+			current.WriteByte(script[i+1])
+			i++
+			inBlockComment = true
+		case ch == '\'':
+			current.WriteByte(ch)
+			inSingleQuote = true
+		case ch == '"':
+			current.WriteByte(ch)
+			inDoubleQuote = true
+		case ch == '`':
+			current.WriteByte(ch)
+			inBacktick = true
+		case ch == ';':
+			statement := strings.TrimSpace(current.String())
+			if statement != "" {
+				statements = append(statements, statement)
+			}
+			current.Reset()
+		default:
+			current.WriteByte(ch)
+		}
+	}
+
+	statement := strings.TrimSpace(current.String())
+	if statement != "" {
 		statements = append(statements, statement)
 	}
 	return statements
+}
+
+func isEscapedByBackslash(value string, index int) bool {
+	backslashes := 0
+	for i := index - 1; i >= 0 && value[i] == '\\'; i-- {
+		backslashes++
+	}
+	return backslashes%2 == 1
 }
 
 func containsTODO(value string) bool {
