@@ -53,7 +53,8 @@ dist-check:
 	test -s "$$archive"; \
 	tar -tzf "$$archive" "sqlserver2tidb_$(VERSION)_linux_amd64/README.md" >/dev/null; \
 	tar -tzf "$$archive" "sqlserver2tidb_$(VERSION)_linux_amd64/docs/user-manual.md" >/dev/null; \
-	test -s "$$dist_dir/checksums.txt"
+	test -s "$$dist_dir/checksums.txt"; \
+	if grep -q "/" "$$dist_dir/checksums.txt"; then echo "checksums.txt must list archive basenames, not paths" >&2; exit 1; fi
 
 validate-repo: build
 	bin/sqlserver2tidb validate-repo --root .
