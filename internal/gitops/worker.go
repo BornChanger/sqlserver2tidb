@@ -141,10 +141,16 @@ func RunValidationWorker(root, sourceClusterID, projectID string) (ValidationWor
 	} else {
 		result.addCheck("schema_conversion_report_present", true, "schema/conversion-report.md exists")
 	}
-	if info, err := os.Stat(filepath.Join(projectDir, "plan", "validation-plan.yaml")); err != nil || info.IsDir() {
+	validationPlanPath := filepath.Join(projectDir, "plan", "validation-plan.yaml")
+	if info, err := os.Stat(validationPlanPath); err != nil || info.IsDir() {
 		result.addCheck("validation_plan_present", false, "plan/validation-plan.yaml is missing")
 	} else {
 		result.addCheck("validation_plan_present", true, "plan/validation-plan.yaml exists")
+		if err := validateValidationPlanContent(validationPlanPath); err != nil {
+			result.addCheck("validation_plan_row_count_checks_valid", false, err.Error())
+		} else {
+			result.addCheck("validation_plan_row_count_checks_valid", true, "row-count validation checks are structurally valid")
+		}
 	}
 
 	if err := writeValidationWorkerState(projectDir, result); err != nil {
