@@ -33,6 +33,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runExport(args[1:], stdout, stderr)
 	case "import":
 		return runImport(args[1:], stdout, stderr)
+	case "validate-count":
+		return runValidateCount(args[1:], stdout, stderr)
 	case "cdc":
 		return runCDC(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
@@ -320,6 +322,131 @@ func runImport(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+func runValidateCount(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("validate-count", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	root := fs.String("root", ".", "repository root")
+	sourceClusterID := fs.String("source-cluster-id", "", "upstream SQL Server cluster id")
+	projectID := fs.String("project-id", "", "migration project id")
+	sourceObject := fs.String("source-object", "", "source object")
+	targetObject := fs.String("target-object", "", "target object")
+	predicate := fs.String("predicate", "", "source validation predicate")
+	sourceConnectionStringEnv := fs.String("source-connection-string-env", defaultSourceConnectionStringEnv, "environment variable containing the SQL Server connection string")
+	targetConnectionStringEnv := fs.String("target-connection-string-env", defaultTargetConnectionStringEnv, "environment variable containing the TiDB/MySQL connection string")
+	execute := fs.Bool("execute", false, "perform the row count validation")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if err := requireFields("executor validate-count",
+		field{"source cluster id", *sourceClusterID},
+		field{"project id", *projectID},
+		field{"source object", *sourceObject},
+		field{"target object", *targetObject},
+	); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	if *execute {
+		result, err := executeValidateCount(context.Background(), validateCountExecuteSpec{
+			SourceObject:              *sourceObject,
+			TargetObject:              *targetObject,
+			Predicate:                 *predicate,
+			SourceConnectionStringEnv: *sourceConnectionStringEnv,
+			TargetConnectionStringEnv: *targetConnectionStringEnv,
+		})
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "executor validate-count matched: source=%d target=%d\n", result.SourceRows, result.TargetRows)
+		return 0
+	}
+
+	fmt.Fprintln(stdout, "executor validate-count dry run")
+	fmt.Fprintf(stdout, "root: %s\n", *root)
+	fmt.Fprintf(stdout, "source cluster: %s\n", *sourceClusterID)
+	fmt.Fprintf(stdout, "project: %s\n", *projectID)
+	fmt.Fprintf(stdout, "source object: %s\n", *sourceObject)
+	fmt.Fprintf(stdout, "target object: %s\n", *targetObject)
+	if strings.TrimSpace(*predicate) != "" {
+		fmt.Fprintf(stdout, "predicate: %s\n", *predicate)
+	}
+	fmt.Fprintln(stdout, "No SQL Server connection will be opened.")
+	fmt.Fprintln(stdout, "No TiDB connection will be opened.")
+	return 0
+}
+
+type validateCountExecuteSpec struct {
+	SourceObject              string
+	TargetObject              string
+	Predicate                 string
+	SourceConnectionStringEnv string
+	TargetConnectionStringEnv string
+}
+
+type validateCountResult struct {
+	SourceRows int64
+	TargetRows int64
+}
+
+func executeValidateCount(ctx context.Context, spec validateCountExecuteSpec) (validateCountResult, error) {
+	if strings.Contains(strings.ToUpper(spec.Predicate), "TODO") {
+		return validateCountResult{}, fmt.Errorf("executor validate-count: predicate still contains TODO")
+	}
+
+	sourceEnvName := strings.TrimSpace(spec.SourceConnectionStringEnv)
+	if sourceEnvName == "" {
+		sourceEnvName = defaultSourceConnectionStringEnv
+	}
+	sourceConnectionString := strings.TrimSpace(os.Getenv(sourceEnvName))
+	if sourceConnectionString == "" {
+		return validateCountResult{}, fmt.Errorf("executor validate-count: source connection string env %s is not set", sourceEnvName)
+	}
+
+	targetEnvName := strings.TrimSpace(spec.TargetConnectionStringEnv)
+	if targetEnvName == "" {
+		targetEnvName = defaultTargetConnectionStringEnv
+	}
+	targetConnectionString := strings.TrimSpace(os.Getenv(targetEnvName))
+	if targetConnectionString == "" {
+		return validateCountResult{}, fmt.Errorf("executor validate-count: target connection string env %s is not set", targetEnvName)
+	}
+
+	sourceQuery, err := buildSQLServerCountQuery(spec.SourceObject, spec.Predicate)
+	if err != nil {
+		return validateCountResult{}, fmt.Errorf("executor validate-count: %w", err)
+	}
+	targetQuery, err := buildTiDBCountQuery(spec.TargetObject)
+	if err != nil {
+		return validateCountResult{}, fmt.Errorf("executor validate-count: %w", err)
+	}
+
+	sourceDB, err := sql.Open("sqlserver", sourceConnectionString)
+	if err != nil {
+		return validateCountResult{}, fmt.Errorf("executor validate-count: open SQL Server connection: %w", err)
+	}
+	defer sourceDB.Close()
+
+	targetDB, err := sql.Open("mysql", targetConnectionString)
+	if err != nil {
+		return validateCountResult{}, fmt.Errorf("executor validate-count: open TiDB connection: %w", err)
+	}
+	defer targetDB.Close()
+
+	var sourceRows int64
+	if err := sourceDB.QueryRowContext(ctx, sourceQuery).Scan(&sourceRows); err != nil {
+		return validateCountResult{}, fmt.Errorf("executor validate-count: query source count: %w", err)
+	}
+	var targetRows int64
+	if err := targetDB.QueryRowContext(ctx, targetQuery).Scan(&targetRows); err != nil {
+		return validateCountResult{}, fmt.Errorf("executor validate-count: query target count: %w", err)
+	}
+	if sourceRows != targetRows {
+		return validateCountResult{}, fmt.Errorf("executor validate-count: row count mismatch: source=%d target=%d", sourceRows, targetRows)
+	}
+	return validateCountResult{SourceRows: sourceRows, TargetRows: targetRows}, nil
+}
+
 type importExecuteSpec struct {
 	TargetObject              string
 	SourceURI                 string
@@ -474,6 +601,44 @@ func buildTiDBInsertStatement(targetObject string, columns []string) (string, er
 	), nil
 }
 
+func buildSQLServerCountQuery(sourceObject, predicate string) (string, error) {
+	parts := strings.Split(strings.TrimSpace(sourceObject), ".")
+	if len(parts) != 2 && len(parts) != 3 {
+		return "", fmt.Errorf("source object must be schema.table or database.schema.table")
+	}
+	quoted := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return "", fmt.Errorf("source object contains an empty identifier")
+		}
+		quoted = append(quoted, quoteSQLServerIdentifier(part))
+	}
+
+	query := "SELECT COUNT(*) FROM " + strings.Join(quoted, ".")
+	predicate = strings.TrimSpace(predicate)
+	if predicate != "" {
+		query += " WHERE " + predicate
+	}
+	return query, nil
+}
+
+func buildTiDBCountQuery(targetObject string) (string, error) {
+	parts := strings.Split(strings.TrimSpace(targetObject), ".")
+	if len(parts) != 1 && len(parts) != 2 {
+		return "", fmt.Errorf("target object must be table or database.table")
+	}
+	quoted := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return "", fmt.Errorf("target object contains an empty identifier")
+		}
+		quoted = append(quoted, quoteTiDBIdentifier(part))
+	}
+	return "SELECT COUNT(*) FROM " + strings.Join(quoted, "."), nil
+}
+
 func quoteTiDBIdentifier(identifier string) string {
 	return "`" + strings.ReplaceAll(identifier, "`", "``") + "`"
 }
@@ -601,6 +766,8 @@ Usage:
   sqlserver2tidb-executor export --execute --source-connection-string-env SQLSERVER2TIDB_SOURCE_CONNECTION_STRING --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --chunk-id dbo.orders.000001 --source-object sales.dbo.orders --target-object app.orders --output-uri file:///tmp/path.csv --predicate "id >= 1 AND id < 1000"
   sqlserver2tidb-executor import --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --job-id import-dbo.orders.000001 --target-object app.orders --source-uri s3://bucket/path.parquet
   sqlserver2tidb-executor import --execute --target-connection-string-env SQLSERVER2TIDB_TARGET_CONNECTION_STRING --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --job-id import-dbo.orders.000001 --target-object app.orders --source-uri file:///tmp/path.csv --import-batch-size 1000
+  sqlserver2tidb-executor validate-count --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --source-object sales.dbo.orders --target-object app.orders --predicate "id >= 1"
+  sqlserver2tidb-executor validate-count --execute --source-connection-string-env SQLSERVER2TIDB_SOURCE_CONNECTION_STRING --target-connection-string-env SQLSERVER2TIDB_TARGET_CONNECTION_STRING --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --source-object sales.dbo.orders --target-object app.orders
   sqlserver2tidb-executor cdc --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --source-object sales.dbo.orders --target-object app.orders --apply-batch-size 1000
 `)
 }

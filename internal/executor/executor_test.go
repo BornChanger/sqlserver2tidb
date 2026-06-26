@@ -126,6 +126,112 @@ func TestRunImportExecuteRequiresPositiveImportBatchSize(t *testing.T) {
 	assertOutputContains(t, stderr.String(), "executor import: import batch size must be positive")
 }
 
+func TestRunValidateCountDryRunCommand(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"validate-count",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--source-object", "sales.dbo.orders",
+		"--target-object", "app.orders",
+		"--predicate", "id >= 1",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("validate-count code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	assertOutputContains(t, output, "executor validate-count dry run")
+	assertOutputContains(t, output, "source object: sales.dbo.orders")
+	assertOutputContains(t, output, "target object: app.orders")
+	assertOutputContains(t, output, "predicate: id >= 1")
+	assertOutputContains(t, output, "No SQL Server connection will be opened.")
+	assertOutputContains(t, output, "No TiDB connection will be opened.")
+}
+
+func TestRunValidateCountExecuteRejectsTODOPredicate(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"validate-count",
+		"--execute",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--source-object", "sales.dbo.orders",
+		"--target-object", "app.orders",
+		"--predicate", "TODO: choose predicate",
+		"--source-connection-string-env", "MISSING_SQLSERVER_DSN",
+		"--target-connection-string-env", "MISSING_TIDB_DSN",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("validate-count execute code = 0, want non-zero")
+	}
+	assertOutputContains(t, stderr.String(), "executor validate-count: predicate still contains TODO")
+}
+
+func TestRunValidateCountExecuteRequiresSourceConnectionStringEnv(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"validate-count",
+		"--execute",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--source-object", "sales.dbo.orders",
+		"--target-object", "app.orders",
+		"--source-connection-string-env", "MISSING_SQLSERVER_DSN",
+		"--target-connection-string-env", "MISSING_TIDB_DSN",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("validate-count execute code = 0, want non-zero")
+	}
+	assertOutputContains(t, stderr.String(), "executor validate-count: source connection string env MISSING_SQLSERVER_DSN is not set")
+}
+
+func TestRunValidateCountExecuteRequiresTargetConnectionStringEnv(t *testing.T) {
+	t.Setenv("SQLSERVER2TIDB_TEST_SOURCE_DSN", "sqlserver://readonly:secret@localhost?database=sales")
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"validate-count",
+		"--execute",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--source-object", "sales.dbo.orders",
+		"--target-object", "app.orders",
+		"--source-connection-string-env", "SQLSERVER2TIDB_TEST_SOURCE_DSN",
+		"--target-connection-string-env", "MISSING_TIDB_DSN",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("validate-count execute code = 0, want non-zero")
+	}
+	assertOutputContains(t, stderr.String(), "executor validate-count: target connection string env MISSING_TIDB_DSN is not set")
+}
+
+func TestBuildCountQueriesQuoteObjects(t *testing.T) {
+	sourceQuery, err := buildSQLServerCountQuery("sales.dbo.orders", "id >= 1")
+	if err != nil {
+		t.Fatalf("buildSQLServerCountQuery() error = %v", err)
+	}
+	wantSource := "SELECT COUNT(*) FROM [sales].[dbo].[orders] WHERE id >= 1"
+	if sourceQuery != wantSource {
+		t.Fatalf("buildSQLServerCountQuery() = %q, want %q", sourceQuery, wantSource)
+	}
+
+	targetQuery, err := buildTiDBCountQuery("app.orders")
+	if err != nil {
+		t.Fatalf("buildTiDBCountQuery() error = %v", err)
+	}
+	wantTarget := "SELECT COUNT(*) FROM `app`.`orders`"
+	if targetQuery != wantTarget {
+		t.Fatalf("buildTiDBCountQuery() = %q, want %q", targetQuery, wantTarget)
+	}
+}
+
 func TestBuildTiDBInsertStatementQuotesObjectAndColumns(t *testing.T) {
 	stmt, err := buildTiDBInsertStatement("app.orders", []string{"id", "order`name"})
 	if err != nil {
