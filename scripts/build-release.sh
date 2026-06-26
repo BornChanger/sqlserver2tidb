@@ -42,4 +42,8 @@ for target in "${targets[@]}"; do
   rm -rf -- "${outdir}"
 done
 
-sha256sum "${dist_dir}"/*.tar.gz > "${dist_dir}/checksums.txt"
+if command -v sha256sum >/dev/null 2>&1; then
+  sha256sum "${dist_dir}"/*.tar.gz > "${dist_dir}/checksums.txt"
+else
+  shasum -a 256 "${dist_dir}"/*.tar.gz > "${dist_dir}/checksums.txt"
+fi
