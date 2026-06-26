@@ -66,6 +66,7 @@ schemas:
   cluster: global/schemas/cluster.schema.json
   project: global/schemas/project.schema.json
   migration_plan: global/schemas/migration-plan.schema.json
+  validation_plan: global/schemas/validation-plan.schema.json
 `,
 		"global/templates/project.yaml": `project_id: example-project
 source_cluster_id: example-sqlserver-cluster
@@ -168,6 +169,40 @@ approval_required:
       "items": {"enum": ["ddl", "export", "import", "cdc", "cutover"]}
     }
   }
+}
+`,
+		"global/schemas/validation-plan.schema.json": `{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Validation plan",
+  "type": "object",
+  "required": ["status", "checks"],
+  "properties": {
+    "status": {"enum": ["draft", "reviewed", "approved"]},
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "type"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "type": {"enum": ["row_count", "row-count", "checksum", "sampled_hash", "business_sql"]},
+          "source_object": {"type": "string", "minLength": 1},
+          "target_object": {"type": "string", "minLength": 1},
+          "predicate": {"type": "string"},
+          "target_predicate": {"type": "string"},
+          "description": {"type": "string"}
+        },
+        "allOf": [
+          {
+            "if": {"properties": {"type": {"enum": ["row_count", "row-count"]}}},
+            "then": {"required": ["source_object", "target_object"]}
+          }
+        ],
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
 }
 `,
 		"clusters/.gitkeep": "",

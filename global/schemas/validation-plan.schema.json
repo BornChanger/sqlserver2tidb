@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Validation plan",
+  "type": "object",
+  "required": ["status", "checks"],
+  "properties": {
+    "status": {"enum": ["draft", "reviewed", "approved"]},
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "type"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "type": {"enum": ["row_count", "row-count", "checksum", "sampled_hash", "business_sql"]},
+          "source_object": {"type": "string", "minLength": 1},
+          "target_object": {"type": "string", "minLength": 1},
+          "predicate": {"type": "string"},
+          "target_predicate": {"type": "string"},
+          "description": {"type": "string"}
+        },
+        "allOf": [
+          {
+            "if": {"properties": {"type": {"enum": ["row_count", "row-count"]}}},
+            "then": {"required": ["source_object", "target_object"]}
+          }
+        ],
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

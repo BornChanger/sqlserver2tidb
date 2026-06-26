@@ -10,7 +10,7 @@ This MVP provides:
 
 - A Go CLI named `sqlserver2tidb`.
 - Initialization of the GitOps metadata repository structure.
-- Validation of the GitOps metadata repository structure, including required row-count validation plan fields and unresolved TODO predicates.
+- Validation of the GitOps metadata repository structure, including validation-plan schema policy, required row-count validation plan fields, and unresolved TODO predicates.
 - SQL Server discovery dry-run planning without opening a database connection.
 - SQL Server catalog discovery using a connection string supplied through an environment variable.
 - Rule-based SQL Server compatibility analysis from `inventory/inventory.json`.
@@ -46,7 +46,7 @@ This MVP provides:
       prs/
   ```
 
-- JSON Schema files for core metadata.
+- JSON Schema files for core metadata, including cluster, project, migration plan, and validation plan metadata.
 - Tests for repository initialization, validation, validation plan content checks, discovery planning and execution, compatibility analysis, schema draft generation, data movement, CDC, and validation plan generation, PR draft generation, GitHub PR create dry-runs, export/import/CDC/validation worker gates, external executor command dry-runs, executor binary dry-runs, local CSV export/import execution checks, row-count validation command checks, worker reconcile dry-runs and execute-next state PR drafts, worker state PR create dry-runs, upstream SQL Server cluster creation, and migration project creation.
 
 This MVP connects to SQL Server for read-only catalog discovery and, when `sqlserver2tidb-executor export --execute` is explicitly used, for a minimal local CSV export path. It connects to TiDB when `sqlserver2tidb-executor import --execute` is explicitly used with a local `file://` CSV source and a TiDB/MySQL connection string environment variable; CSV rows are streamed and committed in batches. It can also connect to both SQL Server and TiDB for an explicit `sqlserver2tidb-executor validate-count --execute` row-count comparison. It does **not** execute generated DDL, object storage export/import, TiDB Lightning or `IMPORT INTO`, CDC streaming/apply, cutover, cleanup, checksum validation, sampled hash validation, or business SQL validation. The included `sqlserver2tidb-executor cdc --execute` path intentionally returns an explicit not-implemented error.

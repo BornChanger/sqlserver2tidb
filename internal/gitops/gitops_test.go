@@ -26,7 +26,11 @@ func TestInitRepoCreatesGlobalStructure(t *testing.T) {
 	assertFile(t, root, "global/schemas/cluster.schema.json")
 	assertFile(t, root, "global/schemas/project.schema.json")
 	assertFile(t, root, "global/schemas/migration-plan.schema.json")
+	assertFile(t, root, "global/schemas/validation-plan.schema.json")
 	assertDir(t, root, "clusters")
+
+	policyYAML := readFile(t, root, "global/policies/file-schema-policy.yaml")
+	assertContains(t, policyYAML, "validation_plan: global/schemas/validation-plan.schema.json")
 }
 
 func TestCreateClusterCreatesUpstreamSQLServerClusterDirectory(t *testing.T) {

@@ -226,7 +226,7 @@ clusters/
 其中：
 
 - `global/policies/` 保存审批和执行策略。
-- `global/schemas/` 保存 JSON Schema。
+- `global/schemas/` 保存 JSON Schema，包括 cluster、project、migration plan 和 validation plan metadata。
 - `global/templates/` 保存模板。
 - `clusters/` 保存所有上游 SQL Server 集群。
 
@@ -1413,7 +1413,7 @@ clusters/<source_cluster_id>/cluster.yaml
 
 - CODEOWNERS 是否要求额外审批。
 - approval 文件是否存在。
-- 文件 schema 是否通过。
+- 文件 schema 是否通过，包括 `validation_plan: global/schemas/validation-plan.schema.json`。
 - 是否修改了受保护路径。
 
 ### 14.3 CDC checkpoint 过期

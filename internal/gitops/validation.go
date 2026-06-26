@@ -22,6 +22,7 @@ var requiredGlobalFiles = []string{
 	"global/schemas/cluster.schema.json",
 	"global/schemas/project.schema.json",
 	"global/schemas/migration-plan.schema.json",
+	"global/schemas/validation-plan.schema.json",
 	"global/templates/project.yaml",
 	"global/templates/migration-plan.yaml",
 	"global/templates/cutover-runbook.md",
