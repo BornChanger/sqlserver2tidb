@@ -70,8 +70,8 @@ func PrepareWorkerStatePRCreate(root, sourceClusterID, projectID, stage string) 
 	if !idPattern.MatchString(projectID) {
 		return WorkerStatePRCreateSpec{}, fmt.Errorf("invalid project id %q", projectID)
 	}
-	if !isWorkerReconcileStage(stage) {
-		return WorkerStatePRCreateSpec{}, fmt.Errorf("unsupported worker state PR stage %q", stage)
+	if !workerReconcileExecutableStages[stage] {
+		return WorkerStatePRCreateSpec{}, fmt.Errorf("unsupported worker state PR stage %q; state PRs are only generated for export, import, cdc, and validation", stage)
 	}
 	if err := validateProjectAddress(root, sourceClusterID, projectID); err != nil {
 		return WorkerStatePRCreateSpec{}, err

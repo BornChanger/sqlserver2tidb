@@ -53,7 +53,13 @@ type workerLeaseMetadata struct {
 	RenewedAt       string
 }
 
-var workerReconcileStages = []string{"export", "import", "cdc", "validation"}
+var workerReconcileStages = []string{"ddl", "export", "import", "cdc", "validation"}
+var workerReconcileExecutableStages = map[string]bool{
+	"export":     true,
+	"import":     true,
+	"cdc":        true,
+	"validation": true,
+}
 
 func PlanWorkerReconcile(root string) (WorkerReconcileReport, error) {
 	clustersDir := filepath.Join(root, "clusters")
@@ -111,12 +117,15 @@ func ExecuteNextWorkerReconcile(root string, spec WorkerReconcileExecuteSpec) (W
 	}
 	var selected WorkerReconcileAction
 	for _, action := range report.Actions {
-		if action.Status == "ready" {
+		if action.Status == "ready" && workerReconcileExecutableStages[action.Stage] {
 			selected = action
 			break
 		}
 	}
 	if selected.Stage == "" {
+		if report.ReadyActions > 0 {
+			return WorkerReconcileExecutionResult{}, fmt.Errorf("no ready metadata worker actions; ready executor-only actions must be run with worker-executor")
+		}
 		return WorkerReconcileExecutionResult{}, fmt.Errorf("no ready worker actions")
 	}
 
@@ -291,6 +300,9 @@ func writeWorkerLeaseMetadata(path string, lease workerLeaseMetadata) error {
 }
 
 func workerCommandForStage(stage, sourceClusterID, projectID string) string {
+	if stage == "ddl" {
+		return fmt.Sprintf("sqlserver2tidb worker-executor --root . --source-cluster-id %s --project-id %s --stage ddl", sourceClusterID, projectID)
+	}
 	command := "worker-" + stage
 	if stage == "validation" {
 		command = "worker-validate"

@@ -260,7 +260,7 @@ go run ./cmd/sqlserver2tidb worker-reconcile \
   --dry-run
 ```
 
-This scans cluster/project metadata and reports which `worker-export`, `worker-import`, `worker-cdc`, and `worker-validate` actions are ready or blocked by approval/hash checks. It does not execute workers, acquire leases, or write state.
+This scans cluster/project metadata and reports which `worker-executor --stage ddl`, `worker-export`, `worker-import`, `worker-cdc`, and `worker-validate` actions are ready or blocked by approval/hash checks. It does not execute workers, acquire leases, or write state.
 
 Execute the first ready metadata-only worker action with a source-cluster lease:
 
@@ -272,7 +272,7 @@ go run ./cmd/sqlserver2tidb worker-reconcile \
   --state-pr-draft
 ```
 
-This acquires or renews `state/worker-lease.yaml` for the selected source cluster, runs exactly one ready metadata-only worker action, and writes the same state/evidence files that the explicit single-project worker would write. With `--state-pr-draft`, it also writes a deterministic Markdown PR body under the project `prs/` directory for reviewing the state/evidence/lease changes. It does not create a branch or call GitHub. A different holder is blocked until the lease expires.
+This acquires or renews `state/worker-lease.yaml` for the selected source cluster, runs exactly one ready metadata-only worker action (`export`, `import`, `cdc`, or `validation`), and writes the same state/evidence files that the explicit single-project worker would write. DDL is intentionally executor-only and must be run through `worker-executor --stage ddl`. With `--state-pr-draft`, it also writes a deterministic Markdown PR body under the project `prs/` directory for reviewing the state/evidence/lease changes. It does not create a branch or call GitHub. A different holder is blocked until the lease expires.
 
 Prepare the git and GitHub commands for a worker state write-back PR:
 

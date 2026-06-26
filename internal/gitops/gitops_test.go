@@ -1707,6 +1707,11 @@ func TestPlanWorkerReconcileReportsReadyAndBlockedProjectStages(t *testing.T) {
 		t.Fatalf("ComputePayloadHashForStage(export) error = %v", err)
 	}
 	writeStageApproval(t, root, "export", exportHash)
+	ddlHash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "ddl")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(ddl) error = %v", err)
+	}
+	writeStageApproval(t, root, "ddl", ddlHash)
 	cdcHash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "cdc")
 	if err != nil {
 		t.Fatalf("ComputePayloadHashForStage(cdc) error = %v", err)
@@ -1720,9 +1725,15 @@ func TestPlanWorkerReconcileReportsReadyAndBlockedProjectStages(t *testing.T) {
 	if report.Projects != 1 {
 		t.Fatalf("Projects = %d, want 1", report.Projects)
 	}
-	if report.ReadyActions != 2 || report.BlockedActions != 2 {
-		t.Fatalf("ready/blocked = %d/%d, want 2/2\nreport: %+v", report.ReadyActions, report.BlockedActions, report)
+	if report.ReadyActions != 3 || report.BlockedActions != 2 {
+		t.Fatalf("ready/blocked = %d/%d, want 3/2\nreport: %+v", report.ReadyActions, report.BlockedActions, report)
 	}
+	ddl := findReconcileAction(t, report.Actions, "ddl")
+	if ddl.Status != "ready" || ddl.PayloadHash != ddlHash {
+		t.Fatalf("ddl action = %+v, want ready with hash %s", ddl, ddlHash)
+	}
+	assertContains(t, ddl.Command, "worker-executor")
+	assertContains(t, ddl.Command, "--stage ddl")
 	export := findReconcileAction(t, report.Actions, "export")
 	if export.Status != "ready" || export.PayloadHash != exportHash {
 		t.Fatalf("export action = %+v, want ready with hash %s", export, exportHash)
@@ -1743,6 +1754,26 @@ func TestPlanWorkerReconcileReportsReadyAndBlockedProjectStages(t *testing.T) {
 		t.Fatalf("validation action = %+v, want blocked", validation)
 	}
 	assertContains(t, validation.Reason, "validation approval is not approved")
+}
+
+func TestExecuteNextWorkerReconcileSkipsDDLExecutorActions(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateSchemaDraftOnly(root))
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "ddl")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(ddl) error = %v", err)
+	}
+	writeStageApproval(t, root, "ddl", hash)
+
+	_, err = ExecuteNextWorkerReconcile(root, WorkerReconcileExecuteSpec{
+		Holder: "agent-a",
+	})
+	if err == nil {
+		t.Fatal("ExecuteNextWorkerReconcile() expected no metadata action error")
+	}
+	assertContains(t, err.Error(), "no ready metadata worker actions")
+	assertContains(t, err.Error(), "worker-executor")
 }
 
 func TestExecuteNextWorkerReconcileAcquiresLeaseAndRunsFirstReadyAction(t *testing.T) {
@@ -1961,6 +1992,18 @@ func TestPrepareWorkerStatePRCreateRequiresGeneratedStateDraft(t *testing.T) {
 	}
 	assertContains(t, err.Error(), "worker state PR draft clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/prs/reconcile-export-state-pr.md does not exist")
 	assertContains(t, err.Error(), "run worker-reconcile --execute-next --state-pr-draft first")
+}
+
+func TestPrepareWorkerStatePRCreateRejectsDDLExecutorStage(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+
+	_, err := PrepareWorkerStatePRCreate(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "ddl")
+	if err == nil {
+		t.Fatal("PrepareWorkerStatePRCreate() expected unsupported ddl stage error")
+	}
+	assertContains(t, err.Error(), `unsupported worker state PR stage "ddl"`)
+	assertContains(t, err.Error(), "only generated for export, import, cdc, and validation")
 }
 
 func TestExecuteNextWorkerReconcileBlocksWhenLeaseHeldByAnotherHolder(t *testing.T) {

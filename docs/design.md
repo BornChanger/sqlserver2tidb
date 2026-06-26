@@ -178,16 +178,17 @@ The command does not connect to SQL Server or TiDB and does not execute validati
 `worker-reconcile` is the current bridge between explicit one-project workers and a future reconcile loop. In `--dry-run` mode, it scans:
 
 - `clusters/<source_cluster_id>/projects/<project_id>/project.yaml`
-- project approval files for `export`, `import`, `cdc`, and `validation`
+- project approval files for `ddl`, `export`, `import`, `cdc`, and `validation`
 - the payload files covered by each stage hash
 
 For each project/stage pair, it reports:
 
 - `ready` when approval is approved, `approved_by` is non-empty, and the payload hash matches
 - `blocked` with the deterministic reason returned by the approval/hash gate
-- the exact single-project worker command for ready actions
+- the exact single-project worker command for ready metadata actions
+- `worker-executor --stage ddl` for ready DDL executor actions
 
-In `--execute-next` mode, it selects the first ready action in source-cluster/project/stage order, acquires or renews the source-cluster `state/worker-lease.yaml`, and runs exactly one metadata-only worker action. The same holder can renew its own unexpired lease. A different holder is blocked until the lease expires. This mode writes the same state/evidence files that the selected explicit worker writes, plus the source-cluster lease file.
+In `--execute-next` mode, it selects the first ready metadata-only action in source-cluster/project/stage order, acquires or renews the source-cluster `state/worker-lease.yaml`, and runs exactly one metadata-only worker action: `export`, `import`, `cdc`, or `validation`. DDL is intentionally executor-only and must be run through `worker-executor --stage ddl`, so a ready DDL action is reported by `--dry-run` but is not selected by `--execute-next`. The same holder can renew its own unexpired lease. A different holder is blocked until the lease expires. This mode writes the same state/evidence files that the selected explicit worker writes, plus the source-cluster lease file.
 
 When `--state-pr-draft` is enabled together with `--execute-next`, the command also writes a project-local PR body at `clusters/<source_cluster_id>/projects/<project_id>/prs/reconcile-<stage>-state-pr.md`. The draft records the selected stage, status, payload hash, lease id, branch naming convention, and files to review. For CDC, it includes the source-cluster `state/cdc-checkpoint.yaml` in addition to project state/evidence and the worker lease.
 
