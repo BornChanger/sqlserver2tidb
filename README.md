@@ -21,7 +21,7 @@ This MVP provides:
 - Export, import, CDC, and validation payload hash calculation.
 - Approved metadata-only export/import/CDC worker state write-back.
 - Dry-run-by-default external executor command generation for approved export/import/CDC plans.
-- `sqlserver2tidb-executor` adapter for export/import/CDC work items, including a minimal local CSV `export --execute` path.
+- `sqlserver2tidb-executor` adapter for export/import/CDC work items, including minimal local CSV `export --execute` and `import --execute` paths.
 - Approved validation-only worker execution.
 - Read-only worker reconcile dry-run planning across source clusters and projects.
 - Worker state PR draft generation and a dry-run-by-default branch/commit/push/GitHub PR wrapper.
@@ -46,9 +46,9 @@ This MVP provides:
   ```
 
 - JSON Schema files for core metadata.
-- Tests for repository initialization, validation, discovery planning and execution, compatibility analysis, schema draft generation, data movement and CDC plan generation, PR draft generation, GitHub PR create dry-runs, export/import/CDC/validation worker gates, external executor command dry-runs, executor binary dry-runs and local CSV export execution checks, worker reconcile dry-runs and execute-next state PR drafts, worker state PR create dry-runs, upstream SQL Server cluster creation, and migration project creation.
+- Tests for repository initialization, validation, discovery planning and execution, compatibility analysis, schema draft generation, data movement and CDC plan generation, PR draft generation, GitHub PR create dry-runs, export/import/CDC/validation worker gates, external executor command dry-runs, executor binary dry-runs and local CSV export/import execution checks, worker reconcile dry-runs and execute-next state PR drafts, worker state PR create dry-runs, upstream SQL Server cluster creation, and migration project creation.
 
-This MVP connects to SQL Server for read-only catalog discovery and, when `sqlserver2tidb-executor export --execute` is explicitly used, for a minimal local CSV export path. It does **not** connect to TiDB or execute generated DDL, object storage export, real import, CDC streaming/apply, cutover, cleanup, or source/target data validation. The included `sqlserver2tidb-executor import --execute` and `sqlserver2tidb-executor cdc --execute` paths intentionally return explicit not-implemented errors.
+This MVP connects to SQL Server for read-only catalog discovery and, when `sqlserver2tidb-executor export --execute` is explicitly used, for a minimal local CSV export path. It connects to TiDB only when `sqlserver2tidb-executor import --execute` is explicitly used with a local `file://` CSV source and a TiDB/MySQL connection string environment variable. It does **not** execute generated DDL, object storage export/import, TiDB Lightning or `IMPORT INTO`, CDC streaming/apply, cutover, cleanup, or source/target data validation. The included `sqlserver2tidb-executor cdc --execute` path intentionally returns an explicit not-implemented error.
 
 ## Build
 
@@ -224,7 +224,7 @@ go run ./cmd/sqlserver2tidb worker-executor \
   --stage export
 ```
 
-This command reuses the same approval/hash gate and is dry-run by default. It prints `sqlserver2tidb-executor` commands for export chunks, import jobs, or CDC table apply work. The included executor binary can run `export --execute` only for SQL Server to local `file://` CSV output after a connection string is supplied through an environment variable. Object storage export, TiDB import, and CDC apply side effects are still not implemented.
+This command reuses the same approval/hash gate and is dry-run by default. It prints `sqlserver2tidb-executor` commands for export chunks, import jobs, or CDC table apply work. The included executor binary can run SQL Server to local `file://` CSV export and local `file://` CSV to TiDB import after connection strings are supplied through environment variables. Object storage export/import, TiDB Lightning or `IMPORT INTO`, and CDC apply side effects are still not implemented.
 
 Preview ready and blocked worker actions across the repository:
 
@@ -323,5 +323,5 @@ This checks approved metadata, writes `state/validation-status.yaml`, and writes
 ## Next Milestones
 
 - Extend `sqlserver2tidb-executor export` beyond local CSV to reviewed object storage formats.
-- Implement real import behavior inside `sqlserver2tidb-executor import`.
+- Extend `sqlserver2tidb-executor import` beyond row-by-row local CSV inserts to reviewed production import engines.
 - Add source/target data validation connectors after import support exists.

@@ -3,6 +3,8 @@ package executor
 import (
 	"bytes"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -60,6 +62,88 @@ func TestRunImportDryRunCommand(t *testing.T) {
 	assertOutputContains(t, output, "source uri: s3://migration/prod/full/dbo.orders.000001.parquet")
 	assertOutputContains(t, output, "depends on export chunk: dbo.orders.000001")
 	assertOutputContains(t, output, "No TiDB connection will be opened.")
+}
+
+func TestRunImportExecuteRejectsNonFileSourceURI(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"import",
+		"--execute",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--job-id", "import-dbo.orders.000001",
+		"--target-object", "app.orders",
+		"--source-uri", "s3://migration/prod/full/dbo.orders.000001.csv",
+		"--target-connection-string-env", "MISSING_TIDB_DSN",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("import execute code = 0, want non-zero")
+	}
+	assertOutputContains(t, stderr.String(), "executor import: only file:// source URIs are supported for --execute")
+}
+
+func TestRunImportExecuteRequiresConnectionStringEnv(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"import",
+		"--execute",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--job-id", "import-dbo.orders.000001",
+		"--target-object", "app.orders",
+		"--source-uri", "file:///tmp/dbo.orders.000001.csv",
+		"--target-connection-string-env", "MISSING_TIDB_DSN",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("import execute code = 0, want non-zero")
+	}
+	assertOutputContains(t, stderr.String(), "executor import: target connection string env MISSING_TIDB_DSN is not set")
+}
+
+func TestBuildTiDBInsertStatementQuotesObjectAndColumns(t *testing.T) {
+	stmt, err := buildTiDBInsertStatement("app.orders", []string{"id", "order`name"})
+	if err != nil {
+		t.Fatalf("buildTiDBInsertStatement() error = %v", err)
+	}
+
+	want := "INSERT INTO `app`.`orders` (`id`, `order``name`) VALUES (?, ?)"
+	if stmt != want {
+		t.Fatalf("buildTiDBInsertStatement() = %q, want %q", stmt, want)
+	}
+}
+
+func TestReadCSVImportFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "orders.csv")
+	if err := os.WriteFile(path, []byte("id,name\n1,Ada\n2,\n"), 0o644); err != nil {
+		t.Fatalf("write CSV fixture: %v", err)
+	}
+
+	file, err := openCSVImportFile("file://" + path)
+	if err != nil {
+		t.Fatalf("openCSVImportFile() error = %v", err)
+	}
+	defer file.Close()
+
+	columns, records, err := readCSVImportRecords(file)
+	if err != nil {
+		t.Fatalf("readCSVImportRecords() error = %v", err)
+	}
+	if strings.Join(columns, ",") != "id,name" {
+		t.Fatalf("columns = %v, want [id name]", columns)
+	}
+	if len(records) != 2 {
+		t.Fatalf("records len = %d, want 2", len(records))
+	}
+	if records[0][0] != "1" || records[0][1] != "Ada" {
+		t.Fatalf("records[0] = %v, want [1 Ada]", records[0])
+	}
+	if records[1][0] != "2" || records[1][1] != "" {
+		t.Fatalf("records[1] = %v, want [2 \"\"]", records[1])
+	}
 }
 
 func TestRunCDCDryRunCommand(t *testing.T) {

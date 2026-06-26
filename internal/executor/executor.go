@@ -14,10 +14,12 @@ import (
 	"strings"
 	"time"
 
+	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/microsoft/go-mssqldb"
 )
 
 const defaultSourceConnectionStringEnv = "SQLSERVER2TIDB_SOURCE_CONNECTION_STRING"
+const defaultTargetConnectionStringEnv = "SQLSERVER2TIDB_TARGET_CONNECTION_STRING"
 
 func Run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
@@ -269,13 +271,10 @@ func runImport(args []string, stdout, stderr io.Writer) int {
 	targetObject := fs.String("target-object", "", "target object")
 	sourceURI := fs.String("source-uri", "", "import source URI")
 	dependsOnExportChunk := fs.String("depends-on-export-chunk", "", "upstream export chunk id")
-	execute := fs.Bool("execute", false, "perform the import; not implemented in this adapter")
+	targetConnectionStringEnv := fs.String("target-connection-string-env", defaultTargetConnectionStringEnv, "environment variable containing the TiDB/MySQL connection string")
+	execute := fs.Bool("execute", false, "perform the import")
 	if err := fs.Parse(args); err != nil {
 		return 2
-	}
-	if *execute {
-		fmt.Fprintln(stderr, "executor import: --execute is not implemented yet")
-		return 1
 	}
 	if err := requireFields("executor import",
 		field{"source cluster id", *sourceClusterID},
@@ -286,6 +285,18 @@ func runImport(args []string, stdout, stderr io.Writer) int {
 	); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
+	}
+	if *execute {
+		if err := executeTiDBImport(context.Background(), importExecuteSpec{
+			TargetObject:              *targetObject,
+			SourceURI:                 *sourceURI,
+			TargetConnectionStringEnv: *targetConnectionStringEnv,
+		}); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "executor import completed: %s -> %s\n", *sourceURI, *targetObject)
+		return 0
 	}
 
 	fmt.Fprintln(stdout, "executor import dry run")
@@ -300,6 +311,160 @@ func runImport(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintln(stdout, "No TiDB connection will be opened.")
 	return 0
+}
+
+type importExecuteSpec struct {
+	TargetObject              string
+	SourceURI                 string
+	TargetConnectionStringEnv string
+}
+
+func executeTiDBImport(ctx context.Context, spec importExecuteSpec) error {
+	sourcePath, err := resolveImportSourceFile(spec.SourceURI)
+	if err != nil {
+		return fmt.Errorf("executor import: %w", err)
+	}
+
+	envName := strings.TrimSpace(spec.TargetConnectionStringEnv)
+	if envName == "" {
+		envName = defaultTargetConnectionStringEnv
+	}
+	connectionString := strings.TrimSpace(os.Getenv(envName))
+	if connectionString == "" {
+		return fmt.Errorf("executor import: target connection string env %s is not set", envName)
+	}
+
+	file, err := os.Open(sourcePath)
+	if err != nil {
+		return fmt.Errorf("executor import: open CSV source: %w", err)
+	}
+	defer file.Close()
+
+	columns, records, err := readCSVImportRecords(file)
+	if err != nil {
+		return fmt.Errorf("executor import: read CSV source: %w", err)
+	}
+	insertSQL, err := buildTiDBInsertStatement(spec.TargetObject, columns)
+	if err != nil {
+		return fmt.Errorf("executor import: %w", err)
+	}
+
+	db, err := sql.Open("mysql", connectionString)
+	if err != nil {
+		return fmt.Errorf("executor import: open TiDB connection: %w", err)
+	}
+	defer db.Close()
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("executor import: begin transaction: %w", err)
+	}
+	stmt, err := tx.PrepareContext(ctx, insertSQL)
+	if err != nil {
+		tx.Rollback()
+		return fmt.Errorf("executor import: prepare insert: %w", err)
+	}
+	defer stmt.Close()
+
+	for i, record := range records {
+		args := make([]any, len(record))
+		for j, value := range record {
+			args[j] = value
+		}
+		if _, err := stmt.ExecContext(ctx, args...); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("executor import: insert row %d: %w", i+1, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("executor import: commit transaction: %w", err)
+	}
+	return nil
+}
+
+func openCSVImportFile(sourceURI string) (*os.File, error) {
+	path, err := resolveImportSourceFile(sourceURI)
+	if err != nil {
+		return nil, err
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open CSV source: %w", err)
+	}
+	return file, nil
+}
+
+func resolveImportSourceFile(sourceURI string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(sourceURI))
+	if err != nil {
+		return "", fmt.Errorf("parse source uri: %w", err)
+	}
+	if parsed.Scheme != "file" {
+		return "", fmt.Errorf("only file:// source URIs are supported for --execute")
+	}
+	if parsed.Host != "" && parsed.Host != "localhost" {
+		return "", fmt.Errorf("file source URI host must be empty or localhost")
+	}
+	if strings.TrimSpace(parsed.Path) == "" {
+		return "", fmt.Errorf("file source URI path is required")
+	}
+	return filepath.Clean(parsed.Path), nil
+}
+
+func readCSVImportRecords(r io.Reader) ([]string, [][]string, error) {
+	reader := csv.NewReader(r)
+	columns, err := reader.Read()
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, column := range columns {
+		if strings.TrimSpace(column) == "" {
+			return nil, nil, fmt.Errorf("CSV header contains an empty column name")
+		}
+	}
+	records, err := reader.ReadAll()
+	if err != nil {
+		return nil, nil, err
+	}
+	return columns, records, nil
+}
+
+func buildTiDBInsertStatement(targetObject string, columns []string) (string, error) {
+	parts := strings.Split(strings.TrimSpace(targetObject), ".")
+	if len(parts) != 1 && len(parts) != 2 {
+		return "", fmt.Errorf("target object must be table or database.table")
+	}
+	quotedObject := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return "", fmt.Errorf("target object contains an empty identifier")
+		}
+		quotedObject = append(quotedObject, quoteTiDBIdentifier(part))
+	}
+	if len(columns) == 0 {
+		return "", fmt.Errorf("CSV header must contain at least one column")
+	}
+	quotedColumns := make([]string, 0, len(columns))
+	placeholders := make([]string, 0, len(columns))
+	for _, column := range columns {
+		column = strings.TrimSpace(column)
+		if column == "" {
+			return "", fmt.Errorf("CSV header contains an empty column name")
+		}
+		quotedColumns = append(quotedColumns, quoteTiDBIdentifier(column))
+		placeholders = append(placeholders, "?")
+	}
+
+	return fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)",
+		strings.Join(quotedObject, "."),
+		strings.Join(quotedColumns, ", "),
+		strings.Join(placeholders, ", "),
+	), nil
+}
+
+func quoteTiDBIdentifier(identifier string) string {
+	return "`" + strings.ReplaceAll(identifier, "`", "``") + "`"
 }
 
 func runCDC(args []string, stdout, stderr io.Writer) int {
@@ -365,6 +530,7 @@ Usage:
   sqlserver2tidb-executor export --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --chunk-id dbo.orders.000001 --source-object sales.dbo.orders --target-object app.orders --output-uri s3://bucket/path.parquet
   sqlserver2tidb-executor export --execute --source-connection-string-env SQLSERVER2TIDB_SOURCE_CONNECTION_STRING --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --chunk-id dbo.orders.000001 --source-object sales.dbo.orders --target-object app.orders --output-uri file:///tmp/path.csv --predicate "id >= 1 AND id < 1000"
   sqlserver2tidb-executor import --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --job-id import-dbo.orders.000001 --target-object app.orders --source-uri s3://bucket/path.parquet
+  sqlserver2tidb-executor import --execute --target-connection-string-env SQLSERVER2TIDB_TARGET_CONNECTION_STRING --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --job-id import-dbo.orders.000001 --target-object app.orders --source-uri file:///tmp/path.csv
   sqlserver2tidb-executor cdc --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --source-object sales.dbo.orders --target-object app.orders --apply-batch-size 1000
 `)
 }
