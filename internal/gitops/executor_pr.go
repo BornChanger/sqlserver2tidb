@@ -210,46 +210,52 @@ func validateExecutorEvidenceCommands(status string, commands []executorEvidence
 		return fmt.Errorf("executor evidence commands must contain at least one command")
 	}
 	hasFailedCommand := false
+	seenCommandIDs := make(map[string]struct{}, len(commands))
 	for i, command := range commands {
-		if strings.TrimSpace(command.ID) == "" {
+		commandID := strings.TrimSpace(command.ID)
+		if commandID == "" {
 			return fmt.Errorf("executor evidence command %d id is required", i+1)
 		}
+		if _, ok := seenCommandIDs[commandID]; ok {
+			return fmt.Errorf("executor evidence command id %s is duplicated", commandID)
+		}
+		seenCommandIDs[commandID] = struct{}{}
 		if strings.TrimSpace(command.ShellCommand) == "" {
-			return fmt.Errorf("executor evidence command %s shell_command is required", command.ID)
+			return fmt.Errorf("executor evidence command %s shell_command is required", commandID)
 		}
 		if command.ExitCode == nil {
-			return fmt.Errorf("executor evidence command %s exit_code is required", command.ID)
+			return fmt.Errorf("executor evidence command %s exit_code is required", commandID)
 		}
 		if strings.TrimSpace(status) == "succeeded" && *command.ExitCode != 0 {
-			return fmt.Errorf("executor evidence status succeeded conflicts with command %s exit_code %d", command.ID, *command.ExitCode)
+			return fmt.Errorf("executor evidence status succeeded conflicts with command %s exit_code %d", commandID, *command.ExitCode)
 		}
 		if *command.ExitCode != 0 {
 			hasFailedCommand = true
 		}
 		if len(command.Args) == 0 {
-			return fmt.Errorf("executor evidence command %s args must contain at least one argument", command.ID)
+			return fmt.Errorf("executor evidence command %s args must contain at least one argument", commandID)
 		}
 		for argIndex, arg := range command.Args {
 			if strings.TrimSpace(arg) == "" {
-				return fmt.Errorf("executor evidence command %s args[%d] is required", command.ID, argIndex)
+				return fmt.Errorf("executor evidence command %s args[%d] is required", commandID, argIndex)
 			}
 		}
-		startedAt, err := parseExecutorEvidenceCommandTime(command.ID, "started_at", command.StartedAt)
+		startedAt, err := parseExecutorEvidenceCommandTime(commandID, "started_at", command.StartedAt)
 		if err != nil {
 			return err
 		}
-		completedAt, err := parseExecutorEvidenceCommandTime(command.ID, "completed_at", command.CompletedAt)
+		completedAt, err := parseExecutorEvidenceCommandTime(commandID, "completed_at", command.CompletedAt)
 		if err != nil {
 			return err
 		}
 		if completedAt.Before(startedAt) {
-			return fmt.Errorf("executor evidence command %s completed_at is before started_at", command.ID)
+			return fmt.Errorf("executor evidence command %s completed_at is before started_at", commandID)
 		}
 		if command.DurationMs == nil {
-			return fmt.Errorf("executor evidence command %s duration_ms is required", command.ID)
+			return fmt.Errorf("executor evidence command %s duration_ms is required", commandID)
 		}
 		if *command.DurationMs < 0 {
-			return fmt.Errorf("executor evidence command %s duration_ms must be non-negative", command.ID)
+			return fmt.Errorf("executor evidence command %s duration_ms must be non-negative", commandID)
 		}
 	}
 	if strings.TrimSpace(status) == "failed" && !hasFailedCommand {
