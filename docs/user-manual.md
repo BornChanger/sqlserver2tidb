@@ -338,6 +338,7 @@ owners:
 
 - `secret_ref` 只能是 secret 引用，不能是明文密码。
 - `cluster-id` 使用小写字母、数字和 `-`。
+- `--owner` 至少指定一个责任方，多个 owner 用逗号分隔。
 - 如果 `clusters/<source_cluster_id>/` 已存在，命令会失败，不会覆盖已有状态文件。
 - CDC checkpoint 是源集群级状态，不放在单个项目下。
 
@@ -398,6 +399,8 @@ clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/
 ```
 
 如果 `clusters/<source_cluster_id>/projects/<project_id>/` 已存在，命令会失败，不会覆盖已有项目状态文件。
+
+`--owner` 至少指定一个项目责任方，多个 owner 用逗号分隔。
 
 `project.yaml` 示例：
 

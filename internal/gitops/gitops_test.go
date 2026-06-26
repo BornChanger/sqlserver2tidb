@@ -99,6 +99,25 @@ func TestCreateClusterRejectsExistingClusterDirectory(t *testing.T) {
 	}
 }
 
+func TestCreateClusterRequiresOwner(t *testing.T) {
+	root := t.TempDir()
+	must(t, InitRepo(root))
+
+	err := CreateCluster(root, ClusterSpec{
+		ClusterID:              "prod-sqlserver-a",
+		DisplayName:            "prod SQL Server A",
+		Listener:               "sqlserver-a.internal",
+		Port:                   1433,
+		SecretRef:              "vault://migration/prod-sqlserver-a/readonly",
+		CDCMode:                "sqlserver-cdc",
+		RetentionHoursRequired: 168,
+	})
+	if err == nil {
+		t.Fatal("CreateCluster() error = nil, want owner requirement")
+	}
+	assertContains(t, err.Error(), "at least one cluster owner is required")
+}
+
 func TestCreateProjectCreatesProjectUnderSourceCluster(t *testing.T) {
 	root := t.TempDir()
 	must(t, InitRepo(root))
@@ -197,6 +216,37 @@ func TestCreateProjectRejectsExistingProjectDirectory(t *testing.T) {
 	if after != before {
 		t.Fatalf("CreateProject() overwrote existing project.yaml\nbefore:\n%s\nafter:\n%s", before, after)
 	}
+}
+
+func TestCreateProjectRequiresOwner(t *testing.T) {
+	root := t.TempDir()
+	must(t, InitRepo(root))
+	must(t, CreateCluster(root, ClusterSpec{
+		ClusterID:              "prod-sqlserver-a",
+		DisplayName:            "prod SQL Server A",
+		Listener:               "sqlserver-a.internal",
+		Port:                   1433,
+		SecretRef:              "vault://migration/prod-sqlserver-a/readonly",
+		CDCMode:                "sqlserver-cdc",
+		RetentionHoursRequired: 168,
+		Owners:                 []string{"dba-team"},
+	}))
+
+	err := CreateProject(root, ProjectSpec{
+		SourceClusterID: "prod-sqlserver-a",
+		ProjectID:       "sales-db-to-tidb-prod-a",
+		DisplayName:     "sales DB to TiDB prod A",
+		SourceDatabase:  "sales",
+		SourceSchemas:   []string{"dbo"},
+		TargetName:      "tidb-prod-a",
+		TargetDatabase:  "app",
+		TargetSecretRef: "vault://migration/tidb-prod-a/migrate-user",
+		Mode:            "short-downtime",
+	})
+	if err == nil {
+		t.Fatal("CreateProject() error = nil, want owner requirement")
+	}
+	assertContains(t, err.Error(), "at least one project owner is required")
 }
 
 func TestCreateProjectRequiresExistingSourceCluster(t *testing.T) {

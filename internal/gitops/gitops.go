@@ -121,7 +121,7 @@ approval_required:
         "retention_hours_required": {"type": "integer", "minimum": 1}
       }
     },
-    "owners": {"type": "array", "items": {"type": "string"}}
+    "owners": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}
   }
 }
 `,
@@ -153,7 +153,7 @@ approval_required:
       }
     },
     "mode": {"enum": ["offline", "short-downtime", "low-downtime"]},
-    "owners": {"type": "array", "items": {"type": "string"}}
+    "owners": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}
   }
 }
 `,
@@ -561,6 +561,9 @@ func validateCluster(spec ClusterSpec) error {
 	if spec.RetentionHoursRequired <= 0 {
 		return errors.New("cdc retention hours must be positive")
 	}
+	if err := validateOwners("cluster", spec.Owners); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -579,6 +582,21 @@ func validateProject(spec ProjectSpec) error {
 	}
 	if spec.Mode == "" {
 		return errors.New("migration mode is required")
+	}
+	if err := validateOwners("project", spec.Owners); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateOwners(kind string, owners []string) error {
+	if len(owners) == 0 {
+		return fmt.Errorf("at least one %s owner is required", kind)
+	}
+	for _, owner := range owners {
+		if strings.TrimSpace(owner) == "" {
+			return fmt.Errorf("%s owner must not be empty", kind)
+		}
 	}
 	return nil
 }
