@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -25,6 +26,17 @@ type ValidationCheckResult struct {
 	Message string
 }
 
+type DataWorkerResult struct {
+	SourceClusterID string
+	ProjectID       string
+	Stage           string
+	PayloadHash     string
+	Status          string
+	Items           int
+	StateFile       string
+	EvidenceFile    string
+}
+
 type approvalMetadata struct {
 	Action      string
 	Status      string
@@ -40,17 +52,32 @@ var validationPayloadFiles = []string{
 	"plan/validation-plan.yaml",
 }
 
+var stagePayloadFiles = map[string][]string{
+	"validation": validationPayloadFiles,
+	"export": {
+		"project.yaml",
+		"plan/export-plan.yaml",
+	},
+	"import": {
+		"project.yaml",
+		"schema/tidb-ddl/",
+		"plan/export-plan.yaml",
+		"plan/import-plan.yaml",
+	},
+}
+
 func ComputePayloadHashForStage(root, sourceClusterID, projectID, stage string) (string, error) {
 	if err := validateProjectAddress(root, sourceClusterID, projectID); err != nil {
 		return "", err
 	}
 	stage = strings.ToLower(strings.TrimSpace(stage))
-	if stage != "validation" {
+	payloadFiles, ok := stagePayloadFiles[stage]
+	if !ok {
 		return "", fmt.Errorf("payload hash is not supported for stage %q", stage)
 	}
 
 	projectRel := filepath.ToSlash(filepath.Join("clusters", sourceClusterID, "projects", projectID))
-	files, err := collectPayloadFiles(root, projectRel, validationPayloadFiles)
+	files, err := collectPayloadFiles(root, projectRel, payloadFiles)
 	if err != nil {
 		return "", err
 	}
@@ -72,7 +99,7 @@ func RunValidationWorker(root, sourceClusterID, projectID string) (ValidationWor
 	if err := validateProjectAddress(root, sourceClusterID, projectID); err != nil {
 		return ValidationWorkerResult{}, err
 	}
-	payloadHash, err := requireApprovedValidation(root, sourceClusterID, projectID)
+	payloadHash, err := requireApprovedStage(root, sourceClusterID, projectID, "validation")
 	if err != nil {
 		return ValidationWorkerResult{}, err
 	}
@@ -125,6 +152,63 @@ func RunValidationWorker(root, sourceClusterID, projectID string) (ValidationWor
 	return result, nil
 }
 
+func RunExportWorker(root, sourceClusterID, projectID string) (DataWorkerResult, error) {
+	return runDataWorker(root, sourceClusterID, projectID, "export")
+}
+
+func RunImportWorker(root, sourceClusterID, projectID string) (DataWorkerResult, error) {
+	return runDataWorker(root, sourceClusterID, projectID, "import")
+}
+
+func runDataWorker(root, sourceClusterID, projectID, stage string) (DataWorkerResult, error) {
+	if err := validateProjectAddress(root, sourceClusterID, projectID); err != nil {
+		return DataWorkerResult{}, err
+	}
+	payloadHash, err := requireApprovedStage(root, sourceClusterID, projectID, stage)
+	if err != nil {
+		return DataWorkerResult{}, err
+	}
+
+	projectDir := filepath.Join(root, "clusters", sourceClusterID, "projects", projectID)
+	result := DataWorkerResult{
+		SourceClusterID: sourceClusterID,
+		ProjectID:       projectID,
+		Stage:           stage,
+		PayloadHash:     payloadHash,
+		Status:          "planned",
+	}
+	switch stage {
+	case "export":
+		chunks, err := readExportPlanChunks(filepath.Join(projectDir, "plan", "export-plan.yaml"))
+		if err != nil {
+			return DataWorkerResult{}, err
+		}
+		result.Items = len(chunks)
+		result.StateFile = "state/export-chunks.yaml"
+		result.EvidenceFile = "evidence/precheck.json"
+		if err := writeExportWorkerState(projectDir, result, chunks); err != nil {
+			return DataWorkerResult{}, err
+		}
+	case "import":
+		jobs, err := readImportPlanJobs(filepath.Join(projectDir, "plan", "import-plan.yaml"))
+		if err != nil {
+			return DataWorkerResult{}, err
+		}
+		result.Items = len(jobs)
+		result.StateFile = "state/import-jobs.yaml"
+		result.EvidenceFile = "evidence/import-summary.json"
+		if err := writeImportWorkerState(projectDir, result, jobs); err != nil {
+			return DataWorkerResult{}, err
+		}
+	default:
+		return DataWorkerResult{}, fmt.Errorf("unsupported data worker stage %q", stage)
+	}
+	if err := writeDataWorkerEvidence(projectDir, result); err != nil {
+		return DataWorkerResult{}, err
+	}
+	return result, nil
+}
+
 func (result *ValidationWorkerResult) addCheck(name string, passed bool, message string) {
 	status := "passed"
 	if !passed {
@@ -167,26 +251,30 @@ func validateProjectAddress(root, sourceClusterID, projectID string) error {
 }
 
 func requireApprovedValidation(root, sourceClusterID, projectID string) (string, error) {
-	approvalPath := filepath.Join(root, "clusters", sourceClusterID, "projects", projectID, "approvals", "validation-approval.yaml")
+	return requireApprovedStage(root, sourceClusterID, projectID, "validation")
+}
+
+func requireApprovedStage(root, sourceClusterID, projectID, stage string) (string, error) {
+	approvalPath := filepath.Join(root, "clusters", sourceClusterID, "projects", projectID, "approvals", stage+"-approval.yaml")
 	approval, err := readApprovalMetadata(approvalPath)
 	if err != nil {
 		return "", err
 	}
-	if approval.Action != "validation" {
-		return "", fmt.Errorf("validation approval action is %q, want validation", approval.Action)
+	if approval.Action != stage {
+		return "", fmt.Errorf("%s approval action is %q, want %s", stage, approval.Action, stage)
 	}
 	if approval.Status != "approved" {
-		return "", fmt.Errorf("validation approval is not approved")
+		return "", fmt.Errorf("%s approval is not approved", stage)
 	}
 	if len(approval.ApprovedBy) == 0 {
-		return "", fmt.Errorf("validation approval has no approved_by reviewers")
+		return "", fmt.Errorf("%s approval has no approved_by reviewers", stage)
 	}
-	actualHash, err := ComputePayloadHashForStage(root, sourceClusterID, projectID, "validation")
+	actualHash, err := ComputePayloadHashForStage(root, sourceClusterID, projectID, stage)
 	if err != nil {
 		return "", err
 	}
 	if approval.PayloadHash != actualHash {
-		return "", fmt.Errorf("validation approval payload hash mismatch: expected %s, actual %s", approval.PayloadHash, actualHash)
+		return "", fmt.Errorf("%s approval payload hash mismatch: expected %s, actual %s", stage, approval.PayloadHash, actualHash)
 	}
 	return actualHash, nil
 }
@@ -194,7 +282,7 @@ func requireApprovedValidation(root, sourceClusterID, projectID string) (string,
 func readApprovalMetadata(path string) (approvalMetadata, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return approvalMetadata{}, fmt.Errorf("read validation approval: %w", err)
+		return approvalMetadata{}, fmt.Errorf("read approval: %w", err)
 	}
 	var approval approvalMetadata
 	listKey := ""
@@ -231,6 +319,84 @@ func readApprovalMetadata(path string) (approvalMetadata, error) {
 		}
 	}
 	return approval, nil
+}
+
+func readExportPlanChunks(path string) ([]dataExportChunkState, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read export plan: %w", err)
+	}
+	var chunks []dataExportChunkState
+	var currentSource, currentTarget string
+	for _, raw := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(raw)
+		switch {
+		case strings.HasPrefix(trimmed, "- source_object:"):
+			currentSource = trimYAMLScalar(strings.TrimPrefix(trimmed, "- source_object:"))
+			currentTarget = ""
+		case strings.HasPrefix(trimmed, "target_object:"):
+			currentTarget = trimYAMLScalar(strings.TrimPrefix(trimmed, "target_object:"))
+		case strings.HasPrefix(trimmed, "- id:"):
+			chunks = append(chunks, dataExportChunkState{
+				ID:           trimYAMLScalar(strings.TrimPrefix(trimmed, "- id:")),
+				SourceObject: currentSource,
+				TargetObject: currentTarget,
+				Status:       "planned",
+			})
+		case strings.HasPrefix(trimmed, "estimated_rows:") && len(chunks) > 0:
+			value := trimYAMLScalar(strings.TrimPrefix(trimmed, "estimated_rows:"))
+			rows, err := strconv.ParseInt(value, 10, 64)
+			if err != nil {
+				return nil, fmt.Errorf("parse export chunk estimated_rows %q: %w", value, err)
+			}
+			chunks[len(chunks)-1].EstimatedRows = rows
+		case strings.HasPrefix(trimmed, "output_uri:") && len(chunks) > 0:
+			chunks[len(chunks)-1].OutputURI = trimYAMLScalar(strings.TrimPrefix(trimmed, "output_uri:"))
+		}
+	}
+	return chunks, nil
+}
+
+func readImportPlanJobs(path string) ([]dataImportJobState, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read import plan: %w", err)
+	}
+	var jobs []dataImportJobState
+	for _, raw := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(raw)
+		switch {
+		case strings.HasPrefix(trimmed, "- id:"):
+			jobs = append(jobs, dataImportJobState{
+				ID:     trimYAMLScalar(strings.TrimPrefix(trimmed, "- id:")),
+				Status: "planned",
+			})
+		case strings.HasPrefix(trimmed, "target_object:") && len(jobs) > 0:
+			jobs[len(jobs)-1].TargetObject = trimYAMLScalar(strings.TrimPrefix(trimmed, "target_object:"))
+		case strings.HasPrefix(trimmed, "source_uri:") && len(jobs) > 0:
+			jobs[len(jobs)-1].SourceURI = trimYAMLScalar(strings.TrimPrefix(trimmed, "source_uri:"))
+		case strings.HasPrefix(trimmed, "depends_on_export_chunk:") && len(jobs) > 0:
+			jobs[len(jobs)-1].DependsOnExportChunk = trimYAMLScalar(strings.TrimPrefix(trimmed, "depends_on_export_chunk:"))
+		}
+	}
+	return jobs, nil
+}
+
+type dataExportChunkState struct {
+	ID            string
+	SourceObject  string
+	TargetObject  string
+	OutputURI     string
+	EstimatedRows int64
+	Status        string
+}
+
+type dataImportJobState struct {
+	ID                   string
+	TargetObject         string
+	SourceURI            string
+	DependsOnExportChunk string
+	Status               string
 }
 
 func collectPayloadFiles(root, projectRel string, entries []string) ([]string, error) {
@@ -331,6 +497,91 @@ func writeValidationWorkerReport(projectDir string, result ValidationWorkerResul
 	}
 	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
 		return fmt.Errorf("write validation report: %w", err)
+	}
+	return nil
+}
+
+func writeExportWorkerState(projectDir string, result DataWorkerResult, chunks []dataExportChunkState) error {
+	path := filepath.Join(projectDir, "state", "export-chunks.yaml")
+	var b strings.Builder
+	fmt.Fprintf(&b, "project_id: %s\n", result.ProjectID)
+	fmt.Fprintf(&b, "source_cluster_id: %s\n", result.SourceClusterID)
+	b.WriteString("phase: export\n")
+	fmt.Fprintf(&b, "status: %s\n", result.Status)
+	fmt.Fprintf(&b, "payload_hash: %s\n", result.PayloadHash)
+	fmt.Fprintf(&b, "updated_at: %s\n", quoteYAML(nowUTC()))
+	if len(chunks) == 0 {
+		b.WriteString("chunks: []\n")
+	} else {
+		b.WriteString("chunks:\n")
+		for _, chunk := range chunks {
+			fmt.Fprintf(&b, "  - id: %s\n", chunk.ID)
+			fmt.Fprintf(&b, "    status: %s\n", chunk.Status)
+			fmt.Fprintf(&b, "    source_object: %s\n", chunk.SourceObject)
+			fmt.Fprintf(&b, "    target_object: %s\n", chunk.TargetObject)
+			fmt.Fprintf(&b, "    output_uri: %s\n", chunk.OutputURI)
+			fmt.Fprintf(&b, "    estimated_rows: %d\n", chunk.EstimatedRows)
+		}
+	}
+	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
+		return fmt.Errorf("write export chunks state: %w", err)
+	}
+	return nil
+}
+
+func writeImportWorkerState(projectDir string, result DataWorkerResult, jobs []dataImportJobState) error {
+	path := filepath.Join(projectDir, "state", "import-jobs.yaml")
+	var b strings.Builder
+	fmt.Fprintf(&b, "project_id: %s\n", result.ProjectID)
+	fmt.Fprintf(&b, "source_cluster_id: %s\n", result.SourceClusterID)
+	b.WriteString("phase: import\n")
+	fmt.Fprintf(&b, "status: %s\n", result.Status)
+	fmt.Fprintf(&b, "payload_hash: %s\n", result.PayloadHash)
+	fmt.Fprintf(&b, "updated_at: %s\n", quoteYAML(nowUTC()))
+	if len(jobs) == 0 {
+		b.WriteString("jobs: []\n")
+	} else {
+		b.WriteString("jobs:\n")
+		for _, job := range jobs {
+			fmt.Fprintf(&b, "  - id: %s\n", job.ID)
+			fmt.Fprintf(&b, "    status: %s\n", job.Status)
+			fmt.Fprintf(&b, "    target_object: %s\n", job.TargetObject)
+			fmt.Fprintf(&b, "    source_uri: %s\n", job.SourceURI)
+			fmt.Fprintf(&b, "    depends_on_export_chunk: %s\n", job.DependsOnExportChunk)
+		}
+	}
+	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
+		return fmt.Errorf("write import jobs state: %w", err)
+	}
+	return nil
+}
+
+func writeDataWorkerEvidence(projectDir string, result DataWorkerResult) error {
+	path := filepath.Join(projectDir, filepath.FromSlash(result.EvidenceFile))
+	evidence := struct {
+		Stage           string `json:"stage"`
+		Status          string `json:"status"`
+		ProjectID       string `json:"project_id"`
+		SourceClusterID string `json:"source_cluster_id"`
+		PayloadHash     string `json:"payload_hash"`
+		Items           int    `json:"items"`
+		GeneratedAt     string `json:"generated_at"`
+	}{
+		Stage:           result.Stage,
+		Status:          result.Status,
+		ProjectID:       result.ProjectID,
+		SourceClusterID: result.SourceClusterID,
+		PayloadHash:     result.PayloadHash,
+		Items:           result.Items,
+		GeneratedAt:     nowUTC(),
+	}
+	data, err := json.MarshalIndent(evidence, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal %s evidence: %w", result.Stage, err)
+	}
+	data = append(data, '\n')
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return fmt.Errorf("write %s evidence: %w", result.Stage, err)
 	}
 	return nil
 }

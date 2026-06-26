@@ -17,7 +17,9 @@ This MVP provides:
 - Project-scoped TiDB schema draft generation from SQL Server inventory and project metadata.
 - Project-scoped full export/import plan draft generation from SQL Server inventory and project metadata.
 - PR draft generation and a dry-run-by-default GitHub PR creation wrapper.
-- Validation payload hash calculation and approved validation-only worker execution.
+- Export, import, and validation payload hash calculation.
+- Approved metadata-only export/import worker state write-back.
+- Approved validation-only worker execution.
 - Source-cluster-first metadata organization:
 
   ```text
@@ -39,7 +41,7 @@ This MVP provides:
   ```
 
 - JSON Schema files for core metadata.
-- Tests for repository initialization, validation, discovery planning and execution, compatibility analysis, schema draft generation, data movement plan generation, PR draft generation, GitHub PR create dry-runs, validation worker gates, upstream SQL Server cluster creation, and migration project creation.
+- Tests for repository initialization, validation, discovery planning and execution, compatibility analysis, schema draft generation, data movement plan generation, PR draft generation, GitHub PR create dry-runs, export/import/validation worker gates, upstream SQL Server cluster creation, and migration project creation.
 
 This MVP connects to SQL Server only for read-only catalog discovery when a connection string is supplied through an environment variable. It does **not** connect to TiDB or execute generated DDL, export, import, CDC, cutover, cleanup, or source/target data validation yet.
 
@@ -153,6 +155,34 @@ go run ./cmd/sqlserver2tidb generate-data-plans \
 
 This writes `plan/export-plan.yaml` and `plan/import-plan.yaml` under the project. The command estimates chunks from inventory `row_count`; it does not connect to SQL Server or TiDB and does not move data.
 
+Compute payload hashes and run metadata-only export/import workers after the matching approval files are marked approved:
+
+```bash
+go run ./cmd/sqlserver2tidb compute-payload-hash \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --stage export
+
+go run ./cmd/sqlserver2tidb worker-export \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a
+
+go run ./cmd/sqlserver2tidb compute-payload-hash \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --stage import
+
+go run ./cmd/sqlserver2tidb worker-import \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a
+```
+
+These workers only convert approved plan files into planned state/evidence files. They do not export data, import data, connect to databases, or write object storage.
+
 Generate a project-scoped PR draft for schema review:
 
 ```bash
@@ -215,5 +245,5 @@ This checks approved metadata, writes `state/validation-status.yaml`, and writes
 
 ## Next Milestones
 
-- Add full export executor and import executor behind approval gates.
+- Replace metadata-only export/import workers with real executors behind the same approval gates.
 - Add source/target data validation connectors after import support exists.

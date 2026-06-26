@@ -40,6 +40,10 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runCreatePR(args[1:], stdout, stderr)
 	case "compute-payload-hash":
 		return runComputePayloadHash(args[1:], stdout, stderr)
+	case "worker-export":
+		return runWorkerExport(args[1:], stdout, stderr)
+	case "worker-import":
+		return runWorkerImport(args[1:], stdout, stderr)
 	case "worker-validate":
 		return runWorkerValidate(args[1:], stdout, stderr)
 	case "create-cluster":
@@ -307,7 +311,7 @@ func runComputePayloadHash(args []string, stdout, stderr io.Writer) int {
 	root := fs.String("root", ".", "repository root")
 	sourceClusterID := fs.String("source-cluster-id", "", "upstream SQL Server cluster id")
 	projectID := fs.String("project-id", "", "migration project id")
-	stage := fs.String("stage", "", "stage to hash; currently supports validation")
+	stage := fs.String("stage", "", "stage to hash: export, import, or validation")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -350,6 +354,52 @@ func runWorkerValidate(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "wrote %s\n", "state/validation-status.yaml")
 	fmt.Fprintf(stdout, "wrote %s\n", "evidence/validation-report.md")
 	return exitCode
+}
+
+func runWorkerExport(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("worker-export", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	root := fs.String("root", ".", "repository root")
+	sourceClusterID := fs.String("source-cluster-id", "", "upstream SQL Server cluster id")
+	projectID := fs.String("project-id", "", "migration project id")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	result, err := gitops.RunExportWorker(*root, *sourceClusterID, *projectID)
+	if err != nil {
+		fmt.Fprintf(stderr, "worker export: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "export worker completed for %s\n", result.ProjectID)
+	fmt.Fprintf(stdout, "status: %s\n", result.Status)
+	fmt.Fprintf(stdout, "chunks: %d\n", result.Items)
+	fmt.Fprintf(stdout, "payload hash: %s\n", result.PayloadHash)
+	fmt.Fprintf(stdout, "wrote %s\n", result.StateFile)
+	fmt.Fprintf(stdout, "wrote %s\n", result.EvidenceFile)
+	return 0
+}
+
+func runWorkerImport(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("worker-import", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	root := fs.String("root", ".", "repository root")
+	sourceClusterID := fs.String("source-cluster-id", "", "upstream SQL Server cluster id")
+	projectID := fs.String("project-id", "", "migration project id")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	result, err := gitops.RunImportWorker(*root, *sourceClusterID, *projectID)
+	if err != nil {
+		fmt.Fprintf(stderr, "worker import: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "import worker completed for %s\n", result.ProjectID)
+	fmt.Fprintf(stdout, "status: %s\n", result.Status)
+	fmt.Fprintf(stdout, "jobs: %d\n", result.Items)
+	fmt.Fprintf(stdout, "payload hash: %s\n", result.PayloadHash)
+	fmt.Fprintf(stdout, "wrote %s\n", result.StateFile)
+	fmt.Fprintf(stdout, "wrote %s\n", result.EvidenceFile)
+	return 0
 }
 
 func runCreateCluster(args []string, stdout, stderr io.Writer) int {
@@ -451,7 +501,9 @@ Usage:
   sqlserver2tidb generate-data-plans --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --object-uri-prefix s3://bucket/prefix
   sqlserver2tidb generate-pr-draft --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage schema
   sqlserver2tidb create-pr --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage schema
-  sqlserver2tidb compute-payload-hash --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage validation
+  sqlserver2tidb compute-payload-hash --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage export
+  sqlserver2tidb worker-export --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
+  sqlserver2tidb worker-import --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
   sqlserver2tidb worker-validate --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
   sqlserver2tidb create-cluster --cluster-id prod-sqlserver-a --display-name "prod SQL Server A" --listener sqlserver-a.internal --secret-ref vault://...
   sqlserver2tidb create-project --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --source-database sales --source-schema dbo --target-name tidb-prod-a --target-database app --target-secret-ref vault://...

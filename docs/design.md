@@ -47,7 +47,7 @@ The wrapper does not merge PRs, approve PRs, bypass branch protection, or inspec
 
 ## Validation Worker
 
-The current worker implementation is validation-only and metadata-only. It does not connect to SQL Server or TiDB. It executes only after `approvals/validation-approval.yaml` has:
+The current validation worker implementation is metadata-only. It does not connect to SQL Server or TiDB. It executes only after `approvals/validation-approval.yaml` has:
 
 - `action: validation`
 - `status: approved`
@@ -70,6 +70,31 @@ When approved, the worker writes:
 - `evidence/validation-report.md`
 
 Current checks are deterministic repository checks: schema diff parseability, generated DDL presence, manual review item clearance, conversion report presence, and validation plan presence. Source/target row-count or checksum validation is intentionally out of scope until import and target connection support exist.
+
+## Export And Import Workers
+
+The current export/import worker implementations are metadata-only. They do not connect to SQL Server, TiDB, or object storage. They execute only after the matching approval file has:
+
+- `action: export` or `action: import`
+- `status: approved`
+- at least one `approved_by` entry
+- `payload_hash` matching the current stage payload
+
+The export payload hash covers:
+
+- `project.yaml`
+- `plan/export-plan.yaml`
+
+The import payload hash covers:
+
+- `project.yaml`
+- `schema/tidb-ddl/`
+- `plan/export-plan.yaml`
+- `plan/import-plan.yaml`
+
+The export worker reads `plan/export-plan.yaml` and writes planned chunk state to `state/export-chunks.yaml`, plus `evidence/precheck.json`. The import worker reads `plan/import-plan.yaml` and writes planned import job state to `state/import-jobs.yaml`, plus `evidence/import-summary.json`.
+
+These workers establish the approval and state write-back contract for future real executors. They intentionally mark items as `planned`; they do not mark chunks as exported or jobs as imported.
 
 ## Metadata Boundary
 
@@ -127,7 +152,7 @@ LLMs may generate:
 - validation report narratives
 - incident diagnosis suggestions
 
-LLMs are not required for deterministic repository commands such as `validate-repo`, `discover-sqlserver --dry-run`, `analyze-compatibility`, `generate-schema-draft`, `generate-data-plans`, `generate-pr-draft`, `create-pr`, `compute-payload-hash`, or `worker-validate`. For schema work, the LLM may read `conversion-report.md` and `schema-diff.json` to propose candidate rewrites, but the candidate must be committed as reviewed files before any worker can use it. For export/import planning, the LLM may propose split keys or risk notes, but generated predicates and execution settings still need PR review before workers can use them. For PR work, the LLM may refine prose, but file lists, approval files, and stage gates must remain deterministic.
+LLMs are not required for deterministic repository commands such as `validate-repo`, `discover-sqlserver --dry-run`, `analyze-compatibility`, `generate-schema-draft`, `generate-data-plans`, `generate-pr-draft`, `create-pr`, `compute-payload-hash`, `worker-export`, `worker-import`, or `worker-validate`. For schema work, the LLM may read `conversion-report.md` and `schema-diff.json` to propose candidate rewrites, but the candidate must be committed as reviewed files before any worker can use it. For export/import planning, the LLM may propose split keys or risk notes, but generated predicates and execution settings still need PR review before workers can use them. For PR work, the LLM may refine prose, but file lists, approval files, and stage gates must remain deterministic.
 
 LLMs must not decide:
 

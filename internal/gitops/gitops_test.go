@@ -885,6 +885,100 @@ func TestGenerateDataMovementPlansRequiresObjectURIPrefix(t *testing.T) {
 	assertContains(t, err.Error(), "object URI prefix is required")
 }
 
+func TestRunExportWorkerRequiresApprovedExportApproval(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateDataPlansOnly(root))
+	stateBefore := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/export-chunks.yaml")
+	evidenceBefore := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/precheck.json")
+
+	_, err := RunExportWorker(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a")
+	if err == nil {
+		t.Fatal("RunExportWorker() expected approval error")
+	}
+	assertContains(t, err.Error(), "export approval is not approved")
+	stateAfter := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/export-chunks.yaml")
+	evidenceAfter := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/precheck.json")
+	if stateAfter != stateBefore {
+		t.Fatalf("export worker changed state before approval\nbefore:\n%s\nafter:\n%s", stateBefore, stateAfter)
+	}
+	if evidenceAfter != evidenceBefore {
+		t.Fatalf("export worker changed evidence before approval\nbefore:\n%s\nafter:\n%s", evidenceBefore, evidenceAfter)
+	}
+}
+
+func TestRunExportWorkerWritesPlannedStateWhenApprovedHashMatches(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateDataPlansOnly(root))
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(export) error = %v", err)
+	}
+	writeStageApproval(t, root, "export", hash)
+
+	result, err := RunExportWorker(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a")
+	if err != nil {
+		t.Fatalf("RunExportWorker() error = %v", err)
+	}
+	if result.Stage != "export" || result.Status != "planned" || result.Items != 3 {
+		t.Fatalf("RunExportWorker() result = %+v, want export planned with 3 items", result)
+	}
+	if result.PayloadHash != hash {
+		t.Fatalf("PayloadHash = %q, want %q", result.PayloadHash, hash)
+	}
+
+	state := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/export-chunks.yaml")
+	assertContains(t, state, "phase: export")
+	assertContains(t, state, "status: planned")
+	assertContains(t, state, "payload_hash: "+hash)
+	assertContains(t, state, "id: dbo.orders.000001")
+	assertContains(t, state, "id: dbo.orders.000003")
+	assertContains(t, state, "output_uri: s3://migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full/dbo.orders.000003.parquet")
+
+	evidence := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/precheck.json")
+	assertContains(t, evidence, `"stage": "export"`)
+	assertContains(t, evidence, `"status": "planned"`)
+	assertContains(t, evidence, `"items": 3`)
+	assertContains(t, evidence, `"payload_hash": "`+hash+`"`)
+}
+
+func TestRunImportWorkerWritesPlannedStateWhenApprovedHashMatches(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateSchemaDraftOnly(root))
+	must(t, GenerateDataPlansOnly(root))
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(import) error = %v", err)
+	}
+	writeStageApproval(t, root, "import", hash)
+
+	result, err := RunImportWorker(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a")
+	if err != nil {
+		t.Fatalf("RunImportWorker() error = %v", err)
+	}
+	if result.Stage != "import" || result.Status != "planned" || result.Items != 3 {
+		t.Fatalf("RunImportWorker() result = %+v, want import planned with 3 items", result)
+	}
+	if result.PayloadHash != hash {
+		t.Fatalf("PayloadHash = %q, want %q", result.PayloadHash, hash)
+	}
+
+	state := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/import-jobs.yaml")
+	assertContains(t, state, "phase: import")
+	assertContains(t, state, "status: planned")
+	assertContains(t, state, "payload_hash: "+hash)
+	assertContains(t, state, "id: import-dbo.orders.000001")
+	assertContains(t, state, "depends_on_export_chunk: dbo.orders.000003")
+
+	evidence := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/import-summary.json")
+	assertContains(t, evidence, `"stage": "import"`)
+	assertContains(t, evidence, `"status": "planned"`)
+	assertContains(t, evidence, `"items": 3`)
+	assertContains(t, evidence, `"payload_hash": "`+hash+`"`)
+}
+
 func TestRunValidationWorkerRequiresApprovedValidationApproval(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, `{
@@ -1126,12 +1220,54 @@ func GenerateSchemaDraftOnly(root string) error {
 	return err
 }
 
+func GenerateDataPlansOnly(root string) error {
+	_, err := GenerateDataMovementPlans(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", DataMovementPlanSpec{
+		ObjectURIPrefix: "s3://migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full",
+		ChunkSizeRows:   1000000,
+		ExportFormat:    "parquet",
+		ImportEngine:    "import-into",
+	})
+	return err
+}
+
+func dataWorkerInventory() string {
+	return `{
+  "status": "discovered",
+  "databases": [
+    {
+      "name": "sales",
+      "schemas": [
+        {
+          "name": "dbo",
+          "tables": [
+            {
+              "name": "orders",
+              "row_count": 2500000,
+              "columns": [
+                {"name": "id", "type": "int"},
+                {"name": "customer_name", "type": "nvarchar"}
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+`
+}
+
 func writeValidationApproval(t *testing.T, root, payloadHash string) {
 	t.Helper()
-	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/approvals/validation-approval.yaml", fmt.Sprintf(`approval_id: validation-test
+	writeStageApproval(t, root, "validation", payloadHash)
+}
+
+func writeStageApproval(t *testing.T, root, stage, payloadHash string) {
+	t.Helper()
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/approvals/"+stage+"-approval.yaml", fmt.Sprintf(`approval_id: %s-test
 project_id: sales-db-to-tidb-prod-a
 source_cluster_id: prod-sqlserver-a
-action: validation
+action: %s
 payload_hash: %s
 required_reviewers:
   - dba-team
@@ -1139,7 +1275,7 @@ approved_by:
   - dba-team
 status: approved
 approved_at: "2026-06-26T00:00:00Z"
-`, payloadHash))
+`, stage, stage, payloadHash))
 }
 
 type fakeCatalogReader struct {
