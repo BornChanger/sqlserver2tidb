@@ -249,6 +249,38 @@ func TestCreateProjectRequiresOwner(t *testing.T) {
 	assertContains(t, err.Error(), "at least one project owner is required")
 }
 
+func TestCreateProjectRejectsUnsupportedMode(t *testing.T) {
+	root := t.TempDir()
+	must(t, InitRepo(root))
+	must(t, CreateCluster(root, ClusterSpec{
+		ClusterID:              "prod-sqlserver-a",
+		DisplayName:            "prod SQL Server A",
+		Listener:               "sqlserver-a.internal",
+		Port:                   1433,
+		SecretRef:              "vault://migration/prod-sqlserver-a/readonly",
+		CDCMode:                "sqlserver-cdc",
+		RetentionHoursRequired: 168,
+		Owners:                 []string{"dba-team"},
+	}))
+
+	err := CreateProject(root, ProjectSpec{
+		SourceClusterID: "prod-sqlserver-a",
+		ProjectID:       "sales-db-to-tidb-prod-a",
+		DisplayName:     "sales DB to TiDB prod A",
+		SourceDatabase:  "sales",
+		SourceSchemas:   []string{"dbo"},
+		TargetName:      "tidb-prod-a",
+		TargetDatabase:  "app",
+		TargetSecretRef: "vault://migration/tidb-prod-a/migrate-user",
+		Mode:            "blue-green",
+		Owners:          []string{"dba-team"},
+	})
+	if err == nil {
+		t.Fatal("CreateProject() error = nil, want unsupported mode error")
+	}
+	assertContains(t, err.Error(), `unsupported migration mode "blue-green"`)
+}
+
 func TestCreateProjectRequiresExistingSourceCluster(t *testing.T) {
 	root := t.TempDir()
 	must(t, InitRepo(root))

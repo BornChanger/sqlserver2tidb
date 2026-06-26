@@ -583,10 +583,22 @@ func validateProject(spec ProjectSpec) error {
 	if spec.Mode == "" {
 		return errors.New("migration mode is required")
 	}
+	if !isSupportedMigrationMode(spec.Mode) {
+		return fmt.Errorf("unsupported migration mode %q; supported modes: offline, short-downtime, low-downtime", spec.Mode)
+	}
 	if err := validateOwners("project", spec.Owners); err != nil {
 		return err
 	}
 	return nil
+}
+
+func isSupportedMigrationMode(mode string) bool {
+	switch mode {
+	case "offline", "short-downtime", "low-downtime":
+		return true
+	default:
+		return false
+	}
 }
 
 func validateOwners(kind string, owners []string) error {

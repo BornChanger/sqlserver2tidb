@@ -402,6 +402,8 @@ clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/
 
 `--owner` 至少指定一个项目责任方，多个 owner 用逗号分隔。
 
+`--mode` 只允许 `offline`、`short-downtime`、`low-downtime`；默认是 `short-downtime`。
+
 `project.yaml` 示例：
 
 ```yaml
