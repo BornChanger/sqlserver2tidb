@@ -117,7 +117,9 @@ These workers establish the approval and state write-back contract for future re
 
 The command reuses `requireApprovedStage`, so it refuses to produce executor commands unless the stage approval is approved, has reviewers, and the payload hash matches the current repository files. The default external binary is `sqlserver2tidb-executor`; operators can override it with `--executor-binary`.
 
-For export, it produces one command per export chunk. For import, it produces one command per import job. For CDC, it produces one command per tracked source table. The executor shell does not itself connect to SQL Server, TiDB, Kafka, or object storage; the external binary is responsible for those side effects, and should be introduced separately behind the same GitOps approval boundary.
+For export, it produces one command per export chunk. For import, it produces one command per import job. For CDC, it produces one command per tracked source table. The executor shell does not itself connect to SQL Server, TiDB, Kafka, or object storage.
+
+`sqlserver2tidb-executor` is currently included as a dry-run adapter. It parses `export`, `import`, and `cdc` work-item arguments and prints the work-item context. Its `--execute` paths intentionally return explicit not-implemented errors. Real SQL Server export, object storage writes, TiDB import, and CDC apply logic should be implemented inside this binary incrementally behind the same approval/hash gate.
 
 ## CDC Plan And Worker
 

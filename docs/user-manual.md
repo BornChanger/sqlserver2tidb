@@ -49,7 +49,7 @@ LLM 只生成解释、候选方案和文档，不直接执行迁移
 - 生成核心 JSON Schema 文件。
 - 单元测试和 CLI smoke test。
 
-当前 CLI 只有在执行 `discover-sqlserver --connection-string-env ...` 时会连接 SQL Server，并且只读取 catalog metadata。它不会连接 TiDB，也不会执行生成的 DDL、真实导出、导入、CDC 或切流。`discover-sqlserver --dry-run` 只输出计划，不打开数据库连接，也不写 inventory 文件。`analyze-compatibility`、`generate-schema-draft`、`generate-data-plans`、`generate-cdc-plan`、`generate-pr-draft`、`create-pr` 的默认 dry-run、`create-worker-state-pr` 的默认 dry-run、`worker-executor` 的默认 dry-run、`compute-payload-hash`、`worker-export`、`worker-import`、`worker-cdc`、`worker-validate`、`worker-reconcile --dry-run` 和 `worker-reconcile --execute-next` 只读取并写回或汇报 GitHub metadata 文件。`worker-reconcile --state-pr-draft` 只生成 Markdown PR body，不调用 GitHub。`create-pr --execute` 会调用本地 `gh pr create`；`create-worker-state-pr --execute` 会调用本地 `git` 和 `gh`；`worker-executor --execute` 会调用外部执行器 binary。
+当前 CLI 只有在执行 `discover-sqlserver --connection-string-env ...` 时会连接 SQL Server，并且只读取 catalog metadata。它不会连接 TiDB，也不会执行生成的 DDL、真实导出、导入、CDC 或切流。`discover-sqlserver --dry-run` 只输出计划，不打开数据库连接，也不写 inventory 文件。`analyze-compatibility`、`generate-schema-draft`、`generate-data-plans`、`generate-cdc-plan`、`generate-pr-draft`、`create-pr` 的默认 dry-run、`create-worker-state-pr` 的默认 dry-run、`worker-executor` 的默认 dry-run、`sqlserver2tidb-executor` 的默认 dry-run、`compute-payload-hash`、`worker-export`、`worker-import`、`worker-cdc`、`worker-validate`、`worker-reconcile --dry-run` 和 `worker-reconcile --execute-next` 只读取并写回或汇报 GitHub metadata 文件。`worker-reconcile --state-pr-draft` 只生成 Markdown PR body，不调用 GitHub。`create-pr --execute` 会调用本地 `gh pr create`；`create-worker-state-pr --execute` 会调用本地 `git` 和 `gh`；`sqlserver2tidb-executor --execute` 当前会返回 not implemented，不会执行真实迁移。
 
 ### 2.2 终极目标
 
@@ -1360,7 +1360,7 @@ clusters/<source_cluster_id>/cluster.yaml
 
 ### 15.4 当前能直接迁移数据吗？
 
-当前 MVP 可以只读连接 SQL Server catalog 生成 inventory，可以从 inventory 生成 TiDB DDL 草稿、全量导出/导入计划草稿和 CDC 计划草稿，并执行 metadata-only export/import/CDC/validation worker。`worker-executor` 可以在 approval/hash gate 后生成外部执行器命令，`--execute` 会调用外部 binary；但本仓库尚未实现该外部 binary，也不会内置连接 TiDB、写对象存储或回放 CDC。源/目标数据校验也仍是后续能力。
+当前 MVP 可以只读连接 SQL Server catalog 生成 inventory，可以从 inventory 生成 TiDB DDL 草稿、全量导出/导入计划草稿和 CDC 计划草稿，并执行 metadata-only export/import/CDC/validation worker。`worker-executor` 可以在 approval/hash gate 后生成外部执行器命令；`sqlserver2tidb-executor` 当前已经可以解析这些 work item 并 dry-run 输出上下文。但它的 `--execute` 路径仍显式返回 not implemented，不会连接 SQL Server/TiDB、写对象存储或回放 CDC。源/目标数据校验也仍是后续能力。
 
 ### 15.5 可以把 LLM 接进来吗？
 
@@ -1613,9 +1613,50 @@ bin/sqlserver2tidb worker-executor \
   --execute
 ```
 
-该命令支持 `export`、`import` 和 `cdc`。它复用对应 stage 的 approval/hash gate，只有 approval 通过且 payload hash 匹配时才生成执行器命令。默认外部 binary 是 `sqlserver2tidb-executor`，可以通过 `--executor-binary` 覆盖。默认 dry-run 只打印命令；只有加 `--execute` 才会调用外部 binary。
+该命令支持 `export`、`import` 和 `cdc`。它复用对应 stage 的 approval/hash gate，只有 approval 通过且 payload hash 匹配时才生成执行器命令。默认外部 binary 是 `sqlserver2tidb-executor`，可以通过 `--executor-binary` 覆盖。默认 dry-run 只打印命令；只有加 `--execute` 才会调用外部 binary。当前随仓库提供的 `sqlserver2tidb-executor` 仍是 dry-run adapter，真实执行路径会返回 not implemented。
 
-### 16.18 worker-reconcile
+### 16.18 sqlserver2tidb-executor
+
+导出 dry-run：
+
+```bash
+bin/sqlserver2tidb-executor export \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --chunk-id dbo.orders.000001 \
+  --source-object sales.dbo.orders \
+  --target-object app.orders \
+  --output-uri s3://migration/prod/full/dbo.orders.000001.parquet
+```
+
+导入 dry-run：
+
+```bash
+bin/sqlserver2tidb-executor import \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --job-id import-dbo.orders.000001 \
+  --target-object app.orders \
+  --source-uri s3://migration/prod/full/dbo.orders.000001.parquet
+```
+
+CDC dry-run：
+
+```bash
+bin/sqlserver2tidb-executor cdc \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --source-object sales.dbo.orders \
+  --target-object app.orders \
+  --apply-batch-size 1000
+```
+
+当前 binary 只做参数解析和 dry-run 输出，不连接 SQL Server/TiDB/Kafka/对象存储。`--execute` 会返回 not implemented，用来防止误执行。
+
+### 16.19 worker-reconcile
 
 只读扫描：
 
@@ -1648,7 +1689,7 @@ clusters/<source_cluster_id>/projects/<project_id>/prs/reconcile-<stage>-state-p
 
 该 PR body 会列出 payload hash、lease id、建议 branch、项目 state/evidence 文件、源集群 `state/worker-lease.yaml`；如果 stage 是 `cdc`，还会列出源集群 `state/cdc-checkpoint.yaml`。它只是 PR 草稿，不会创建 branch、commit、push 或 GitHub PR。
 
-### 16.19 create-worker-state-pr
+### 16.20 create-worker-state-pr
 
 dry-run：
 
@@ -1697,5 +1738,5 @@ bin/sqlserver2tidb create-worker-state-pr \
 20. 执行 `create-worker-state-pr` dry-run 检查 git/gh 命令，再按需执行 `create-worker-state-pr --execute` 创建 state/evidence 写回 PR。
 21. 对 export/import/cdc 执行 `worker-executor` dry-run，检查外部执行器命令和当前 plan 是否一致。
 22. approval 通过后执行 `worker-validate`，生成 validation state 和 evidence。
-23. 接入并审查真实外部执行器 binary，再按需执行 `worker-executor --execute`。
+23. 在 `sqlserver2tidb-executor` 内实现并审查真实 export/import/CDC 行为，再按需执行 `worker-executor --execute`。
 24. 最后接入 cutover orchestration。
