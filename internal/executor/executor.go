@@ -427,6 +427,8 @@ type exportRows interface {
 	Close() error
 }
 
+const csvNullBitmapColumn = "__sqlserver2tidb_null_bitmap"
+
 func writeCSVExportRows(w io.Writer, rows exportRows) error {
 	defer rows.Close()
 
@@ -434,8 +436,14 @@ func writeCSVExportRows(w io.Writer, rows exportRows) error {
 	if err != nil {
 		return err
 	}
+	for _, column := range columns {
+		if column == csvNullBitmapColumn {
+			return fmt.Errorf("source column name %q conflicts with internal CSV null bitmap column", csvNullBitmapColumn)
+		}
+	}
 	writer := csv.NewWriter(w)
-	if err := writer.Write(columns); err != nil {
+	header := append(append([]string(nil), columns...), csvNullBitmapColumn)
+	if err := writer.Write(header); err != nil {
 		return err
 	}
 
@@ -448,10 +456,18 @@ func writeCSVExportRows(w io.Writer, rows exportRows) error {
 		if err := rows.Scan(dest...); err != nil {
 			return err
 		}
-		record := make([]string, len(values))
+		record := make([]string, 0, len(values)+1)
+		nullBitmap := make([]byte, len(values))
 		for i, value := range values {
-			record[i] = formatCSVValue(value)
+			if value == nil {
+				record = append(record, "")
+				nullBitmap[i] = '1'
+				continue
+			}
+			record = append(record, formatCSVValue(value))
+			nullBitmap[i] = '0'
 		}
+		record = append(record, string(nullBitmap))
 		if err := writer.Write(record); err != nil {
 			return err
 		}
@@ -744,8 +760,9 @@ func resolveImportSourceFile(sourceURI string) (string, error) {
 }
 
 type csvImportReader struct {
-	reader  *csv.Reader
-	columns []string
+	reader        *csv.Reader
+	columns       []string
+	hasNullBitmap bool
 }
 
 func newCSVImportReader(r io.Reader) (*csvImportReader, error) {
@@ -754,12 +771,20 @@ func newCSVImportReader(r io.Reader) (*csvImportReader, error) {
 	if err != nil {
 		return nil, err
 	}
+	hasNullBitmap := false
+	if len(columns) > 0 && columns[len(columns)-1] == csvNullBitmapColumn {
+		hasNullBitmap = true
+		columns = append([]string(nil), columns[:len(columns)-1]...)
+	}
 	for _, column := range columns {
 		if strings.TrimSpace(column) == "" {
 			return nil, fmt.Errorf("CSV header contains an empty column name")
 		}
+		if column == csvNullBitmapColumn {
+			return nil, fmt.Errorf("CSV header contains reserved column name %q outside the final null bitmap position", csvNullBitmapColumn)
+		}
 	}
-	return &csvImportReader{reader: reader, columns: columns}, nil
+	return &csvImportReader{reader: reader, columns: columns, hasNullBitmap: hasNullBitmap}, nil
 }
 
 func (reader *csvImportReader) Columns() []string {
@@ -767,7 +792,45 @@ func (reader *csvImportReader) Columns() []string {
 }
 
 func (reader *csvImportReader) ReadRecord() ([]string, error) {
-	return reader.reader.Read()
+	record, err := reader.reader.Read()
+	if err != nil {
+		return nil, err
+	}
+	if reader.hasNullBitmap {
+		return append([]string(nil), record[:len(record)-1]...), nil
+	}
+	return record, nil
+}
+
+func (reader *csvImportReader) ReadValues() ([]any, error) {
+	record, err := reader.reader.Read()
+	if err != nil {
+		return nil, err
+	}
+	if !reader.hasNullBitmap {
+		values := make([]any, len(record))
+		for i, value := range record {
+			values[i] = value
+		}
+		return values, nil
+	}
+	values := record[:len(record)-1]
+	nullBitmap := record[len(record)-1]
+	if len(nullBitmap) != len(values) {
+		return nil, fmt.Errorf("CSV null bitmap length %d does not match column count %d", len(nullBitmap), len(values))
+	}
+	out := make([]any, len(values))
+	for i, value := range values {
+		switch nullBitmap[i] {
+		case '0':
+			out[i] = value
+		case '1':
+			out[i] = nil
+		default:
+			return nil, fmt.Errorf("CSV null bitmap contains invalid marker %q at column %d", nullBitmap[i], i+1)
+		}
+	}
+	return out, nil
 }
 
 func readCSVImportRecords(r io.Reader) ([]string, [][]string, error) {
@@ -888,7 +951,7 @@ func insertCSVImportRows(ctx context.Context, db *sql.DB, insertSQL string, read
 
 		rowsInBatch := 0
 		for rowsInBatch < batchSize {
-			record, err := reader.ReadRecord()
+			args, err := reader.ReadValues()
 			if errors.Is(err, io.EOF) {
 				stmt.Close()
 				if rowsInBatch == 0 {
@@ -904,10 +967,6 @@ func insertCSVImportRows(ctx context.Context, db *sql.DB, insertSQL string, read
 				stmt.Close()
 				tx.Rollback()
 				return fmt.Errorf("executor import: read CSV row %d: %w", rowNumber+1, err)
-			}
-			args := make([]any, len(record))
-			for j, value := range record {
-				args[j] = value
 			}
 			if _, err := stmt.ExecContext(ctx, args...); err != nil {
 				stmt.Close()

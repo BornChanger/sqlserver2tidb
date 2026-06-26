@@ -413,6 +413,32 @@ func TestCSVImportReaderStreamsRecords(t *testing.T) {
 	}
 }
 
+func TestCSVImportReaderRestoresNullBitmapValues(t *testing.T) {
+	reader, err := newCSVImportReader(strings.NewReader("id,name,__sqlserver2tidb_null_bitmap\n1,Ada,00\n2,,01\n"))
+	if err != nil {
+		t.Fatalf("newCSVImportReader() error = %v", err)
+	}
+	if strings.Join(reader.Columns(), ",") != "id,name" {
+		t.Fatalf("columns = %v, want [id name]", reader.Columns())
+	}
+
+	first, err := reader.ReadValues()
+	if err != nil {
+		t.Fatalf("ReadValues() first error = %v", err)
+	}
+	if first[0] != "1" || first[1] != "Ada" {
+		t.Fatalf("first values = %#v, want [1 Ada]", first)
+	}
+
+	second, err := reader.ReadValues()
+	if err != nil {
+		t.Fatalf("ReadValues() second error = %v", err)
+	}
+	if second[0] != "2" || second[1] != nil {
+		t.Fatalf("second values = %#v, want [2 nil]", second)
+	}
+}
+
 func TestRunCDCDryRunCommand(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 
@@ -544,7 +570,7 @@ func TestWriteCSVExportRows(t *testing.T) {
 		t.Fatalf("writeCSVExportRows() error = %v", err)
 	}
 
-	want := "id,name,active\n1,Ada,true\n2,,false\n"
+	want := "id,name,active,__sqlserver2tidb_null_bitmap\n1,Ada,true,000\n2,,false,010\n"
 	if output.String() != want {
 		t.Fatalf("CSV output = %q, want %q", output.String(), want)
 	}
