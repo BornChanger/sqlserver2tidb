@@ -33,9 +33,10 @@ LLM 只生成解释、候选方案和文档，不直接执行迁移
 - 基于 `inventory/inventory.json` 生成规则化兼容性分析报告。
 - 基于 SQL Server inventory 和 project metadata 生成项目级 TiDB DDL 草稿。
 - 基于 SQL Server inventory 和 project metadata 生成项目级全量导出/导入计划草稿。
+- 基于 SQL Server inventory 和 project metadata 生成项目级 CDC 计划草稿。
 - 基于 stage 生成本地 PR draft 文件，并通过 dry-run-by-default wrapper 准备 `gh pr create`。
-- 计算 export、import、validation payload hash。
-- 在 approval 通过后执行 metadata-only export/import worker，把 plan 写成 planned state/evidence。
+- 计算 export、import、cdc、validation payload hash。
+- 在 approval 通过后执行 metadata-only export/import/CDC worker，把 plan 写成 planned state/evidence。
 - 在 approval 通过后执行 metadata-only validation worker。
 - 创建上游 SQL Server 集群目录。
 - 在上游 SQL Server 集群下创建迁移项目目录。
@@ -43,7 +44,7 @@ LLM 只生成解释、候选方案和文档，不直接执行迁移
 - 生成核心 JSON Schema 文件。
 - 单元测试和 CLI smoke test。
 
-当前 CLI 只有在执行 `discover-sqlserver --connection-string-env ...` 时会连接 SQL Server，并且只读取 catalog metadata。它不会连接 TiDB，也不会执行生成的 DDL、真实导出、导入、CDC 或切流。`discover-sqlserver --dry-run` 只输出计划，不打开数据库连接，也不写 inventory 文件。`analyze-compatibility`、`generate-schema-draft`、`generate-data-plans`、`generate-pr-draft`、`create-pr` 的默认 dry-run、`compute-payload-hash`、`worker-export`、`worker-import` 和 `worker-validate` 只读取并写回 GitHub metadata 文件。`create-pr --execute` 会调用本地 `gh pr create`。
+当前 CLI 只有在执行 `discover-sqlserver --connection-string-env ...` 时会连接 SQL Server，并且只读取 catalog metadata。它不会连接 TiDB，也不会执行生成的 DDL、真实导出、导入、CDC 或切流。`discover-sqlserver --dry-run` 只输出计划，不打开数据库连接，也不写 inventory 文件。`analyze-compatibility`、`generate-schema-draft`、`generate-data-plans`、`generate-cdc-plan`、`generate-pr-draft`、`create-pr` 的默认 dry-run、`compute-payload-hash`、`worker-export`、`worker-import`、`worker-cdc` 和 `worker-validate` 只读取并写回 GitHub metadata 文件。`create-pr --execute` 会调用本地 `gh pr create`。
 
 ### 2.2 终极目标
 
@@ -121,7 +122,7 @@ clusters/<source_cluster_id>/projects/<project_id>/prs/<stage>-pr.md
 
 Worker 是终极形态中的执行器。它从 GitHub repo 拉取已批准 instruction，执行确定性操作，并把状态和证据写回 repo。
 
-当前 MVP 实现了显式指定 project 的 `worker-export`、`worker-import` 和 `worker-validate`。它们都需要 approval 和 payload hash 匹配。完整 reconcile worker 尚未实现。
+当前 MVP 实现了显式指定 project 的 `worker-export`、`worker-import`、`worker-cdc` 和 `worker-validate`。它们都需要 approval 和 payload hash 匹配。完整 reconcile worker 尚未实现。
 
 ### 3.5 LLM
 
@@ -762,6 +763,45 @@ jobs:
     depends_on_export_chunk: dbo.orders.000001
 ```
 
+当前 MVP 也支持从 inventory 和 project metadata 生成项目级 CDC 计划草稿：
+
+```bash
+bin/sqlserver2tidb generate-cdc-plan \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --mode sqlserver-cdc \
+  --retention-hours 168 \
+  --apply-batch-size 1000
+```
+
+输出：
+
+- `clusters/<source_cluster_id>/projects/<project_id>/plan/cdc-plan.yaml`
+
+当前 `generate-cdc-plan` 只生成追踪表清单和 checkpoint 策略，不启用 SQL Server CDC，不创建 Debezium connector，不读取 LSN，不写 Kafka，也不向 TiDB 回放增量。
+
+示例 `plan/cdc-plan.yaml`：
+
+```yaml
+status: draft
+project_id: sales-db-to-tidb-prod-a
+source_cluster_id: prod-sqlserver-a
+mode: sqlserver-cdc
+retention_hours_required: 168
+source_database: sales
+source_schemas:
+  - dbo
+target_database: app
+checkpoint_scope: source-cluster
+checkpoint_file: ../../../state/cdc-checkpoint.yaml
+tracked_tables:
+  - source_object: sales.dbo.orders
+    target_object: app.orders
+    apply_batch_size: 1000
+    status: draft
+```
+
 ### 10.6 阶段 5：全量导出
 
 终极形态支持：
@@ -902,6 +942,64 @@ clusters/<source_cluster_id>/state/cdc-checkpoint.yaml
 
 LLM 不参与 LSN 判断，也不参与 offset 决策。
 
+当前 MVP 的 `worker-cdc` 只在 cdc approval 和 payload hash 匹配后，把 `plan/cdc-plan.yaml` 写成 planned 状态和 evidence。它不启用 SQL Server CDC，不启动 Debezium，不读取 LSN，不判断 catch-up，也不向 TiDB 回放增量。
+
+先计算 cdc payload hash：
+
+```bash
+bin/sqlserver2tidb compute-payload-hash \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --stage cdc
+```
+
+把 hash 写入：
+
+```text
+clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/approvals/cdc-approval.yaml
+```
+
+并设置 `action: cdc`、`status: approved` 和非空 `approved_by` 后运行：
+
+```bash
+bin/sqlserver2tidb worker-cdc \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a
+```
+
+当前 `worker-cdc` 写回：
+
+- 项目级 `state/migration-state.yaml`
+- 源集群级 `state/cdc-checkpoint.yaml`
+- 项目级 `evidence/cdc-catchup.json`
+
+示例项目状态：
+
+```yaml
+project_id: sales-db-to-tidb-prod-a
+source_cluster_id: prod-sqlserver-a
+phase: cdc
+status: planned
+payload_hash: sha256:...
+cdc_plan: plan/cdc-plan.yaml
+tracked_tables: 1
+```
+
+示例源集群 checkpoint：
+
+```yaml
+source_cluster_id: prod-sqlserver-a
+phase: cdc
+status: planned
+project_id: sales-db-to-tidb-prod-a
+payload_hash: sha256:...
+mode: sqlserver-cdc
+checkpoint_scope: source-cluster
+checkpoints: []
+```
+
 ### 10.9 阶段 8：数据校验
 
 产物：
@@ -1041,7 +1139,7 @@ clusters/<source_cluster_id>/state/worker-lease.yaml
 
 worker lease 是上游 SQL Server 集群级，避免多个 worker 同时操作同一个源集群。
 
-当前 MVP 实现了 `worker-export`、`worker-import` 和 `worker-validate`。它们不是完整 reconcile loop，不会扫描所有项目，也不会抢占 worker lease。它们只针对一个显式指定的 project 执行 approval gate、payload hash 校验和 metadata-only 状态写回。
+当前 MVP 实现了 `worker-export`、`worker-import`、`worker-cdc` 和 `worker-validate`。它们不是完整 reconcile loop，不会扫描所有项目，也不会抢占 worker lease。它们只针对一个显式指定的 project 执行 approval gate、payload hash 校验和 metadata-only 状态写回。
 
 ## 12. LLM 使用说明
 
@@ -1194,7 +1292,7 @@ clusters/<source_cluster_id>/cluster.yaml
 
 ### 15.4 当前能直接迁移数据吗？
 
-当前 MVP 可以只读连接 SQL Server catalog 生成 inventory，可以从 inventory 生成 TiDB DDL 草稿，也可以生成全量导出/导入计划草稿，并执行 metadata-only export/import/validation worker；但不能迁移数据，也不会连接 TiDB。真实 export、真实 import、CDC 和源/目标数据校验将作为后续能力加入。
+当前 MVP 可以只读连接 SQL Server catalog 生成 inventory，可以从 inventory 生成 TiDB DDL 草稿、全量导出/导入计划草稿和 CDC 计划草稿，并执行 metadata-only export/import/CDC/validation worker；但不能迁移数据，也不会连接 TiDB。真实 export、真实 import、CDC apply 和源/目标数据校验将作为后续能力加入。
 
 ### 15.5 可以把 LLM 接进来吗？
 
@@ -1306,7 +1404,21 @@ bin/sqlserver2tidb generate-data-plans \
 
 该命令读取源集群 inventory 和项目 metadata，写回项目目录下的 `plan/export-plan.yaml` 和 `plan/import-plan.yaml`。它只生成草稿，不连接 SQL Server 或 TiDB，不执行导出或导入。`--chunk-size-rows` 默认是 `1000000`，`--export-format` 默认是 `parquet`，`--import-engine` 默认是 `import-into`。
 
-### 16.9 generate-pr-draft
+### 16.9 generate-cdc-plan
+
+```bash
+bin/sqlserver2tidb generate-cdc-plan \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --mode sqlserver-cdc \
+  --retention-hours 168 \
+  --apply-batch-size 1000
+```
+
+该命令读取源集群 inventory 和项目 metadata，写回项目目录下的 `plan/cdc-plan.yaml`。它只生成草稿，不启用 SQL Server CDC，不启动 Debezium，不读取 LSN，不连接 TiDB，也不执行增量回放。`--mode` 默认是 `sqlserver-cdc`，`--retention-hours` 默认是 `168`，`--apply-batch-size` 默认是 `1000`。
+
+### 16.10 generate-pr-draft
 
 项目级 stage：
 
@@ -1329,7 +1441,7 @@ bin/sqlserver2tidb generate-pr-draft \
 
 该命令生成本地 PR body draft，并在 stdout 输出 PR 标题、建议分支名、body file 路径和 review 文件数量。它不会调用 GitHub API。
 
-### 16.10 create-pr
+### 16.11 create-pr
 
 dry-run：
 
@@ -1354,7 +1466,7 @@ bin/sqlserver2tidb create-pr \
 
 该命令要求对应 PR draft 已存在。默认 dry-run，只打印将执行的 `gh pr create`。只有加 `--execute` 才会调用本地 GitHub CLI。
 
-### 16.11 compute-payload-hash
+### 16.12 compute-payload-hash
 
 ```bash
 bin/sqlserver2tidb compute-payload-hash \
@@ -1364,9 +1476,9 @@ bin/sqlserver2tidb compute-payload-hash \
   --stage export
 ```
 
-该命令计算指定 stage 的 payload hash。当前支持 `export`、`import` 和 `validation` stage。这个 hash 应写入对应 approval 文件，防止审批后 payload 文件被修改。
+该命令计算指定 stage 的 payload hash。当前支持 `export`、`import`、`cdc` 和 `validation` stage。这个 hash 应写入对应 approval 文件，防止审批后 payload 文件被修改。
 
-### 16.12 worker-export
+### 16.13 worker-export
 
 ```bash
 bin/sqlserver2tidb worker-export \
@@ -1377,7 +1489,7 @@ bin/sqlserver2tidb worker-export \
 
 该命令先检查 `approvals/export-approval.yaml`，只有 approval 通过且 payload hash 匹配时才读取 `plan/export-plan.yaml`，并写回 `state/export-chunks.yaml` 和 `evidence/precheck.json`。它只写 planned 状态，不执行真实导出。
 
-### 16.13 worker-import
+### 16.14 worker-import
 
 ```bash
 bin/sqlserver2tidb worker-import \
@@ -1388,7 +1500,18 @@ bin/sqlserver2tidb worker-import \
 
 该命令先检查 `approvals/import-approval.yaml`，只有 approval 通过且 payload hash 匹配时才读取 `plan/import-plan.yaml`，并写回 `state/import-jobs.yaml` 和 `evidence/import-summary.json`。它只写 planned 状态，不执行真实导入。
 
-### 16.14 worker-validate
+### 16.15 worker-cdc
+
+```bash
+bin/sqlserver2tidb worker-cdc \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a
+```
+
+该命令先检查 `approvals/cdc-approval.yaml`，只有 approval 通过且 payload hash 匹配时才读取 `plan/cdc-plan.yaml`，并写回项目级 `state/migration-state.yaml`、源集群级 `state/cdc-checkpoint.yaml` 和项目级 `evidence/cdc-catchup.json`。它只写 planned 状态，不启用或执行真实 CDC。
+
+### 16.16 worker-validate
 
 ```bash
 bin/sqlserver2tidb worker-validate \
@@ -1410,12 +1533,14 @@ bin/sqlserver2tidb worker-validate \
 7. 通过 PR review metadata 文件。
 8. 对已有 inventory 执行 `analyze-compatibility`，生成规则化兼容性报告。
 9. 执行 `generate-schema-draft`，生成 DDL 草稿、转换报告和 schema diff，并通过 Schema PR review。
-10. 执行 `generate-data-plans`，生成全量导出/导入计划草稿，并通过 Plan/Export/Import PR review。
-11. 对 discovery/schema/plan/export/import 等阶段执行 `generate-pr-draft`，生成 PR body 草稿和建议命令。
-12. 执行 `create-pr` dry-run 检查命令，再用 `create-pr --execute` 创建 GitHub PR。
-13. 执行 `compute-payload-hash --stage export`，把 hash 写入 export approval，approval 通过后运行 `worker-export` 写 planned export state/evidence。
-14. 执行 `compute-payload-hash --stage import`，把 hash 写入 import approval，approval 通过后运行 `worker-import` 写 planned import state/evidence。
-15. 执行 `compute-payload-hash --stage validation`，把 hash 写入 validation approval。
-16. approval 通过后执行 `worker-validate`，生成 validation state 和 evidence。
-17. 再接入真实 export/import/CDC worker。
-18. 最后接入 cutover orchestration。
+10. 执行 `generate-data-plans`，生成全量导出/导入计划草稿。
+11. 执行 `generate-cdc-plan`，生成 CDC 计划草稿，并通过 Plan/Export/Import/CDC PR review。
+12. 对 discovery/schema/plan/export/import/cdc 等阶段执行 `generate-pr-draft`，生成 PR body 草稿和建议命令。
+13. 执行 `create-pr` dry-run 检查命令，再用 `create-pr --execute` 创建 GitHub PR。
+14. 执行 `compute-payload-hash --stage export`，把 hash 写入 export approval，approval 通过后运行 `worker-export` 写 planned export state/evidence。
+15. 执行 `compute-payload-hash --stage import`，把 hash 写入 import approval，approval 通过后运行 `worker-import` 写 planned import state/evidence。
+16. 执行 `compute-payload-hash --stage cdc`，把 hash 写入 cdc approval，approval 通过后运行 `worker-cdc` 写 planned CDC state/evidence。
+17. 执行 `compute-payload-hash --stage validation`，把 hash 写入 validation approval。
+18. approval 通过后执行 `worker-validate`，生成 validation state 和 evidence。
+19. 再接入真实 export/import/CDC worker。
+20. 最后接入 cutover orchestration。

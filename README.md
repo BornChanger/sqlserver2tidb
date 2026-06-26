@@ -16,9 +16,10 @@ This MVP provides:
 - Rule-based SQL Server compatibility analysis from `inventory/inventory.json`.
 - Project-scoped TiDB schema draft generation from SQL Server inventory and project metadata.
 - Project-scoped full export/import plan draft generation from SQL Server inventory and project metadata.
+- Project-scoped CDC plan draft generation from SQL Server inventory and project metadata.
 - PR draft generation and a dry-run-by-default GitHub PR creation wrapper.
-- Export, import, and validation payload hash calculation.
-- Approved metadata-only export/import worker state write-back.
+- Export, import, CDC, and validation payload hash calculation.
+- Approved metadata-only export/import/CDC worker state write-back.
 - Approved validation-only worker execution.
 - Source-cluster-first metadata organization:
 
@@ -41,9 +42,9 @@ This MVP provides:
   ```
 
 - JSON Schema files for core metadata.
-- Tests for repository initialization, validation, discovery planning and execution, compatibility analysis, schema draft generation, data movement plan generation, PR draft generation, GitHub PR create dry-runs, export/import/validation worker gates, upstream SQL Server cluster creation, and migration project creation.
+- Tests for repository initialization, validation, discovery planning and execution, compatibility analysis, schema draft generation, data movement and CDC plan generation, PR draft generation, GitHub PR create dry-runs, export/import/CDC/validation worker gates, upstream SQL Server cluster creation, and migration project creation.
 
-This MVP connects to SQL Server only for read-only catalog discovery when a connection string is supplied through an environment variable. It does **not** connect to TiDB or execute generated DDL, export, import, CDC, cutover, cleanup, or source/target data validation yet.
+This MVP connects to SQL Server only for read-only catalog discovery when a connection string is supplied through an environment variable. It does **not** connect to TiDB or execute generated DDL, real export, real import, CDC streaming/apply, cutover, cleanup, or source/target data validation yet.
 
 ## Build
 
@@ -155,7 +156,21 @@ go run ./cmd/sqlserver2tidb generate-data-plans \
 
 This writes `plan/export-plan.yaml` and `plan/import-plan.yaml` under the project. The command estimates chunks from inventory `row_count`; it does not connect to SQL Server or TiDB and does not move data.
 
-Compute payload hashes and run metadata-only export/import workers after the matching approval files are marked approved:
+Generate a project-scoped CDC draft plan from the current SQL Server inventory and project metadata:
+
+```bash
+go run ./cmd/sqlserver2tidb generate-cdc-plan \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --mode sqlserver-cdc \
+  --retention-hours 168 \
+  --apply-batch-size 1000
+```
+
+This writes `plan/cdc-plan.yaml` under the project. The command records tracked source/target table pairs and checkpoint policy; it does not start SQL Server CDC, Debezium, Kafka, or TiDB apply.
+
+Compute payload hashes and run metadata-only export/import/CDC workers after the matching approval files are marked approved:
 
 ```bash
 go run ./cmd/sqlserver2tidb compute-payload-hash \
@@ -179,9 +194,20 @@ go run ./cmd/sqlserver2tidb worker-import \
   --root . \
   --source-cluster-id prod-sqlserver-a \
   --project-id sales-db-to-tidb-prod-a
+
+go run ./cmd/sqlserver2tidb compute-payload-hash \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --stage cdc
+
+go run ./cmd/sqlserver2tidb worker-cdc \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a
 ```
 
-These workers only convert approved plan files into planned state/evidence files. They do not export data, import data, connect to databases, or write object storage.
+These workers only convert approved plan files into planned state/evidence files. They do not export data, import data, start CDC, connect to databases, or write object storage.
 
 Generate a project-scoped PR draft for schema review:
 
@@ -245,5 +271,5 @@ This checks approved metadata, writes `state/validation-status.yaml`, and writes
 
 ## Next Milestones
 
-- Replace metadata-only export/import workers with real executors behind the same approval gates.
+- Replace metadata-only export/import/CDC workers with real executors behind the same approval gates.
 - Add source/target data validation connectors after import support exists.

@@ -64,6 +64,10 @@ var stagePayloadFiles = map[string][]string{
 		"plan/export-plan.yaml",
 		"plan/import-plan.yaml",
 	},
+	"cdc": {
+		"project.yaml",
+		"plan/cdc-plan.yaml",
+	},
 }
 
 func ComputePayloadHashForStage(root, sourceClusterID, projectID, stage string) (string, error) {
@@ -158,6 +162,43 @@ func RunExportWorker(root, sourceClusterID, projectID string) (DataWorkerResult,
 
 func RunImportWorker(root, sourceClusterID, projectID string) (DataWorkerResult, error) {
 	return runDataWorker(root, sourceClusterID, projectID, "import")
+}
+
+func RunCDCWorker(root, sourceClusterID, projectID string) (DataWorkerResult, error) {
+	if err := validateProjectAddress(root, sourceClusterID, projectID); err != nil {
+		return DataWorkerResult{}, err
+	}
+	payloadHash, err := requireApprovedStage(root, sourceClusterID, projectID, "cdc")
+	if err != nil {
+		return DataWorkerResult{}, err
+	}
+
+	clusterDir := filepath.Join(root, "clusters", sourceClusterID)
+	projectDir := filepath.Join(clusterDir, "projects", projectID)
+	plan, err := readCDCPlanSummary(filepath.Join(projectDir, "plan", "cdc-plan.yaml"))
+	if err != nil {
+		return DataWorkerResult{}, err
+	}
+	result := DataWorkerResult{
+		SourceClusterID: sourceClusterID,
+		ProjectID:       projectID,
+		Stage:           "cdc",
+		PayloadHash:     payloadHash,
+		Status:          "planned",
+		Items:           len(plan.Tables),
+		StateFile:       "state/migration-state.yaml",
+		EvidenceFile:    "evidence/cdc-catchup.json",
+	}
+	if err := writeCDCProjectState(projectDir, result); err != nil {
+		return DataWorkerResult{}, err
+	}
+	if err := writeCDCClusterCheckpoint(clusterDir, result, plan); err != nil {
+		return DataWorkerResult{}, err
+	}
+	if err := writeDataWorkerEvidence(projectDir, result); err != nil {
+		return DataWorkerResult{}, err
+	}
+	return result, nil
 }
 
 func runDataWorker(root, sourceClusterID, projectID, stage string) (DataWorkerResult, error) {
@@ -399,6 +440,41 @@ type dataImportJobState struct {
 	Status               string
 }
 
+type cdcPlanSummary struct {
+	Mode   string
+	Tables []cdcTrackedTableState
+}
+
+type cdcTrackedTableState struct {
+	SourceObject string
+	TargetObject string
+}
+
+func readCDCPlanSummary(path string) (cdcPlanSummary, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return cdcPlanSummary{}, fmt.Errorf("read cdc plan: %w", err)
+	}
+	plan := cdcPlanSummary{Mode: "sqlserver-cdc"}
+	for _, raw := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(raw)
+		switch {
+		case strings.HasPrefix(trimmed, "mode:"):
+			mode := trimYAMLScalar(strings.TrimPrefix(trimmed, "mode:"))
+			if mode != "" {
+				plan.Mode = mode
+			}
+		case strings.HasPrefix(trimmed, "- source_object:"):
+			plan.Tables = append(plan.Tables, cdcTrackedTableState{
+				SourceObject: trimYAMLScalar(strings.TrimPrefix(trimmed, "- source_object:")),
+			})
+		case strings.HasPrefix(trimmed, "target_object:") && len(plan.Tables) > 0:
+			plan.Tables[len(plan.Tables)-1].TargetObject = trimYAMLScalar(strings.TrimPrefix(trimmed, "target_object:"))
+		}
+	}
+	return plan, nil
+}
+
 func collectPayloadFiles(root, projectRel string, entries []string) ([]string, error) {
 	var files []string
 	for _, entry := range entries {
@@ -552,6 +628,41 @@ func writeImportWorkerState(projectDir string, result DataWorkerResult, jobs []d
 	}
 	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
 		return fmt.Errorf("write import jobs state: %w", err)
+	}
+	return nil
+}
+
+func writeCDCProjectState(projectDir string, result DataWorkerResult) error {
+	path := filepath.Join(projectDir, "state", "migration-state.yaml")
+	var b strings.Builder
+	fmt.Fprintf(&b, "project_id: %s\n", result.ProjectID)
+	fmt.Fprintf(&b, "source_cluster_id: %s\n", result.SourceClusterID)
+	b.WriteString("phase: cdc\n")
+	fmt.Fprintf(&b, "status: %s\n", result.Status)
+	fmt.Fprintf(&b, "payload_hash: %s\n", result.PayloadHash)
+	b.WriteString("cdc_plan: plan/cdc-plan.yaml\n")
+	fmt.Fprintf(&b, "tracked_tables: %d\n", result.Items)
+	fmt.Fprintf(&b, "updated_at: %s\n", quoteYAML(nowUTC()))
+	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
+		return fmt.Errorf("write cdc project state: %w", err)
+	}
+	return nil
+}
+
+func writeCDCClusterCheckpoint(clusterDir string, result DataWorkerResult, plan cdcPlanSummary) error {
+	path := filepath.Join(clusterDir, "state", "cdc-checkpoint.yaml")
+	var b strings.Builder
+	fmt.Fprintf(&b, "source_cluster_id: %s\n", result.SourceClusterID)
+	b.WriteString("phase: cdc\n")
+	fmt.Fprintf(&b, "status: %s\n", result.Status)
+	fmt.Fprintf(&b, "project_id: %s\n", result.ProjectID)
+	fmt.Fprintf(&b, "payload_hash: %s\n", result.PayloadHash)
+	fmt.Fprintf(&b, "mode: %s\n", plan.Mode)
+	b.WriteString("checkpoint_scope: source-cluster\n")
+	b.WriteString("checkpoints: []\n")
+	fmt.Fprintf(&b, "updated_at: %s\n", quoteYAML(nowUTC()))
+	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
+		return fmt.Errorf("write cdc checkpoint: %w", err)
 	}
 	return nil
 }

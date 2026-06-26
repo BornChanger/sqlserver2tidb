@@ -885,6 +885,39 @@ func TestGenerateDataMovementPlansRequiresObjectURIPrefix(t *testing.T) {
 	assertContains(t, err.Error(), "object URI prefix is required")
 }
 
+func TestGenerateCDCPlanWritesProjectCDCPlan(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+
+	result, err := GenerateCDCPlan(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", CDCPlanSpec{
+		Mode:                   "sqlserver-cdc",
+		RetentionHoursRequired: 168,
+		ApplyBatchSize:         1000,
+	})
+	if err != nil {
+		t.Fatalf("GenerateCDCPlan() error = %v", err)
+	}
+	if result.Mode != "sqlserver-cdc" || result.Tables != 1 {
+		t.Fatalf("GenerateCDCPlan() result = %+v, want sqlserver-cdc with 1 table", result)
+	}
+
+	plan := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/cdc-plan.yaml")
+	assertContains(t, plan, "status: draft")
+	assertContains(t, plan, "project_id: sales-db-to-tidb-prod-a")
+	assertContains(t, plan, "source_cluster_id: prod-sqlserver-a")
+	assertContains(t, plan, "mode: sqlserver-cdc")
+	assertContains(t, plan, "retention_hours_required: 168")
+	assertContains(t, plan, "source_database: sales")
+	assertContains(t, plan, "source_schemas:")
+	assertContains(t, plan, "- dbo")
+	assertContains(t, plan, "tracked_tables:")
+	assertContains(t, plan, "source_object: sales.dbo.orders")
+	assertContains(t, plan, "target_object: app.orders")
+	assertContains(t, plan, "apply_batch_size: 1000")
+	assertContains(t, plan, "checkpoint_scope: source-cluster")
+	assertContains(t, plan, "checkpoint_file: ../../../state/cdc-checkpoint.yaml")
+}
+
 func TestRunExportWorkerRequiresApprovedExportApproval(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
@@ -976,6 +1009,75 @@ func TestRunImportWorkerWritesPlannedStateWhenApprovedHashMatches(t *testing.T) 
 	assertContains(t, evidence, `"stage": "import"`)
 	assertContains(t, evidence, `"status": "planned"`)
 	assertContains(t, evidence, `"items": 3`)
+	assertContains(t, evidence, `"payload_hash": "`+hash+`"`)
+}
+
+func TestRunCDCWorkerRequiresApprovedCDCApproval(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateCDCPlanOnly(root))
+	projectStateBefore := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/migration-state.yaml")
+	clusterStateBefore := readFile(t, root, "clusters/prod-sqlserver-a/state/cdc-checkpoint.yaml")
+	evidenceBefore := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/cdc-catchup.json")
+
+	_, err := RunCDCWorker(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a")
+	if err == nil {
+		t.Fatal("RunCDCWorker() expected approval error")
+	}
+	assertContains(t, err.Error(), "cdc approval is not approved")
+	projectStateAfter := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/migration-state.yaml")
+	clusterStateAfter := readFile(t, root, "clusters/prod-sqlserver-a/state/cdc-checkpoint.yaml")
+	evidenceAfter := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/cdc-catchup.json")
+	if projectStateAfter != projectStateBefore {
+		t.Fatalf("cdc worker changed project state before approval\nbefore:\n%s\nafter:\n%s", projectStateBefore, projectStateAfter)
+	}
+	if clusterStateAfter != clusterStateBefore {
+		t.Fatalf("cdc worker changed cluster checkpoint before approval\nbefore:\n%s\nafter:\n%s", clusterStateBefore, clusterStateAfter)
+	}
+	if evidenceAfter != evidenceBefore {
+		t.Fatalf("cdc worker changed evidence before approval\nbefore:\n%s\nafter:\n%s", evidenceBefore, evidenceAfter)
+	}
+}
+
+func TestRunCDCWorkerWritesPlannedStateWhenApprovedHashMatches(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateCDCPlanOnly(root))
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "cdc")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(cdc) error = %v", err)
+	}
+	writeStageApproval(t, root, "cdc", hash)
+
+	result, err := RunCDCWorker(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a")
+	if err != nil {
+		t.Fatalf("RunCDCWorker() error = %v", err)
+	}
+	if result.Stage != "cdc" || result.Status != "planned" || result.Items != 1 {
+		t.Fatalf("RunCDCWorker() result = %+v, want cdc planned with 1 item", result)
+	}
+	if result.PayloadHash != hash {
+		t.Fatalf("PayloadHash = %q, want %q", result.PayloadHash, hash)
+	}
+
+	projectState := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/migration-state.yaml")
+	assertContains(t, projectState, "phase: cdc")
+	assertContains(t, projectState, "status: planned")
+	assertContains(t, projectState, "payload_hash: "+hash)
+	assertContains(t, projectState, "cdc_plan: plan/cdc-plan.yaml")
+	assertContains(t, projectState, "tracked_tables: 1")
+
+	clusterState := readFile(t, root, "clusters/prod-sqlserver-a/state/cdc-checkpoint.yaml")
+	assertContains(t, clusterState, "phase: cdc")
+	assertContains(t, clusterState, "status: planned")
+	assertContains(t, clusterState, "project_id: sales-db-to-tidb-prod-a")
+	assertContains(t, clusterState, "payload_hash: "+hash)
+	assertContains(t, clusterState, "mode: sqlserver-cdc")
+
+	evidence := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/cdc-catchup.json")
+	assertContains(t, evidence, `"stage": "cdc"`)
+	assertContains(t, evidence, `"status": "planned"`)
+	assertContains(t, evidence, `"items": 1`)
 	assertContains(t, evidence, `"payload_hash": "`+hash+`"`)
 }
 
@@ -1226,6 +1328,15 @@ func GenerateDataPlansOnly(root string) error {
 		ChunkSizeRows:   1000000,
 		ExportFormat:    "parquet",
 		ImportEngine:    "import-into",
+	})
+	return err
+}
+
+func GenerateCDCPlanOnly(root string) error {
+	_, err := GenerateCDCPlan(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", CDCPlanSpec{
+		Mode:                   "sqlserver-cdc",
+		RetentionHoursRequired: 168,
+		ApplyBatchSize:         1000,
 	})
 	return err
 }

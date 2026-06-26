@@ -34,6 +34,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runGenerateSchemaDraft(args[1:], stdout, stderr)
 	case "generate-data-plans":
 		return runGenerateDataPlans(args[1:], stdout, stderr)
+	case "generate-cdc-plan":
+		return runGenerateCDCPlan(args[1:], stdout, stderr)
 	case "generate-pr-draft":
 		return runGeneratePRDraft(args[1:], stdout, stderr)
 	case "create-pr":
@@ -44,6 +46,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runWorkerExport(args[1:], stdout, stderr)
 	case "worker-import":
 		return runWorkerImport(args[1:], stdout, stderr)
+	case "worker-cdc":
+		return runWorkerCDC(args[1:], stdout, stderr)
 	case "worker-validate":
 		return runWorkerValidate(args[1:], stdout, stderr)
 	case "create-cluster":
@@ -245,6 +249,34 @@ func runGenerateDataPlans(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+func runGenerateCDCPlan(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("generate-cdc-plan", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	root := fs.String("root", ".", "repository root")
+	sourceClusterID := fs.String("source-cluster-id", "", "upstream SQL Server cluster id")
+	projectID := fs.String("project-id", "", "migration project id")
+	mode := fs.String("mode", "sqlserver-cdc", "CDC mode")
+	retentionHours := fs.Int("retention-hours", 168, "required CDC retention hours")
+	applyBatchSize := fs.Int("apply-batch-size", 1000, "planned TiDB CDC apply batch size")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	result, err := gitops.GenerateCDCPlan(*root, *sourceClusterID, *projectID, gitops.CDCPlanSpec{
+		Mode:                   *mode,
+		RetentionHoursRequired: *retentionHours,
+		ApplyBatchSize:         *applyBatchSize,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "generate cdc plan: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "cdc plan generated for %s under source cluster %s\n", result.ProjectID, result.SourceClusterID)
+	fmt.Fprintf(stdout, "mode: %s\n", result.Mode)
+	fmt.Fprintf(stdout, "tracked tables: %d\n", result.Tables)
+	fmt.Fprintf(stdout, "wrote %s\n", "plan/cdc-plan.yaml")
+	return 0
+}
+
 func runGeneratePRDraft(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("generate-pr-draft", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -311,7 +343,7 @@ func runComputePayloadHash(args []string, stdout, stderr io.Writer) int {
 	root := fs.String("root", ".", "repository root")
 	sourceClusterID := fs.String("source-cluster-id", "", "upstream SQL Server cluster id")
 	projectID := fs.String("project-id", "", "migration project id")
-	stage := fs.String("stage", "", "stage to hash: export, import, or validation")
+	stage := fs.String("stage", "", "stage to hash: export, import, cdc, or validation")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -398,6 +430,30 @@ func runWorkerImport(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "jobs: %d\n", result.Items)
 	fmt.Fprintf(stdout, "payload hash: %s\n", result.PayloadHash)
 	fmt.Fprintf(stdout, "wrote %s\n", result.StateFile)
+	fmt.Fprintf(stdout, "wrote %s\n", result.EvidenceFile)
+	return 0
+}
+
+func runWorkerCDC(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("worker-cdc", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	root := fs.String("root", ".", "repository root")
+	sourceClusterID := fs.String("source-cluster-id", "", "upstream SQL Server cluster id")
+	projectID := fs.String("project-id", "", "migration project id")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	result, err := gitops.RunCDCWorker(*root, *sourceClusterID, *projectID)
+	if err != nil {
+		fmt.Fprintf(stderr, "worker cdc: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "cdc worker completed for %s\n", result.ProjectID)
+	fmt.Fprintf(stdout, "status: %s\n", result.Status)
+	fmt.Fprintf(stdout, "tracked tables: %d\n", result.Items)
+	fmt.Fprintf(stdout, "payload hash: %s\n", result.PayloadHash)
+	fmt.Fprintf(stdout, "wrote %s\n", result.StateFile)
+	fmt.Fprintf(stdout, "wrote %s\n", "state/cdc-checkpoint.yaml")
 	fmt.Fprintf(stdout, "wrote %s\n", result.EvidenceFile)
 	return 0
 }
@@ -499,11 +555,13 @@ Usage:
   sqlserver2tidb analyze-compatibility --root . --source-cluster-id prod-sqlserver-a
   sqlserver2tidb generate-schema-draft --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
   sqlserver2tidb generate-data-plans --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --object-uri-prefix s3://bucket/prefix
+  sqlserver2tidb generate-cdc-plan --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
   sqlserver2tidb generate-pr-draft --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage schema
   sqlserver2tidb create-pr --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage schema
   sqlserver2tidb compute-payload-hash --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage export
   sqlserver2tidb worker-export --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
   sqlserver2tidb worker-import --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
+  sqlserver2tidb worker-cdc --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
   sqlserver2tidb worker-validate --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
   sqlserver2tidb create-cluster --cluster-id prod-sqlserver-a --display-name "prod SQL Server A" --listener sqlserver-a.internal --secret-ref vault://...
   sqlserver2tidb create-project --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --source-database sales --source-schema dbo --target-name tidb-prod-a --target-database app --target-secret-ref vault://...

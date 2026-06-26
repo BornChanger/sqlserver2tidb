@@ -792,6 +792,127 @@ func TestRunWorkerExportAndImportCommands(t *testing.T) {
 	assertExists(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/import-summary.json")
 }
 
+func TestRunGenerateCDCPlanAndWorkerCDCCommands(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	if code := Run([]string{"init-repo", "--root", root}, &stdout, &stderr); code != 0 {
+		t.Fatalf("init-repo code = %d, stderr = %s", code, stderr.String())
+	}
+	if code := Run([]string{
+		"create-cluster",
+		"--root", root,
+		"--cluster-id", "prod-sqlserver-a",
+		"--display-name", "prod SQL Server A",
+		"--listener", "sqlserver-a.internal",
+		"--secret-ref", "vault://migration/prod-sqlserver-a/readonly",
+		"--owner", "dba-team",
+	}, &stdout, &stderr); code != 0 {
+		t.Fatalf("create-cluster code = %d, stderr = %s", code, stderr.String())
+	}
+	if code := Run([]string{
+		"create-project",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--display-name", "sales DB to TiDB prod A",
+		"--source-database", "sales",
+		"--source-schema", "dbo",
+		"--target-name", "tidb-prod-a",
+		"--target-database", "app",
+		"--target-secret-ref", "vault://migration/tidb-prod-a/migrate-user",
+		"--owner", "dba-team",
+	}, &stdout, &stderr); code != 0 {
+		t.Fatalf("create-project code = %d, stderr = %s", code, stderr.String())
+	}
+	inventoryPath := filepath.Join(root, "clusters", "prod-sqlserver-a", "inventory", "inventory.json")
+	if err := os.WriteFile(inventoryPath, []byte(`{
+  "status": "discovered",
+  "databases": [
+    {
+      "name": "sales",
+      "schemas": [
+        {
+          "name": "dbo",
+          "tables": [
+            {
+              "name": "orders",
+              "row_count": 2500000,
+              "columns": [
+                {"name": "id", "type": "int"}
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"generate-cdc-plan",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--mode", "sqlserver-cdc",
+		"--retention-hours", "168",
+		"--apply-batch-size", "1000",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("generate-cdc-plan code = %d, stderr = %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "cdc plan generated for sales-db-to-tidb-prod-a") {
+		t.Fatalf("generate-cdc-plan stdout = %q, want completed message", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "tracked tables: 1") {
+		t.Fatalf("generate-cdc-plan stdout = %q, want tracked table count", stdout.String())
+	}
+	assertExists(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/cdc-plan.yaml")
+
+	stdout.Reset()
+	stderr.Reset()
+	code = Run([]string{
+		"compute-payload-hash",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "cdc",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("compute-payload-hash cdc code = %d, stderr = %s", code, stderr.String())
+	}
+	writeCLIStageApproval(t, root, "cdc", parsePayloadHash(t, stdout.String()))
+
+	stdout.Reset()
+	stderr.Reset()
+	code = Run([]string{
+		"worker-cdc",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("worker-cdc code = %d, stderr = %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "cdc worker completed for sales-db-to-tidb-prod-a") {
+		t.Fatalf("worker-cdc stdout = %q, want completed message", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "status: planned") {
+		t.Fatalf("worker-cdc stdout = %q, want planned status", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "tracked tables: 1") {
+		t.Fatalf("worker-cdc stdout = %q, want tracked table count", stdout.String())
+	}
+	assertExists(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/migration-state.yaml")
+	assertExists(t, root, "clusters/prod-sqlserver-a/state/cdc-checkpoint.yaml")
+	assertExists(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/cdc-catchup.json")
+}
+
 func TestRunUnknownCommandReturnsUsageError(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 

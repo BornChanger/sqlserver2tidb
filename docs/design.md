@@ -96,6 +96,37 @@ The export worker reads `plan/export-plan.yaml` and writes planned chunk state t
 
 These workers establish the approval and state write-back contract for future real executors. They intentionally mark items as `planned`; they do not mark chunks as exported or jobs as imported.
 
+## CDC Plan And Worker
+
+`generate-cdc-plan` is deterministic and file-backed:
+
+- Input: `clusters/<source_cluster_id>/inventory/inventory.json`.
+- Input: `clusters/<source_cluster_id>/projects/<project_id>/project.yaml`.
+- Input: operator-supplied CDC mode, required retention hours, and apply batch size.
+- Output: project-local `plan/cdc-plan.yaml`.
+
+It filters inventory by the project source database and source schemas, then records tracked source/target table pairs and the source-cluster checkpoint file. It does not connect to SQL Server or TiDB, enable SQL Server CDC, create Debezium connectors, read LSNs, write Kafka offsets, or start TiDB apply.
+
+The current `worker-cdc` implementation is metadata-only. It executes only after `approvals/cdc-approval.yaml` has:
+
+- `action: cdc`
+- `status: approved`
+- at least one `approved_by` entry
+- `payload_hash` matching the current CDC payload
+
+The CDC payload hash covers:
+
+- `project.yaml`
+- `plan/cdc-plan.yaml`
+
+When approved, the worker writes:
+
+- project-local `state/migration-state.yaml`
+- source-cluster-level `state/cdc-checkpoint.yaml`
+- project-local `evidence/cdc-catchup.json`
+
+It marks the CDC phase as `planned`; it does not assert that CDC is enabled, caught up, or safe for cutover.
+
 ## Metadata Boundary
 
 Metadata is organized by upstream SQL Server cluster:
@@ -148,11 +179,12 @@ LLMs may generate:
 - schema rewrite candidates
 - migration plan drafts
 - export/import chunking or split-key recommendations
+- CDC risk notes, retention recommendations, and connector configuration candidates
 - PR descriptions
 - validation report narratives
 - incident diagnosis suggestions
 
-LLMs are not required for deterministic repository commands such as `validate-repo`, `discover-sqlserver --dry-run`, `analyze-compatibility`, `generate-schema-draft`, `generate-data-plans`, `generate-pr-draft`, `create-pr`, `compute-payload-hash`, `worker-export`, `worker-import`, or `worker-validate`. For schema work, the LLM may read `conversion-report.md` and `schema-diff.json` to propose candidate rewrites, but the candidate must be committed as reviewed files before any worker can use it. For export/import planning, the LLM may propose split keys or risk notes, but generated predicates and execution settings still need PR review before workers can use them. For PR work, the LLM may refine prose, but file lists, approval files, and stage gates must remain deterministic.
+LLMs are not required for deterministic repository commands such as `validate-repo`, `discover-sqlserver --dry-run`, `analyze-compatibility`, `generate-schema-draft`, `generate-data-plans`, `generate-cdc-plan`, `generate-pr-draft`, `create-pr`, `compute-payload-hash`, `worker-export`, `worker-import`, `worker-cdc`, or `worker-validate`. For schema work, the LLM may read `conversion-report.md` and `schema-diff.json` to propose candidate rewrites, but the candidate must be committed as reviewed files before any worker can use it. For export/import planning, the LLM may propose split keys or risk notes, but generated predicates and execution settings still need PR review before workers can use them. For CDC planning, the LLM may explain retention or connector risks, but LSN, offset, catch-up, and cutover gates must come from deterministic runtime checks and GitHub approvals. For PR work, the LLM may refine prose, but file lists, approval files, and stage gates must remain deterministic.
 
 LLMs must not decide:
 
