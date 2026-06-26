@@ -198,6 +198,20 @@ make build
 
 ```text
 bin/sqlserver2tidb
+bin/sqlserver2tidb-executor
+```
+
+安装到指定目录：
+
+```bash
+make install PREFIX="$HOME/.local"
+```
+
+会写入：
+
+```text
+$HOME/.local/bin/sqlserver2tidb
+$HOME/.local/bin/sqlserver2tidb-executor
 ```
 
 ### 5.4 运行测试

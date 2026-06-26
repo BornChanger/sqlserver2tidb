@@ -75,6 +75,12 @@ bin/sqlserver2tidb-executor version
 
 `make build` injects the current Git commit and UTC build time. Direct `go test` and unlinked development builds report `dev`, `unknown`, and `unknown`.
 
+Install both binaries into `PREFIX/bin`:
+
+```bash
+make install PREFIX="$HOME/.local"
+```
+
 ## Test
 
 ```bash
