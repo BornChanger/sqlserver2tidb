@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -180,7 +182,7 @@ func TestRunImportExecuteRejectsNonFileSourceURI(t *testing.T) {
 	if code == 0 {
 		t.Fatalf("import execute code = 0, want non-zero")
 	}
-	assertOutputContains(t, stderr.String(), "executor import: only file:// source URIs are supported for --execute")
+	assertOutputContains(t, stderr.String(), "executor import: only file://, http://, and https:// source URIs are supported for --execute")
 }
 
 func TestRunImportExecuteRequiresConnectionStringEnv(t *testing.T) {
@@ -405,6 +407,37 @@ func TestReadCSVImportFile(t *testing.T) {
 	}
 	if records[1][0] != "2" || records[1][1] != "" {
 		t.Fatalf("records[1] = %v, want [2 \"\"]", records[1])
+	}
+}
+
+func TestReadCSVImportHTTPSource(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("HTTP method = %s, want GET", r.Method)
+		}
+		w.Header().Set("Content-Type", "text/csv")
+		_, _ = io.WriteString(w, "id,name\n1,Ada\n2,Lin\n")
+	}))
+	defer server.Close()
+
+	source, err := openCSVImportFile(server.URL + "/orders.csv")
+	if err != nil {
+		t.Fatalf("openCSVImportFile() error = %v", err)
+	}
+	defer source.Close()
+
+	columns, records, err := readCSVImportRecords(source)
+	if err != nil {
+		t.Fatalf("readCSVImportRecords() error = %v", err)
+	}
+	if strings.Join(columns, ",") != "id,name" {
+		t.Fatalf("columns = %v, want [id name]", columns)
+	}
+	if len(records) != 2 {
+		t.Fatalf("records len = %d, want 2", len(records))
+	}
+	if records[1][0] != "2" || records[1][1] != "Lin" {
+		t.Fatalf("records[1] = %v, want [2 Lin]", records[1])
 	}
 }
 

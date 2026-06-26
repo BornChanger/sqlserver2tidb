@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -23,6 +24,8 @@ import (
 
 const defaultSourceConnectionStringEnv = "SQLSERVER2TIDB_SOURCE_CONNECTION_STRING"
 const defaultTargetConnectionStringEnv = "SQLSERVER2TIDB_TARGET_CONNECTION_STRING"
+
+var csvImportHTTPClient = &http.Client{Timeout: 10 * time.Minute}
 
 func Run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
@@ -701,7 +704,7 @@ func executeTiDBImport(ctx context.Context, spec importExecuteSpec) error {
 		return fmt.Errorf("executor import: import batch size must be positive")
 	}
 
-	sourcePath, err := resolveImportSourceFile(spec.SourceURI)
+	source, err := parseImportSourceURI(spec.SourceURI)
 	if err != nil {
 		return fmt.Errorf("executor import: %w", err)
 	}
@@ -715,13 +718,13 @@ func executeTiDBImport(ctx context.Context, spec importExecuteSpec) error {
 		return fmt.Errorf("executor import: target connection string env %s is not set", envName)
 	}
 
-	file, err := os.Open(sourcePath)
+	sourceReader, err := openParsedCSVImportSource(ctx, source)
 	if err != nil {
-		return fmt.Errorf("executor import: open CSV source: %w", err)
+		return fmt.Errorf("executor import: %w", err)
 	}
-	defer file.Close()
+	defer sourceReader.Close()
 
-	reader, err := newCSVImportReader(file)
+	reader, err := newCSVImportReader(sourceReader)
 	if err != nil {
 		return fmt.Errorf("executor import: read CSV source: %w", err)
 	}
@@ -739,33 +742,87 @@ func executeTiDBImport(ctx context.Context, spec importExecuteSpec) error {
 	return insertCSVImportRows(ctx, db, insertSQL, reader, spec.ImportBatchSize)
 }
 
-func openCSVImportFile(sourceURI string) (*os.File, error) {
-	path, err := resolveImportSourceFile(sourceURI)
+func openCSVImportFile(sourceURI string) (io.ReadCloser, error) {
+	source, err := parseImportSourceURI(sourceURI)
 	if err != nil {
 		return nil, err
 	}
-	file, err := os.Open(path)
+	return openParsedCSVImportSource(context.Background(), source)
+}
+
+type importSourceURI struct {
+	scheme string
+	path   string
+	uri    string
+}
+
+func parseImportSourceURI(sourceURI string) (importSourceURI, error) {
+	parsed, err := url.Parse(strings.TrimSpace(sourceURI))
 	if err != nil {
-		return nil, fmt.Errorf("open CSV source: %w", err)
+		return importSourceURI{}, fmt.Errorf("parse source uri: %w", err)
 	}
-	return file, nil
+	switch parsed.Scheme {
+	case "file":
+		if parsed.Host != "" && parsed.Host != "localhost" {
+			return importSourceURI{}, fmt.Errorf("file source URI host must be empty or localhost")
+		}
+		if strings.TrimSpace(parsed.Path) == "" {
+			return importSourceURI{}, fmt.Errorf("file source URI path is required")
+		}
+		return importSourceURI{
+			scheme: parsed.Scheme,
+			path:   filepath.Clean(parsed.Path),
+			uri:    parsed.String(),
+		}, nil
+	case "http", "https":
+		if strings.TrimSpace(parsed.Host) == "" {
+			return importSourceURI{}, fmt.Errorf("%s source URI host is required", parsed.Scheme)
+		}
+		return importSourceURI{
+			scheme: parsed.Scheme,
+			uri:    parsed.String(),
+		}, nil
+	default:
+		return importSourceURI{}, fmt.Errorf("only file://, http://, and https:// source URIs are supported for --execute")
+	}
 }
 
 func resolveImportSourceFile(sourceURI string) (string, error) {
-	parsed, err := url.Parse(strings.TrimSpace(sourceURI))
+	source, err := parseImportSourceURI(sourceURI)
 	if err != nil {
-		return "", fmt.Errorf("parse source uri: %w", err)
+		return "", err
 	}
-	if parsed.Scheme != "file" {
-		return "", fmt.Errorf("only file:// source URIs are supported for --execute")
+	if source.scheme != "file" {
+		return "", fmt.Errorf("source URI is not a file:// URI")
 	}
-	if parsed.Host != "" && parsed.Host != "localhost" {
-		return "", fmt.Errorf("file source URI host must be empty or localhost")
+	return source.path, nil
+}
+
+func openParsedCSVImportSource(ctx context.Context, source importSourceURI) (io.ReadCloser, error) {
+	switch source.scheme {
+	case "file":
+		file, err := os.Open(source.path)
+		if err != nil {
+			return nil, fmt.Errorf("open CSV source: %w", err)
+		}
+		return file, nil
+	case "http", "https":
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, source.uri, nil)
+		if err != nil {
+			return nil, fmt.Errorf("create CSV source request: %w", err)
+		}
+		response, err := csvImportHTTPClient.Do(request)
+		if err != nil {
+			return nil, fmt.Errorf("download CSV source: %w", err)
+		}
+		if response.StatusCode < 200 || response.StatusCode > 299 {
+			response.Body.Close()
+			return nil, fmt.Errorf("download CSV source: unexpected HTTP status %s", response.Status)
+		}
+		return response.Body, nil
+	default:
+		return nil, fmt.Errorf("unsupported source URI scheme %q", source.scheme)
 	}
-	if strings.TrimSpace(parsed.Path) == "" {
-		return "", fmt.Errorf("file source URI path is required")
-	}
-	return filepath.Clean(parsed.Path), nil
 }
 
 type csvImportReader struct {
