@@ -562,10 +562,16 @@ func validateCDCPlanSummary(plan cdcPlanSummary) error {
 	if len(plan.Tables) == 0 {
 		return fmt.Errorf("cdc plan contains no tracked tables")
 	}
+	seenSources := make(map[string]struct{}, len(plan.Tables))
 	for _, table := range plan.Tables {
-		if strings.TrimSpace(table.SourceObject) == "" {
+		sourceObject := strings.TrimSpace(table.SourceObject)
+		if sourceObject == "" {
 			return fmt.Errorf("cdc tracked table source_object is required")
 		}
+		if _, ok := seenSources[sourceObject]; ok {
+			return fmt.Errorf("duplicate cdc tracked source_object %s", sourceObject)
+		}
+		seenSources[sourceObject] = struct{}{}
 		if strings.TrimSpace(table.TargetObject) == "" {
 			return fmt.Errorf("cdc tracked table %s target_object is required", table.SourceObject)
 		}

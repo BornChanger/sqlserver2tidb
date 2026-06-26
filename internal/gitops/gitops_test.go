@@ -316,6 +316,30 @@ tracked_tables:
 	assertContains(t, strings.Join(report.Errors, "\n"), "invalid cdc plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/cdc-plan.yaml: cdc tracked table sales.dbo.orders apply_batch_size must be positive")
 }
 
+func TestValidateRepoReportsDuplicateCDCTrackedTable(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/cdc-plan.yaml", `status: reviewed
+mode: sqlserver-cdc
+tracked_tables:
+  - source_object: sales.dbo.orders
+    target_object: app.orders
+    apply_batch_size: 1000
+  - source_object: sales.dbo.orders
+    target_object: app.orders_copy
+    apply_batch_size: 1000
+`)
+
+	report, err := ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("ValidateRepo() valid = true, want false")
+	}
+	assertContains(t, strings.Join(report.Errors, "\n"), "invalid cdc plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/cdc-plan.yaml: duplicate cdc tracked source_object sales.dbo.orders")
+}
+
 func TestValidateRepoChecksClusterAndProjectDirectories(t *testing.T) {
 	root := t.TempDir()
 	must(t, InitRepo(root))
