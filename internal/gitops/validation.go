@@ -259,7 +259,9 @@ func validateProjects(root, projectsRel string, report *ValidationReport) {
 func validateProjectContent(root, projectRel string, report *ValidationReport) {
 	exportPlanRel := filepath.ToSlash(filepath.Join(projectRel, "plan", "export-plan.yaml"))
 	exportPlanPath := filepath.Join(root, filepath.FromSlash(exportPlanRel))
+	exportPlanExists := false
 	if info, err := os.Stat(exportPlanPath); err == nil && !info.IsDir() {
+		exportPlanExists = true
 		if err := validateExportPlanContent(exportPlanPath); err != nil {
 			report.addError(fmt.Sprintf("invalid export plan %s: %v", exportPlanRel, err))
 		}
@@ -270,6 +272,11 @@ func validateProjectContent(root, projectRel string, report *ValidationReport) {
 	if info, err := os.Stat(importPlanPath); err == nil && !info.IsDir() {
 		if err := validateImportPlanContent(importPlanPath); err != nil {
 			report.addError(fmt.Sprintf("invalid import plan %s: %v", importPlanRel, err))
+		}
+		if exportPlanExists {
+			if err := validateImportPlanExportDependencies(exportPlanPath, importPlanPath); err != nil {
+				report.addError(fmt.Sprintf("invalid import plan %s: %v", importPlanRel, err))
+			}
 		}
 	}
 
@@ -335,6 +342,37 @@ func validateImportPlanContent(path string) error {
 		return nil
 	}
 	return validateImportPlanJobs(jobs)
+}
+
+func validateImportPlanExportDependencies(exportPlanPath, importPlanPath string) error {
+	chunks, err := readExportPlanChunks(exportPlanPath)
+	if err != nil {
+		return err
+	}
+	if len(chunks) == 0 {
+		return nil
+	}
+	jobs, err := readImportPlanJobs(importPlanPath)
+	if err != nil {
+		return err
+	}
+	exportChunkIDs := make(map[string]struct{}, len(chunks))
+	for _, chunk := range chunks {
+		chunkID := strings.TrimSpace(chunk.ID)
+		if chunkID != "" {
+			exportChunkIDs[chunkID] = struct{}{}
+		}
+	}
+	for _, job := range jobs {
+		dependency := strings.TrimSpace(job.DependsOnExportChunk)
+		if dependency == "" {
+			continue
+		}
+		if _, ok := exportChunkIDs[dependency]; !ok {
+			return fmt.Errorf("import job %s depends_on_export_chunk %s does not exist in export plan", job.ID, dependency)
+		}
+	}
+	return nil
 }
 
 func validateCDCPlanContent(path string) error {

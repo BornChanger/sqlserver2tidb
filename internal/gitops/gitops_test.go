@@ -320,6 +320,37 @@ jobs:
 	assertContains(t, strings.Join(report.Errors, "\n"), "invalid import plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml: duplicate import job id import-dbo.orders.000001")
 }
 
+func TestValidateRepoReportsImportJobMissingExportDependency(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/export-plan.yaml", `status: reviewed
+tables:
+  - source_object: sales.dbo.orders
+    target_object: app.orders
+    chunks:
+      - id: dbo.orders.000001
+        estimated_rows: 10
+        predicate: "1 = 1"
+        output_uri: file:///tmp/dbo.orders.000001.csv
+`)
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml", `status: reviewed
+jobs:
+  - id: import-dbo.orders.000002
+    target_object: app.orders
+    source_uri: file:///tmp/dbo.orders.000002.csv
+    depends_on_export_chunk: dbo.orders.000002
+`)
+
+	report, err := ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("ValidateRepo() valid = true, want false")
+	}
+	assertContains(t, strings.Join(report.Errors, "\n"), "invalid import plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml: import job import-dbo.orders.000002 depends_on_export_chunk dbo.orders.000002 does not exist in export plan")
+}
+
 func TestValidateRepoReportsInvalidCDCPlanContent(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
