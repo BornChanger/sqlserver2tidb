@@ -1174,6 +1174,7 @@ checks:
     source_object: sales.dbo.orders
     target_object: app.orders
     predicate: "id >= 1"
+    target_predicate: "id >= 1"
 ```
 
 approval 通过后生成 validation executor 命令：
@@ -1197,7 +1198,8 @@ bin/sqlserver2tidb-executor validate-count \
   --project-id sales-db-to-tidb-prod-a \
   --source-object sales.dbo.orders \
   --target-object app.orders \
-  --predicate "id >= 1"
+  --predicate "id >= 1" \
+  --target-predicate "id >= 1"
 ```
 
 显式执行行数校验：
@@ -1213,14 +1215,15 @@ bin/sqlserver2tidb-executor validate-count \
   --project-id sales-db-to-tidb-prod-a \
   --source-object sales.dbo.orders \
   --target-object app.orders \
-  --predicate "id >= 1"
+  --predicate "id >= 1" \
+  --target-predicate "id >= 1"
 ```
 
 执行模式会对源端和目标端分别运行 count 查询。以上面的对象为例：
 
 ```sql
 SELECT COUNT(*) FROM [sales].[dbo].[orders] WHERE id >= 1;
-SELECT COUNT(*) FROM `app`.`orders`;
+SELECT COUNT(*) FROM `app`.`orders` WHERE id >= 1;
 ```
 
 如果行数不同，命令返回非零退出码并输出 mismatch。当前实现不做 checksum、sampled hash、业务 SQL 或分桶聚合校验。
@@ -1815,7 +1818,8 @@ bin/sqlserver2tidb-executor validate-count \
   --project-id sales-db-to-tidb-prod-a \
   --source-object sales.dbo.orders \
   --target-object app.orders \
-  --predicate "id >= 1"
+  --predicate "id >= 1" \
+  --target-predicate "id >= 1"
 ```
 
 执行行数校验：
@@ -1831,10 +1835,11 @@ bin/sqlserver2tidb-executor validate-count \
   --project-id sales-db-to-tidb-prod-a \
   --source-object sales.dbo.orders \
   --target-object app.orders \
-  --predicate "id >= 1"
+  --predicate "id >= 1" \
+  --target-predicate "id >= 1"
 ```
 
-也可以分别用 `--source-connection-string-env <ENV_NAME>` 和 `--target-connection-string-env <ENV_NAME>` 指定其他环境变量。执行模式会拒绝仍包含 `TODO` 的 predicate，并在源端和目标端的 `COUNT(*)` 不一致时返回非零退出码。
+也可以分别用 `--source-connection-string-env <ENV_NAME>` 和 `--target-connection-string-env <ENV_NAME>` 指定其他环境变量。执行模式会拒绝仍包含 `TODO` 的 source predicate 或 target predicate，并在源端和目标端的 `COUNT(*)` 不一致时返回非零退出码。
 
 CDC dry-run：
 

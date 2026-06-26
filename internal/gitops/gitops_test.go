@@ -1258,6 +1258,7 @@ checks:
     source_object: sales.dbo.orders
     target_object: app.orders
     predicate: "id >= 1"
+    target_predicate: "id >= 1"
 `)
 	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "validation")
 	if err != nil {
@@ -1283,6 +1284,7 @@ checks:
 	assertContains(t, first.ShellCommand, "--source-object sales.dbo.orders")
 	assertContains(t, first.ShellCommand, "--target-object app.orders")
 	assertContains(t, first.ShellCommand, "--predicate 'id >= 1'")
+	assertContains(t, first.ShellCommand, "--target-predicate 'id >= 1'")
 	assertContains(t, first.ShellCommand, "--source-connection-string-env SQLSERVER_VALIDATE_DSN")
 	assertContains(t, first.ShellCommand, "--target-connection-string-env TIDB_VALIDATE_DSN")
 }

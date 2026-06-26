@@ -137,6 +137,7 @@ func TestRunValidateCountDryRunCommand(t *testing.T) {
 		"--source-object", "sales.dbo.orders",
 		"--target-object", "app.orders",
 		"--predicate", "id >= 1",
+		"--target-predicate", "id >= 1",
 	}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("validate-count code = %d, stderr = %s", code, stderr.String())
@@ -146,6 +147,7 @@ func TestRunValidateCountDryRunCommand(t *testing.T) {
 	assertOutputContains(t, output, "source object: sales.dbo.orders")
 	assertOutputContains(t, output, "target object: app.orders")
 	assertOutputContains(t, output, "predicate: id >= 1")
+	assertOutputContains(t, output, "target predicate: id >= 1")
 	assertOutputContains(t, output, "No SQL Server connection will be opened.")
 	assertOutputContains(t, output, "No TiDB connection will be opened.")
 }
@@ -169,6 +171,27 @@ func TestRunValidateCountExecuteRejectsTODOPredicate(t *testing.T) {
 		t.Fatalf("validate-count execute code = 0, want non-zero")
 	}
 	assertOutputContains(t, stderr.String(), "executor validate-count: predicate still contains TODO")
+}
+
+func TestRunValidateCountExecuteRejectsTODOTargetPredicate(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"validate-count",
+		"--execute",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--source-object", "sales.dbo.orders",
+		"--target-object", "app.orders",
+		"--target-predicate", "TODO: choose target predicate",
+		"--source-connection-string-env", "MISSING_SQLSERVER_DSN",
+		"--target-connection-string-env", "MISSING_TIDB_DSN",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("validate-count execute code = 0, want non-zero")
+	}
+	assertOutputContains(t, stderr.String(), "executor validate-count: target predicate still contains TODO")
 }
 
 func TestRunValidateCountExecuteRequiresSourceConnectionStringEnv(t *testing.T) {
@@ -222,11 +245,11 @@ func TestBuildCountQueriesQuoteObjects(t *testing.T) {
 		t.Fatalf("buildSQLServerCountQuery() = %q, want %q", sourceQuery, wantSource)
 	}
 
-	targetQuery, err := buildTiDBCountQuery("app.orders")
+	targetQuery, err := buildTiDBCountQuery("app.orders", "id >= 1")
 	if err != nil {
 		t.Fatalf("buildTiDBCountQuery() error = %v", err)
 	}
-	wantTarget := "SELECT COUNT(*) FROM `app`.`orders`"
+	wantTarget := "SELECT COUNT(*) FROM `app`.`orders` WHERE id >= 1"
 	if targetQuery != wantTarget {
 		t.Fatalf("buildTiDBCountQuery() = %q, want %q", targetQuery, wantTarget)
 	}

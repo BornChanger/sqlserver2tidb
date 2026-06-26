@@ -199,6 +199,9 @@ func prepareValidationExecutorCommands(projectDir, binary, sourceClusterID, proj
 		if strings.TrimSpace(check.Predicate) != "" {
 			args = append(args, "--predicate", check.Predicate)
 		}
+		if strings.TrimSpace(check.TargetPredicate) != "" {
+			args = append(args, "--target-predicate", check.TargetPredicate)
+		}
 		if sourceConnectionStringEnv != "" {
 			args = append(args, "--source-connection-string-env", sourceConnectionStringEnv)
 		}
@@ -214,11 +217,12 @@ func prepareValidationExecutorCommands(projectDir, binary, sourceClusterID, proj
 }
 
 type validationPlanCheck struct {
-	ID           string
-	Type         string
-	SourceObject string
-	TargetObject string
-	Predicate    string
+	ID              string
+	Type            string
+	SourceObject    string
+	TargetObject    string
+	Predicate       string
+	TargetPredicate string
 }
 
 func readValidationPlanChecks(path string) ([]validationPlanCheck, error) {
@@ -242,6 +246,8 @@ func readValidationPlanChecks(path string) ([]validationPlanCheck, error) {
 			checks[len(checks)-1].TargetObject = trimYAMLScalar(strings.TrimPrefix(trimmed, "target_object:"))
 		case strings.HasPrefix(trimmed, "predicate:") && len(checks) > 0:
 			checks[len(checks)-1].Predicate = trimYAMLScalar(strings.TrimPrefix(trimmed, "predicate:"))
+		case strings.HasPrefix(trimmed, "target_predicate:") && len(checks) > 0:
+			checks[len(checks)-1].TargetPredicate = trimYAMLScalar(strings.TrimPrefix(trimmed, "target_predicate:"))
 		}
 	}
 	return checks, nil
