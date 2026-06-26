@@ -560,7 +560,7 @@ func runWorkerExecutor(args []string, stdout, stderr io.Writer) int {
 	root := fs.String("root", ".", "repository root")
 	sourceClusterID := fs.String("source-cluster-id", "", "upstream SQL Server cluster id")
 	projectID := fs.String("project-id", "", "migration project id")
-	stage := fs.String("stage", "", "executor stage: export, import, cdc, or validation")
+	stage := fs.String("stage", "", "executor stage: ddl, export, import, cdc, or validation")
 	executorBinary := fs.String("executor-binary", "", "external executor binary; default is sqlserver2tidb-executor")
 	sourceConnectionStringEnv := fs.String("source-connection-string-env", "", "environment variable containing the SQL Server connection string for export execution")
 	targetConnectionStringEnv := fs.String("target-connection-string-env", "", "environment variable containing the TiDB/MySQL connection string for import execution")

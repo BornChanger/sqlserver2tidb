@@ -36,10 +36,10 @@ LLM 只生成解释、候选方案和文档，不直接执行迁移
 - 基于 SQL Server inventory 和 project metadata 生成项目级 CDC 计划草稿。
 - 基于 SQL Server inventory 和 project metadata 生成项目级 row-count validation plan 草稿。
 - 基于 stage 生成本地 PR draft 文件，并通过 dry-run-by-default wrapper 准备 `gh pr create`。
-- 计算 export、import、cdc、validation payload hash。
+- 计算 ddl、export、import、cdc、validation payload hash。
 - 在 approval 通过后执行 metadata-only export/import/CDC worker，把 plan 写成 planned state/evidence。
-- 在 approval 通过后执行 `worker-executor` dry-run，生成外部 export/import/CDC/validation 执行器命令。
-- 通过 `worker-executor --stage validation` 或 `sqlserver2tidb-executor validate-count` 对源/目标对象执行显式行数校验。
+- 在 approval 通过后执行 `worker-executor` dry-run，生成外部 DDL/export/import/CDC/validation 执行器命令。
+- 通过 `worker-executor --stage ddl` 或 `sqlserver2tidb-executor apply-ddl` 对 TiDB 执行已 review 的 DDL，通过 `worker-executor --stage validation` 或 `sqlserver2tidb-executor validate-count` 对源/目标对象执行显式行数校验。
 - 在 approval 通过后执行 metadata-only validation worker。
 - 执行只读 `worker-reconcile --dry-run`，扫描 ready/blocked worker actions。
 - 执行 `worker-reconcile --execute-next`，在源集群 lease 保护下执行第一个 ready metadata-only worker action。
@@ -51,7 +51,7 @@ LLM 只生成解释、候选方案和文档，不直接执行迁移
 - 生成核心 JSON Schema 文件。
 - 单元测试和 CLI smoke test。
 
-当前 CLI 在执行 `discover-sqlserver --connection-string-env ...` 时会连接 SQL Server，并且只读取 catalog metadata。`sqlserver2tidb-executor export --execute` 也可以显式连接 SQL Server，把一个已审批的导出 work item 写成本地 `file://` CSV 文件。`sqlserver2tidb-executor import --execute` 可以显式连接 TiDB，把本地 `file://` CSV 逐行写入目标表。`sqlserver2tidb-executor validate-count --execute` 可以显式同时连接 SQL Server 和 TiDB，对一个源/目标对象做 `COUNT(*)` 对比。除此之外，它不会执行生成的 DDL、对象存储导出/导入、TiDB Lightning、`IMPORT INTO`、CDC、切流、checksum、sampled hash 或业务 SQL 校验。`discover-sqlserver --dry-run` 只输出计划，不打开数据库连接，也不写 inventory 文件。`analyze-compatibility`、`generate-schema-draft`、`generate-data-plans`、`generate-cdc-plan`、`generate-validation-plan`、`generate-pr-draft`、`create-pr` 的默认 dry-run、`create-worker-state-pr` 的默认 dry-run、`worker-executor` 的默认 dry-run、`sqlserver2tidb-executor` 的默认 dry-run、`compute-payload-hash`、`worker-export`、`worker-import`、`worker-cdc`、`worker-validate`、`worker-reconcile --dry-run` 和 `worker-reconcile --execute-next` 只读取并写回或汇报 GitHub metadata 文件。`worker-reconcile --state-pr-draft` 只生成 Markdown PR body，不调用 GitHub。`create-pr --execute` 会调用本地 `gh pr create`；`create-worker-state-pr --execute` 会调用本地 `git` 和 `gh`；`sqlserver2tidb-executor cdc --execute` 当前会返回 not implemented。
+当前 CLI 在执行 `discover-sqlserver --connection-string-env ...` 时会连接 SQL Server，并且只读取 catalog metadata。`sqlserver2tidb-executor apply-ddl --execute` 可以显式连接 TiDB，执行已 review 且不含 `TODO` 的 DDL 文件。`sqlserver2tidb-executor export --execute` 也可以显式连接 SQL Server，把一个已审批的导出 work item 写成本地 `file://` CSV 文件。`sqlserver2tidb-executor import --execute` 可以显式连接 TiDB，把本地 `file://` CSV 逐行写入目标表。`sqlserver2tidb-executor validate-count --execute` 可以显式同时连接 SQL Server 和 TiDB，对一个源/目标对象做 `COUNT(*)` 对比。除此之外，它不会执行对象存储导出/导入、TiDB Lightning、`IMPORT INTO`、CDC、切流、checksum、sampled hash 或业务 SQL 校验。`discover-sqlserver --dry-run` 只输出计划，不打开数据库连接，也不写 inventory 文件。`analyze-compatibility`、`generate-schema-draft`、`generate-data-plans`、`generate-cdc-plan`、`generate-validation-plan`、`generate-pr-draft`、`create-pr` 的默认 dry-run、`create-worker-state-pr` 的默认 dry-run、`worker-executor` 的默认 dry-run、`sqlserver2tidb-executor` 的默认 dry-run、`compute-payload-hash`、`worker-export`、`worker-import`、`worker-cdc`、`worker-validate`、`worker-reconcile --dry-run` 和 `worker-reconcile --execute-next` 只读取并写回或汇报 GitHub metadata 文件。`worker-reconcile --state-pr-draft` 只生成 Markdown PR body，不调用 GitHub。`create-pr --execute` 会调用本地 `gh pr create`；`create-worker-state-pr --execute` 会调用本地 `git` 和 `gh`；`sqlserver2tidb-executor cdc --execute` 当前会返回 not implemented。
 
 ### 2.2 终极目标
 
@@ -1466,7 +1466,7 @@ clusters/<source_cluster_id>/cluster.yaml
 
 ### 15.4 当前能直接迁移数据吗？
 
-当前 MVP 可以只读连接 SQL Server catalog 生成 inventory，可以从 inventory 生成 TiDB DDL 草稿、全量导出/导入计划草稿、CDC 计划草稿和 row-count validation plan 草稿，并执行 metadata-only export/import/CDC/validation worker。`worker-executor` 可以在 approval/hash gate 后生成外部执行器命令；`sqlserver2tidb-executor` 当前已经可以解析这些 work item 并 dry-run 输出上下文。`export --execute` 支持 SQL Server 到本地 `file://` CSV 的最小真实导出路径，但还不支持对象存储或 Parquet。`import --execute` 支持本地 `file://` CSV 到 TiDB 的流式逐行 insert 路径，并用 `--import-batch-size` 分批提交事务，但还不支持 Lightning、`IMPORT INTO` 或对象存储。`worker-executor --stage validation` 可以在 validation approval/hash gate 后生成 `validate-count` 命令，`validate-count --execute` 支持单对象 SQL Server/TiDB 行数对比。`cdc --execute` 仍显式返回 not implemented，不会回放 CDC。checksum、sampled hash 和业务 SQL 数据校验仍是后续能力。
+当前 MVP 可以只读连接 SQL Server catalog 生成 inventory，可以从 inventory 生成 TiDB DDL 草稿、全量导出/导入计划草稿、CDC 计划草稿和 row-count validation plan 草稿，并执行 metadata-only export/import/CDC/validation worker。`worker-executor` 可以在 approval/hash gate 后生成外部执行器命令；`sqlserver2tidb-executor` 当前已经可以解析这些 work item 并 dry-run 输出上下文。`apply-ddl --execute` 支持把已 review 且不含 `TODO` 的 DDL 文件执行到 TiDB。`export --execute` 支持 SQL Server 到本地 `file://` CSV 的最小真实导出路径，但还不支持对象存储或 Parquet。`import --execute` 支持本地 `file://` CSV 到 TiDB 的流式逐行 insert 路径，并用 `--import-batch-size` 分批提交事务，但还不支持 Lightning、`IMPORT INTO` 或对象存储。`worker-executor --stage validation` 可以在 validation approval/hash gate 后生成 `validate-count` 命令，`validate-count --execute` 支持单对象 SQL Server/TiDB 行数对比。`cdc --execute` 仍显式返回 not implemented，不会回放 CDC。checksum、sampled hash 和业务 SQL 数据校验仍是后续能力。
 
 ### 15.5 可以把 LLM 接进来吗？
 
@@ -1663,7 +1663,7 @@ bin/sqlserver2tidb compute-payload-hash \
   --stage export
 ```
 
-该命令计算指定 stage 的 payload hash。当前支持 `export`、`import`、`cdc` 和 `validation` stage。这个 hash 应写入对应 approval 文件，防止审批后 payload 文件被修改。
+该命令计算指定 stage 的 payload hash。当前支持 `ddl`、`export`、`import`、`cdc` 和 `validation` stage。这个 hash 应写入对应 approval 文件，防止审批后 payload 文件被修改。
 
 ### 16.13 worker-export
 
@@ -1718,6 +1718,17 @@ bin/sqlserver2tidb worker-executor \
   --root . \
   --source-cluster-id prod-sqlserver-a \
   --project-id sales-db-to-tidb-prod-a \
+  --stage ddl \
+  --target-connection-string-env SQLSERVER2TIDB_TARGET_CONNECTION_STRING
+```
+
+export dry-run：
+
+```bash
+bin/sqlserver2tidb worker-executor \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
   --stage export
 ```
 
@@ -1745,9 +1756,33 @@ bin/sqlserver2tidb worker-executor \
   --target-connection-string-env SQLSERVER2TIDB_TARGET_CONNECTION_STRING
 ```
 
-该命令支持 `export`、`import`、`cdc` 和 `validation`。它复用对应 stage 的 approval/hash gate，只有 approval 通过且 payload hash 匹配时才生成执行器命令。默认外部 binary 是 `sqlserver2tidb-executor`，可以通过 `--executor-binary` 覆盖。`--source-connection-string-env`、`--target-connection-string-env` 和 `--import-batch-size` 会被渲染进生成的 executor 命令，不写入 GitHub metadata。默认 dry-run 只打印命令；只有加 `--execute` 才会调用外部 binary，并在 executor 子命令后自动注入 `--execute`，让随仓库提供的 executor 离开 dry-run 模式。执行模式会写回 `evidence/executor-<stage>-run.json`，记录 payload hash、每条命令、输出和 exit code；如果某条命令失败，会先写 failed evidence，再返回非零退出码。审批后的 export/import/CDC plan 如果没有任何 work item，会直接失败；export chunk predicate 如果仍包含 `TODO` 也会失败；`validation` stage 会为 `row_count` 检查生成 `validate-count` 命令，如果审批后的 validation plan 没有任何支持的 row-count 检查，也会直接失败。当前随仓库提供的 `sqlserver2tidb-executor export --execute` 仅支持 SQL Server 到本地 `file://` CSV；`import --execute` 仅支持本地 `file://` CSV 到 TiDB 的流式逐行 insert；`cdc --execute` 仍返回 not implemented。
+该命令支持 `ddl`、`export`、`import`、`cdc` 和 `validation`。它复用对应 stage 的 approval/hash gate，只有 approval 通过且 payload hash 匹配时才生成执行器命令。默认外部 binary 是 `sqlserver2tidb-executor`，可以通过 `--executor-binary` 覆盖。`--source-connection-string-env`、`--target-connection-string-env` 和 `--import-batch-size` 会被渲染进生成的 executor 命令，不写入 GitHub metadata。默认 dry-run 只打印命令；只有加 `--execute` 才会调用外部 binary，并在 executor 子命令后自动注入 `--execute`，让随仓库提供的 executor 离开 dry-run 模式。执行模式会写回 `evidence/executor-<stage>-run.json`，记录 payload hash、每条命令、输出和 exit code；如果某条命令失败，会先写 failed evidence，再返回非零退出码。`ddl` stage 会为 `schema/tidb-ddl/*.sql` 生成 `apply-ddl` 命令；审批后的 export/import/CDC plan 如果没有任何 work item，会直接失败；export chunk predicate 如果仍包含 `TODO` 也会失败；`validation` stage 会为 `row_count` 检查生成 `validate-count` 命令，如果审批后的 validation plan 没有任何支持的 row-count 检查，也会直接失败。当前随仓库提供的 `sqlserver2tidb-executor apply-ddl --execute` 可以把已 review DDL 执行到 TiDB；`export --execute` 仅支持 SQL Server 到本地 `file://` CSV；`import --execute` 仅支持本地 `file://` CSV 到 TiDB 的流式逐行 insert；`cdc --execute` 仍返回 not implemented。
 
 ### 16.18 sqlserver2tidb-executor
+
+DDL dry-run：
+
+```bash
+bin/sqlserver2tidb-executor apply-ddl \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --ddl-file clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/schema/tidb-ddl/dbo.orders.sql
+```
+
+DDL 执行：
+
+```bash
+bin/sqlserver2tidb-executor apply-ddl \
+  --execute \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --ddl-file clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/schema/tidb-ddl/dbo.orders.sql \
+  --target-connection-string-env SQLSERVER2TIDB_TARGET_CONNECTION_STRING
+```
+
+执行模式会读取 DDL 文件，拒绝仍包含 `TODO` 的文件，并用目标连接串执行其中的 SQL 语句。
 
 导出 dry-run：
 
@@ -1930,14 +1965,15 @@ bin/sqlserver2tidb create-worker-state-pr \
 11. 执行 `generate-cdc-plan` 和 `generate-validation-plan`，生成 CDC 与 validation plan 草稿，并通过 Plan/Export/Import/CDC/Validation PR review。
 12. 对 discovery/schema/plan/export/import/cdc 等阶段执行 `generate-pr-draft`，生成 PR body 草稿和建议命令。
 13. 执行 `create-pr` dry-run 检查命令，再用 `create-pr --execute` 创建 GitHub PR。
-14. 执行 `compute-payload-hash --stage export`，把 hash 写入 export approval，approval 通过后运行 `worker-export` 写 planned export state/evidence。
-15. 执行 `compute-payload-hash --stage import`，把 hash 写入 import approval，approval 通过后运行 `worker-import` 写 planned import state/evidence。
-16. 执行 `compute-payload-hash --stage cdc`，把 hash 写入 cdc approval，approval 通过后运行 `worker-cdc` 写 planned CDC state/evidence。
-17. 执行 `compute-payload-hash --stage validation`，把 hash 写入 validation approval。
-18. 执行 `worker-reconcile --dry-run`，确认 ready/blocked action 与预期一致。
-19. 执行 `worker-reconcile --execute-next --holder <agent-id> --state-pr-draft`，用 lease-backed 单步 reconcile 执行第一个 ready metadata-only action，并生成 state PR body。
-20. 执行 `create-worker-state-pr` dry-run 检查 git/gh 命令，再按需执行 `create-worker-state-pr --execute` 创建 state/evidence 写回 PR。
-21. 对 export/import/cdc/validation 执行 `worker-executor` dry-run，检查外部执行器命令和当前 plan 是否一致。
-22. approval 通过后执行 `worker-validate`，生成 validation state 和 evidence。
-23. 将 `sqlserver2tidb-executor export/import` 从本地 CSV 扩展到生产对象存储格式和导入引擎，扩展 `validate-count` 到 checksum / sampled hash / 业务 SQL 校验，并实现/审查真实 CDC 行为，再按需执行 `worker-executor --execute`。
-24. 最后接入 cutover orchestration。
+14. 执行 `compute-payload-hash --stage ddl`，把 hash 写入 ddl approval，approval 通过后用 `worker-executor --stage ddl` dry-run 检查 DDL 执行命令。
+15. 执行 `compute-payload-hash --stage export`，把 hash 写入 export approval，approval 通过后运行 `worker-export` 写 planned export state/evidence。
+16. 执行 `compute-payload-hash --stage import`，把 hash 写入 import approval，approval 通过后运行 `worker-import` 写 planned import state/evidence。
+17. 执行 `compute-payload-hash --stage cdc`，把 hash 写入 cdc approval，approval 通过后运行 `worker-cdc` 写 planned CDC state/evidence。
+18. 执行 `compute-payload-hash --stage validation`，把 hash 写入 validation approval。
+19. 执行 `worker-reconcile --dry-run`，确认 ready/blocked action 与预期一致。
+20. 执行 `worker-reconcile --execute-next --holder <agent-id> --state-pr-draft`，用 lease-backed 单步 reconcile 执行第一个 ready metadata-only action，并生成 state PR body。
+21. 执行 `create-worker-state-pr` dry-run 检查 git/gh 命令，再按需执行 `create-worker-state-pr --execute` 创建 state/evidence 写回 PR。
+22. 对 ddl/export/import/cdc/validation 执行 `worker-executor` dry-run，检查外部执行器命令和当前 plan 是否一致。
+23. approval 通过后执行 `worker-validate`，生成 validation state 和 evidence。
+24. 将 `sqlserver2tidb-executor export/import` 从本地 CSV 扩展到生产对象存储格式和导入引擎，扩展 `validate-count` 到 checksum / sampled hash / 业务 SQL 校验，并实现/审查真实 CDC 行为，再按需执行 `worker-executor --execute`。
+25. 最后接入 cutover orchestration。

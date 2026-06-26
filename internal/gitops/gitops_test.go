@@ -1395,6 +1395,34 @@ func TestPrepareWorkerExecutorRejectsNegativeImportBatchSize(t *testing.T) {
 	assertContains(t, err.Error(), "import batch size must be non-negative")
 }
 
+func TestPrepareWorkerExecutorBuildsDDLCommand(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateSchemaDraftOnly(root))
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "ddl")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(ddl) error = %v", err)
+	}
+	writeStageApproval(t, root, "ddl", hash)
+
+	spec, err := PrepareWorkerExecutor(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "ddl", WorkerExecutorPrepareSpec{
+		TargetConnectionStringEnv: "TIDB_DSN",
+	})
+	if err != nil {
+		t.Fatalf("PrepareWorkerExecutor(ddl) error = %v", err)
+	}
+	if spec.Stage != "ddl" || spec.PayloadHash != hash || len(spec.Commands) != 1 {
+		t.Fatalf("executor spec = %+v, want ddl with 1 command and hash %s", spec, hash)
+	}
+	command := spec.Commands[0]
+	if command.ID != "schema/tidb-ddl/dbo.orders.sql" {
+		t.Fatalf("command ID = %q, want DDL file path", command.ID)
+	}
+	assertContains(t, command.ShellCommand, "sqlserver2tidb-executor apply-ddl")
+	assertContains(t, command.ShellCommand, "--ddl-file clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/schema/tidb-ddl/dbo.orders.sql")
+	assertContains(t, command.ShellCommand, "--target-connection-string-env TIDB_DSN")
+}
+
 func TestPrepareWorkerExecutorRejectsEmptyExportPlan(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())

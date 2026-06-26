@@ -53,6 +53,12 @@ var validationPayloadFiles = []string{
 }
 
 var stagePayloadFiles = map[string][]string{
+	"ddl": {
+		"project.yaml",
+		"schema/conversion-report.md",
+		"schema/schema-diff.json",
+		"schema/tidb-ddl/",
+	},
 	"validation": validationPayloadFiles,
 	"export": {
 		"project.yaml",

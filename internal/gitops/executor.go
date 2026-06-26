@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -35,7 +36,7 @@ func PrepareWorkerExecutor(root, sourceClusterID, projectID, stage string, spec 
 		return WorkerExecutorSpec{}, err
 	}
 	stage = strings.ToLower(strings.TrimSpace(stage))
-	if stage != "export" && stage != "import" && stage != "cdc" && stage != "validation" {
+	if stage != "ddl" && stage != "export" && stage != "import" && stage != "cdc" && stage != "validation" {
 		return WorkerExecutorSpec{}, fmt.Errorf("worker executor is not supported for stage %q", stage)
 	}
 	if spec.ImportBatchSize < 0 {
@@ -60,6 +61,12 @@ func PrepareWorkerExecutor(root, sourceClusterID, projectID, stage string, spec 
 		Binary:          binary,
 	}
 	switch stage {
+	case "ddl":
+		commands, err := prepareDDLExecutorCommands(projectDir, binary, sourceClusterID, projectID, spec)
+		if err != nil {
+			return WorkerExecutorSpec{}, err
+		}
+		result.Commands = commands
 	case "export":
 		commands, err := prepareExportExecutorCommands(projectDir, binary, sourceClusterID, projectID, spec)
 		if err != nil {
@@ -86,6 +93,32 @@ func PrepareWorkerExecutor(root, sourceClusterID, projectID, stage string, spec 
 		result.Commands = commands
 	}
 	return result, nil
+}
+
+func prepareDDLExecutorCommands(projectDir, binary, sourceClusterID, projectID string, spec WorkerExecutorPrepareSpec) ([]WorkerExecutorCommand, error) {
+	ddlFiles, err := collectDDLFiles(projectDir, sourceClusterID, projectID)
+	if err != nil {
+		return nil, err
+	}
+	if len(ddlFiles) == 0 {
+		return nil, fmt.Errorf("schema/tidb-ddl contains no SQL files")
+	}
+	targetConnectionStringEnv := strings.TrimSpace(spec.TargetConnectionStringEnv)
+	commands := make([]WorkerExecutorCommand, 0, len(ddlFiles))
+	for _, file := range ddlFiles {
+		args := []string{
+			"apply-ddl",
+			"--root", ".",
+			"--source-cluster-id", sourceClusterID,
+			"--project-id", projectID,
+			"--ddl-file", file.RepoRel,
+		}
+		if targetConnectionStringEnv != "" {
+			args = append(args, "--target-connection-string-env", targetConnectionStringEnv)
+		}
+		commands = append(commands, newWorkerExecutorCommand(binary, file.ProjectRel, args))
+	}
+	return commands, nil
 }
 
 func prepareExportExecutorCommands(projectDir, binary, sourceClusterID, projectID string, spec WorkerExecutorPrepareSpec) ([]WorkerExecutorCommand, error) {
@@ -223,6 +256,36 @@ func prepareValidationExecutorCommands(projectDir, binary, sourceClusterID, proj
 		return nil, fmt.Errorf("validation plan contains no supported row_count checks")
 	}
 	return commands, nil
+}
+
+type ddlExecutorFile struct {
+	ProjectRel string
+	RepoRel    string
+}
+
+func collectDDLFiles(projectDir, sourceClusterID, projectID string) ([]ddlExecutorFile, error) {
+	ddlDir := filepath.Join(projectDir, "schema", "tidb-ddl")
+	entries, err := os.ReadDir(ddlDir)
+	if err != nil {
+		return nil, fmt.Errorf("read schema/tidb-ddl: %w", err)
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Name() < entries[j].Name()
+	})
+
+	files := make([]ddlExecutorFile, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".sql") {
+			continue
+		}
+		projectRel := filepath.ToSlash(filepath.Join("schema", "tidb-ddl", entry.Name()))
+		repoRel := filepath.ToSlash(filepath.Join("clusters", sourceClusterID, "projects", projectID, projectRel))
+		files = append(files, ddlExecutorFile{
+			ProjectRel: projectRel,
+			RepoRel:    repoRel,
+		})
+	}
+	return files, nil
 }
 
 type validationPlanCheck struct {

@@ -29,6 +29,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	switch args[0] {
+	case "apply-ddl":
+		return runApplyDDL(args[1:], stdout, stderr)
 	case "export":
 		return runExport(args[1:], stdout, stderr)
 	case "import":
@@ -45,6 +47,111 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		printUsage(stderr)
 		return 2
 	}
+}
+
+func runApplyDDL(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("apply-ddl", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	root := fs.String("root", ".", "repository root")
+	sourceClusterID := fs.String("source-cluster-id", "", "upstream SQL Server cluster id")
+	projectID := fs.String("project-id", "", "migration project id")
+	ddlFile := fs.String("ddl-file", "", "DDL SQL file to apply")
+	targetConnectionStringEnv := fs.String("target-connection-string-env", defaultTargetConnectionStringEnv, "environment variable containing the TiDB/MySQL connection string")
+	execute := fs.Bool("execute", false, "apply the DDL")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if err := requireFields("executor apply-ddl",
+		field{"source cluster id", *sourceClusterID},
+		field{"project id", *projectID},
+		field{"ddl file", *ddlFile},
+	); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	if *execute {
+		if err := executeTiDBDDL(context.Background(), applyDDLExecuteSpec{
+			Root:                      *root,
+			DDLFile:                   *ddlFile,
+			TargetConnectionStringEnv: *targetConnectionStringEnv,
+		}); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "executor apply-ddl completed: %s\n", *ddlFile)
+		return 0
+	}
+
+	fmt.Fprintln(stdout, "executor apply-ddl dry run")
+	fmt.Fprintf(stdout, "root: %s\n", *root)
+	fmt.Fprintf(stdout, "source cluster: %s\n", *sourceClusterID)
+	fmt.Fprintf(stdout, "project: %s\n", *projectID)
+	fmt.Fprintf(stdout, "ddl file: %s\n", *ddlFile)
+	fmt.Fprintln(stdout, "No TiDB connection will be opened.")
+	return 0
+}
+
+type applyDDLExecuteSpec struct {
+	Root                      string
+	DDLFile                   string
+	TargetConnectionStringEnv string
+}
+
+func executeTiDBDDL(ctx context.Context, spec applyDDLExecuteSpec) error {
+	ddlPath := spec.DDLFile
+	if !filepath.IsAbs(ddlPath) {
+		ddlPath = filepath.Join(spec.Root, filepath.FromSlash(ddlPath))
+	}
+	data, err := os.ReadFile(ddlPath)
+	if err != nil {
+		return fmt.Errorf("executor apply-ddl: read DDL file: %w", err)
+	}
+	if containsTODO(string(data)) {
+		return fmt.Errorf("executor apply-ddl: DDL file still contains TODO")
+	}
+	statements := splitSQLStatements(string(data))
+	if len(statements) == 0 {
+		return fmt.Errorf("executor apply-ddl: DDL file contains no SQL statements")
+	}
+
+	envName := strings.TrimSpace(spec.TargetConnectionStringEnv)
+	if envName == "" {
+		envName = defaultTargetConnectionStringEnv
+	}
+	connectionString := strings.TrimSpace(os.Getenv(envName))
+	if connectionString == "" {
+		return fmt.Errorf("executor apply-ddl: target connection string env %s is not set", envName)
+	}
+
+	db, err := sql.Open("mysql", connectionString)
+	if err != nil {
+		return fmt.Errorf("executor apply-ddl: open TiDB connection: %w", err)
+	}
+	defer db.Close()
+
+	for _, statement := range statements {
+		if _, err := db.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("executor apply-ddl: execute DDL: %w", err)
+		}
+	}
+	return nil
+}
+
+func splitSQLStatements(script string) []string {
+	parts := strings.Split(script, ";")
+	statements := make([]string, 0, len(parts))
+	for _, part := range parts {
+		statement := strings.TrimSpace(part)
+		if statement == "" {
+			continue
+		}
+		statements = append(statements, statement)
+	}
+	return statements
+}
+
+func containsTODO(value string) bool {
+	return strings.Contains(strings.ToUpper(value), "TODO")
 }
 
 func runExport(args []string, stdout, stderr io.Writer) int {
@@ -776,6 +883,8 @@ func printUsage(w io.Writer) {
 	fmt.Fprint(w, `sqlserver2tidb-executor executes reviewed migration work items.
 
 Usage:
+  sqlserver2tidb-executor apply-ddl --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --ddl-file clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/schema/tidb-ddl/dbo.orders.sql
+  sqlserver2tidb-executor apply-ddl --execute --target-connection-string-env SQLSERVER2TIDB_TARGET_CONNECTION_STRING --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --ddl-file clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/schema/tidb-ddl/dbo.orders.sql
   sqlserver2tidb-executor export --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --chunk-id dbo.orders.000001 --source-object sales.dbo.orders --target-object app.orders --output-uri s3://bucket/path.parquet
   sqlserver2tidb-executor export --execute --source-connection-string-env SQLSERVER2TIDB_SOURCE_CONNECTION_STRING --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --chunk-id dbo.orders.000001 --source-object sales.dbo.orders --target-object app.orders --output-uri file:///tmp/path.csv --predicate "id >= 1 AND id < 1000"
   sqlserver2tidb-executor import --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --job-id import-dbo.orders.000001 --target-object app.orders --source-uri s3://bucket/path.parquet

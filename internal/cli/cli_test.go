@@ -1325,6 +1325,65 @@ checks:
 	}
 }
 
+func TestRunWorkerExecutorDDLDryRunCommand(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	createCLIProjectWithOneExportChunk(t, root, &stdout, &stderr)
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"generate-schema-draft",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("generate-schema-draft code = %d, stderr = %s", code, stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = Run([]string{
+		"compute-payload-hash",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "ddl",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("compute-payload-hash ddl code = %d, stderr = %s", code, stderr.String())
+	}
+	writeCLIStageApproval(t, root, "ddl", parsePayloadHash(t, stdout.String()))
+
+	stdout.Reset()
+	stderr.Reset()
+	code = Run([]string{
+		"worker-executor",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "ddl",
+		"--target-connection-string-env", "TIDB_DDL_DSN",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("worker-executor ddl code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "stage: ddl") {
+		t.Fatalf("worker-executor stdout = %q, want ddl stage", output)
+	}
+	if !strings.Contains(output, "sqlserver2tidb-executor apply-ddl") {
+		t.Fatalf("worker-executor stdout = %q, want apply-ddl command", output)
+	}
+	if !strings.Contains(output, "--ddl-file clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/schema/tidb-ddl/dbo.orders.sql") {
+		t.Fatalf("worker-executor stdout = %q, want ddl file", output)
+	}
+	if !strings.Contains(output, "--target-connection-string-env TIDB_DDL_DSN") {
+		t.Fatalf("worker-executor stdout = %q, want target connection env", output)
+	}
+}
+
 func TestRunWorkerReconcileDryRunCommand(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer

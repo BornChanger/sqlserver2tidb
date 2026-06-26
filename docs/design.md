@@ -76,6 +76,13 @@ The validation payload hash covers:
 
 The approval file is not included in the hash, avoiding self-referential approvals. If the approval is missing, pending, or has a hash mismatch, the worker exits without changing state or evidence.
 
+The DDL executor payload hash covers:
+
+- `project.yaml`
+- `schema/conversion-report.md`
+- `schema/schema-diff.json`
+- `schema/tidb-ddl/`
+
 When approved and the CDC plan contains reviewed tracked tables, the worker writes:
 
 - `state/validation-status.yaml`
@@ -112,16 +119,16 @@ These workers establish the approval and state write-back contract for future re
 
 `worker-executor` is the current external executor shell. It is deterministic and file-backed:
 
-- Input: approved `export`, `import`, `cdc`, or `validation` stage metadata.
-- Input: the matching plan file under `plan/`.
+- Input: approved `ddl`, `export`, `import`, `cdc`, or `validation` stage metadata.
+- Input: the matching schema files or plan file under `schema/` or `plan/`.
 - Output: dry-run command lines by default.
 - Optional execution: external command invocation only when `--execute` is explicitly set.
 
 The command reuses `requireApprovedStage`, so it refuses to produce executor commands unless the stage approval is approved, has reviewers, and the payload hash matches the current repository files. The default external binary is `sqlserver2tidb-executor`; operators can override it with `--executor-binary`. Operators can also pass `--source-connection-string-env`, `--target-connection-string-env`, and `--import-batch-size`; these values are rendered into the generated executor commands instead of being stored in GitHub metadata. In `worker-executor --execute` mode, the CLI invokes the external binary and injects the executor-level `--execute` flag immediately after the executor subcommand, so the included executor leaves dry-run mode. Execute mode writes `evidence/executor-<stage>-run.json` with the stage, payload hash, command args, output, and exit codes; failed executor commands are recorded before the CLI returns non-zero.
 
-For export, it produces one command per export chunk. For import, it produces one command per import job. For CDC, it produces one command per tracked source table. It fails fast if an approved export/import/CDC plan has no work items, and export fails fast if any chunk predicate still contains `TODO`. For validation, it reads `plan/validation-plan.yaml` and produces one `validate-count` command for each check whose `type` is `row_count` or `row-count`; it passes optional source `predicate` and target `target_predicate` values through to the executor, and fails fast if the approved validation plan has no supported row-count checks. The executor shell does not itself connect to SQL Server, TiDB, Kafka, or object storage.
+For DDL, it produces one `apply-ddl` command per SQL file under `schema/tidb-ddl/`. For export, it produces one command per export chunk. For import, it produces one command per import job. For CDC, it produces one command per tracked source table. It fails fast if an approved export/import/CDC plan has no work items, and export fails fast if any chunk predicate still contains `TODO`. For validation, it reads `plan/validation-plan.yaml` and produces one `validate-count` command for each check whose `type` is `row_count` or `row-count`; it passes optional source `predicate` and target `target_predicate` values through to the executor, and fails fast if the approved validation plan has no supported row-count checks. The executor shell does not itself connect to SQL Server, TiDB, Kafka, or object storage.
 
-`sqlserver2tidb-executor` is currently included as a narrow execution adapter. It parses `export`, `import`, `validate-count`, and `cdc` work-item arguments and prints the work-item context by default. `export --execute` supports SQL Server query execution into a local `file://` CSV file, using a connection string read from `SQLSERVER2TIDB_SOURCE_CONNECTION_STRING` or `--source-connection-string-env`. It rejects export predicates that still contain `TODO` and refuses non-`file://` output URIs. `import --execute` supports local `file://` CSV input and streaming row-by-row inserts into TiDB/MySQL, using a connection string read from `SQLSERVER2TIDB_TARGET_CONNECTION_STRING` or `--target-connection-string-env`. Import commits rows in batches controlled by `--import-batch-size` to avoid loading the full CSV into memory. `validate-count --execute` opens SQL Server and TiDB/MySQL connections, runs `COUNT(*)` against the quoted source and target objects, applies source and target predicates independently when provided, and returns non-zero when the counts differ. Object storage export/import formats, TiDB Lightning or `IMPORT INTO`, checksum validation, sampled hash validation, business SQL validation, and CDC apply logic should be implemented inside this binary incrementally behind the same approval/hash gate. `cdc --execute` still returns an explicit not-implemented error.
+`sqlserver2tidb-executor` is currently included as a narrow execution adapter. It parses `apply-ddl`, `export`, `import`, `validate-count`, and `cdc` work-item arguments and prints the work-item context by default. `apply-ddl --execute` reads a reviewed DDL file, rejects files that still contain `TODO`, and applies the SQL statements to TiDB/MySQL using a connection string read from `SQLSERVER2TIDB_TARGET_CONNECTION_STRING` or `--target-connection-string-env`. `export --execute` supports SQL Server query execution into a local `file://` CSV file, using a connection string read from `SQLSERVER2TIDB_SOURCE_CONNECTION_STRING` or `--source-connection-string-env`. It rejects export predicates that still contain `TODO` and refuses non-`file://` output URIs. `import --execute` supports local `file://` CSV input and streaming row-by-row inserts into TiDB/MySQL, using the same target connection string mechanism. Import commits rows in batches controlled by `--import-batch-size` to avoid loading the full CSV into memory. `validate-count --execute` opens SQL Server and TiDB/MySQL connections, runs `COUNT(*)` against the quoted source and target objects, applies source and target predicates independently when provided, and returns non-zero when the counts differ. Object storage export/import formats, TiDB Lightning or `IMPORT INTO`, checksum validation, sampled hash validation, business SQL validation, and CDC apply logic should be implemented inside this binary incrementally behind the same approval/hash gate. `cdc --execute` still returns an explicit not-implemented error.
 
 ## CDC Plan And Worker
 
