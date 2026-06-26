@@ -40,6 +40,13 @@ type clusterMetadata struct {
 	Owners                 []string
 }
 
+type sourceProfileMetadata struct {
+	ClusterID string
+	Listener  string
+	Port      int
+	SecretRef string
+}
+
 type schemaDiffDocument struct {
 	Status          string            `json:"status"`
 	SourceClusterID string            `json:"source_cluster_id"`
@@ -280,6 +287,60 @@ func readClusterMetadata(path string) (clusterMetadata, error) {
 	}
 	if err := scanner.Err(); err != nil {
 		return clusterMetadata{}, fmt.Errorf("scan cluster metadata: %w", err)
+	}
+	return meta, nil
+}
+
+func readSourceProfileMetadata(path string) (sourceProfileMetadata, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return sourceProfileMetadata{}, fmt.Errorf("read source profile: %w", err)
+	}
+
+	var meta sourceProfileMetadata
+	section := ""
+	scanner := bufio.NewScanner(strings.NewReader(string(data)))
+	for scanner.Scan() {
+		raw := scanner.Text()
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		indent := len(raw) - len(strings.TrimLeft(raw, " "))
+		if strings.HasSuffix(trimmed, ":") {
+			key := strings.TrimSpace(strings.TrimSuffix(trimmed, ":"))
+			if indent == 0 {
+				section = key
+			}
+			continue
+		}
+
+		parts := strings.SplitN(trimmed, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key := strings.TrimSpace(parts[0])
+		value := trimYAMLScalar(parts[1])
+		switch {
+		case indent == 0 && key == "cluster_id":
+			meta.ClusterID = value
+			section = ""
+		case section == "connection" && key == "listener":
+			meta.Listener = value
+		case section == "connection" && key == "port":
+			if value != "" {
+				port, err := strconv.Atoi(value)
+				if err != nil {
+					return sourceProfileMetadata{}, fmt.Errorf("parse source profile port %q: %w", value, err)
+				}
+				meta.Port = port
+			}
+		case section == "connection" && key == "secret_ref":
+			meta.SecretRef = value
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return sourceProfileMetadata{}, fmt.Errorf("scan source profile: %w", err)
 	}
 	return meta, nil
 }

@@ -429,6 +429,59 @@ func TestValidateRepoReportsClusterIDMismatch(t *testing.T) {
 	assertContains(t, strings.Join(report.Errors, "\n"), `invalid cluster metadata clusters/prod-sqlserver-a/cluster.yaml: cluster_id "prod-sqlserver-b" does not match directory id "prod-sqlserver-a"`)
 }
 
+func TestValidateRepoReportsSourceProfileMismatch(t *testing.T) {
+	tests := []struct {
+		name      string
+		oldValue  string
+		newValue  string
+		wantError string
+	}{
+		{
+			name:      "cluster_id",
+			oldValue:  "cluster_id: prod-sqlserver-a",
+			newValue:  "cluster_id: prod-sqlserver-b",
+			wantError: `invalid source profile clusters/prod-sqlserver-a/source-profile.yaml: cluster_id "prod-sqlserver-b" does not match cluster metadata "prod-sqlserver-a"`,
+		},
+		{
+			name:      "listener",
+			oldValue:  "listener: sqlserver-a.internal",
+			newValue:  "listener: sqlserver-b.internal",
+			wantError: `invalid source profile clusters/prod-sqlserver-a/source-profile.yaml: listener "sqlserver-b.internal" does not match cluster listener "sqlserver-a.internal"`,
+		},
+		{
+			name:      "port",
+			oldValue:  "port: 1433",
+			newValue:  "port: 1444",
+			wantError: `invalid source profile clusters/prod-sqlserver-a/source-profile.yaml: port 1444 does not match cluster port 1433`,
+		},
+		{
+			name:      "secret_ref",
+			oldValue:  "secret_ref: vault://migration/prod-sqlserver-a/readonly",
+			newValue:  "secret_ref: vault://migration/prod-sqlserver-b/readonly",
+			wantError: `invalid source profile clusters/prod-sqlserver-a/source-profile.yaml: secret_ref "vault://migration/prod-sqlserver-b/readonly" does not match cluster secret_ref "vault://migration/prod-sqlserver-a/readonly"`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)
+			profileRel := "clusters/prod-sqlserver-a/source-profile.yaml"
+			profileYAML := readFile(t, root, profileRel)
+			profileYAML = strings.Replace(profileYAML, tt.oldValue, tt.newValue, 1)
+			writeFileForTest(t, root, profileRel, profileYAML)
+
+			report, err := ValidateRepo(root)
+			if err != nil {
+				t.Fatalf("ValidateRepo() error = %v", err)
+			}
+			if report.Valid {
+				t.Fatal("ValidateRepo() valid = true, want source profile mismatch")
+			}
+			assertContains(t, strings.Join(report.Errors, "\n"), tt.wantError)
+		})
+	}
+}
+
 func TestValidateRepoReportsProjectIDMismatch(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)

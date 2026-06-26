@@ -221,8 +221,20 @@ func validateClusterDir(root, clusterRel string, report *ValidationReport) {
 	clusterMetadataPath := filepath.Join(root, filepath.FromSlash(clusterMetadataRel))
 	if info, err := os.Stat(clusterMetadataPath); err == nil && !info.IsDir() {
 		expectedClusterID := filepath.Base(filepath.FromSlash(clusterRel))
-		if err := validateClusterMetadataContent(clusterMetadataPath, expectedClusterID); err != nil {
+		meta, err := readClusterMetadata(clusterMetadataPath)
+		if err != nil {
 			report.addError(fmt.Sprintf("invalid cluster metadata %s: %v", clusterMetadataRel, err))
+		} else {
+			if err := validateClusterMetadata(meta, expectedClusterID); err != nil {
+				report.addError(fmt.Sprintf("invalid cluster metadata %s: %v", clusterMetadataRel, err))
+			}
+			sourceProfileRel := filepath.ToSlash(filepath.Join(clusterRel, "source-profile.yaml"))
+			sourceProfilePath := filepath.Join(root, filepath.FromSlash(sourceProfileRel))
+			if info, err := os.Stat(sourceProfilePath); err == nil && !info.IsDir() {
+				if err := validateSourceProfileMetadataContent(sourceProfilePath, meta); err != nil {
+					report.addError(fmt.Sprintf("invalid source profile %s: %v", sourceProfileRel, err))
+				}
+			}
 		}
 	}
 	validateProjects(root, filepath.ToSlash(filepath.Join(clusterRel, "projects")), report)
@@ -233,6 +245,10 @@ func validateClusterMetadataContent(path, expectedClusterID string) error {
 	if err != nil {
 		return err
 	}
+	return validateClusterMetadata(meta, expectedClusterID)
+}
+
+func validateClusterMetadata(meta clusterMetadata, expectedClusterID string) error {
 	if meta.ClusterID != expectedClusterID {
 		return fmt.Errorf("cluster_id %q does not match directory id %q", meta.ClusterID, expectedClusterID)
 	}
@@ -246,6 +262,26 @@ func validateClusterMetadataContent(path, expectedClusterID string) error {
 		RetentionHoursRequired: meta.RetentionHoursRequired,
 		Owners:                 meta.Owners,
 	})
+}
+
+func validateSourceProfileMetadataContent(path string, cluster clusterMetadata) error {
+	meta, err := readSourceProfileMetadata(path)
+	if err != nil {
+		return err
+	}
+	if meta.ClusterID != cluster.ClusterID {
+		return fmt.Errorf("cluster_id %q does not match cluster metadata %q", meta.ClusterID, cluster.ClusterID)
+	}
+	if meta.Listener != cluster.Listener {
+		return fmt.Errorf("listener %q does not match cluster listener %q", meta.Listener, cluster.Listener)
+	}
+	if meta.Port != cluster.Port {
+		return fmt.Errorf("port %d does not match cluster port %d", meta.Port, cluster.Port)
+	}
+	if meta.SecretRef != cluster.SecretRef {
+		return fmt.Errorf("secret_ref %q does not match cluster secret_ref %q", meta.SecretRef, cluster.SecretRef)
+	}
+	return nil
 }
 
 func validateProjects(root, projectsRel string, report *ValidationReport) {
