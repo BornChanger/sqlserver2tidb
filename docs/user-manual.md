@@ -936,7 +936,7 @@ evidence/import-summary.json
 - 文件 checksum 已确认。
 - TiDB 集群容量已确认。
 
-当前 MVP 的 `worker-import` 只在 import approval 和 payload hash 匹配后，把 `plan/import-plan.yaml` 写成 planned 状态和 evidence。它不执行 TiDB Lightning 或 `IMPORT INTO`，也不连接 TiDB。
+当前 MVP 的 `worker-import` 只在 import approval 和 payload hash 匹配后，把 `plan/import-plan.yaml` 写成 planned 状态和 evidence。它会拒绝没有 jobs 或缺少必需字段的 import plan。它不执行 TiDB Lightning 或 `IMPORT INTO`，也不连接 TiDB。
 
 先计算 import payload hash：
 
@@ -1002,7 +1002,7 @@ clusters/<source_cluster_id>/state/cdc-checkpoint.yaml
 
 LLM 不参与 LSN 判断，也不参与 offset 决策。
 
-当前 MVP 的 `worker-cdc` 只在 cdc approval 和 payload hash 匹配后，把 `plan/cdc-plan.yaml` 写成 planned 状态和 evidence。它不启用 SQL Server CDC，不启动 Debezium，不读取 LSN，不判断 catch-up，也不向 TiDB 回放增量。
+当前 MVP 的 `worker-cdc` 只在 cdc approval 和 payload hash 匹配后，把 `plan/cdc-plan.yaml` 写成 planned 状态和 evidence。它会拒绝没有 tracked tables 或缺少必需字段的 CDC plan。它不启用 SQL Server CDC，不启动 Debezium，不读取 LSN，不判断 catch-up，也不向 TiDB 回放增量。
 
 先计算 cdc payload hash：
 

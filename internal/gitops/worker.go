@@ -185,6 +185,9 @@ func RunCDCWorker(root, sourceClusterID, projectID string) (DataWorkerResult, er
 	if err != nil {
 		return DataWorkerResult{}, err
 	}
+	if err := validateCDCPlanSummary(plan); err != nil {
+		return DataWorkerResult{}, err
+	}
 	result := DataWorkerResult{
 		SourceClusterID: sourceClusterID,
 		ProjectID:       projectID,
@@ -242,6 +245,9 @@ func runDataWorker(root, sourceClusterID, projectID, stage string) (DataWorkerRe
 	case "import":
 		jobs, err := readImportPlanJobs(filepath.Join(projectDir, "plan", "import-plan.yaml"))
 		if err != nil {
+			return DataWorkerResult{}, err
+		}
+		if err := validateImportPlanJobs(jobs); err != nil {
 			return DataWorkerResult{}, err
 		}
 		result.Items = len(jobs)
@@ -458,6 +464,27 @@ func readImportPlanJobs(path string) ([]dataImportJobState, error) {
 	return jobs, nil
 }
 
+func validateImportPlanJobs(jobs []dataImportJobState) error {
+	if len(jobs) == 0 {
+		return fmt.Errorf("import plan contains no jobs")
+	}
+	for _, job := range jobs {
+		if strings.TrimSpace(job.ID) == "" {
+			return fmt.Errorf("import job id is required")
+		}
+		if strings.TrimSpace(job.TargetObject) == "" {
+			return fmt.Errorf("import job %s target_object is required", job.ID)
+		}
+		if strings.TrimSpace(job.SourceURI) == "" {
+			return fmt.Errorf("import job %s source_uri is required", job.ID)
+		}
+		if strings.TrimSpace(job.DependsOnExportChunk) == "" {
+			return fmt.Errorf("import job %s depends_on_export_chunk is required", job.ID)
+		}
+	}
+	return nil
+}
+
 type dataExportChunkState struct {
 	ID            string
 	SourceObject  string
@@ -517,6 +544,24 @@ func readCDCPlanSummary(path string) (cdcPlanSummary, error) {
 		}
 	}
 	return plan, nil
+}
+
+func validateCDCPlanSummary(plan cdcPlanSummary) error {
+	if len(plan.Tables) == 0 {
+		return fmt.Errorf("cdc plan contains no tracked tables")
+	}
+	for _, table := range plan.Tables {
+		if strings.TrimSpace(table.SourceObject) == "" {
+			return fmt.Errorf("cdc tracked table source_object is required")
+		}
+		if strings.TrimSpace(table.TargetObject) == "" {
+			return fmt.Errorf("cdc tracked table %s target_object is required", table.SourceObject)
+		}
+		if table.ApplyBatchSize <= 0 {
+			return fmt.Errorf("cdc tracked table %s apply_batch_size must be positive", table.SourceObject)
+		}
+	}
+	return nil
 }
 
 func collectPayloadFiles(root, projectRel string, entries []string) ([]string, error) {

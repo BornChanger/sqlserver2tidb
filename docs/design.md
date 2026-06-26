@@ -74,7 +74,7 @@ The validation payload hash covers:
 
 The approval file is not included in the hash, avoiding self-referential approvals. If the approval is missing, pending, or has a hash mismatch, the worker exits without changing state or evidence.
 
-When approved, the worker writes:
+When approved and the CDC plan contains reviewed tracked tables, the worker writes:
 
 - `state/validation-status.yaml`
 - `evidence/validation-report.md`
@@ -102,9 +102,9 @@ The import payload hash covers:
 - `plan/export-plan.yaml`
 - `plan/import-plan.yaml`
 
-The export worker reads `plan/export-plan.yaml` and writes planned chunk state to `state/export-chunks.yaml`, plus `evidence/precheck.json`. The import worker reads `plan/import-plan.yaml` and writes planned import job state to `state/import-jobs.yaml`, plus `evidence/import-summary.json`.
+The export worker reads `plan/export-plan.yaml` and writes planned chunk state to `state/export-chunks.yaml`, plus `evidence/precheck.json`. The import worker reads `plan/import-plan.yaml` and writes planned import job state to `state/import-jobs.yaml`, plus `evidence/import-summary.json`. Export and import workers fail fast when the approved plan has no work items or required work-item fields are missing.
 
-These workers establish the approval and state write-back contract for future real executors. They intentionally mark items as `planned`; they do not mark chunks as exported or jobs as imported.
+These workers establish the approval and state write-back contract for future real executors. They intentionally mark reviewed items as `planned`; they do not mark chunks as exported or jobs as imported.
 
 ## Worker Executor Shell
 
@@ -150,7 +150,7 @@ When approved, the worker writes:
 - source-cluster-level `state/cdc-checkpoint.yaml`
 - project-local `evidence/cdc-catchup.json`
 
-It marks the CDC phase as `planned`; it does not assert that CDC is enabled, caught up, or safe for cutover.
+It marks the CDC phase as `planned`; it does not assert that CDC is enabled, caught up, or safe for cutover. It fails fast when the approved CDC plan has no tracked tables or required tracked-table fields are missing.
 
 ## Validation Plan Generation
 

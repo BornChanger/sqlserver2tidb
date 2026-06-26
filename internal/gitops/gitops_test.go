@@ -1497,6 +1497,22 @@ func TestRunImportWorkerWritesPlannedStateWhenApprovedHashMatches(t *testing.T) 
 	assertContains(t, evidence, `"payload_hash": "`+hash+`"`)
 }
 
+func TestRunImportWorkerRejectsEmptyImportPlan(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(import) error = %v", err)
+	}
+	writeStageApproval(t, root, "import", hash)
+
+	_, err = RunImportWorker(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a")
+	if err == nil {
+		t.Fatal("RunImportWorker() expected empty import plan error")
+	}
+	assertContains(t, err.Error(), "import plan contains no jobs")
+}
+
 func TestRunCDCWorkerRequiresApprovedCDCApproval(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
@@ -1564,6 +1580,22 @@ func TestRunCDCWorkerWritesPlannedStateWhenApprovedHashMatches(t *testing.T) {
 	assertContains(t, evidence, `"status": "planned"`)
 	assertContains(t, evidence, `"items": 1`)
 	assertContains(t, evidence, `"payload_hash": "`+hash+`"`)
+}
+
+func TestRunCDCWorkerRejectsEmptyCDCPlan(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "cdc")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(cdc) error = %v", err)
+	}
+	writeStageApproval(t, root, "cdc", hash)
+
+	_, err = RunCDCWorker(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a")
+	if err == nil {
+		t.Fatal("RunCDCWorker() expected empty cdc plan error")
+	}
+	assertContains(t, err.Error(), "cdc plan contains no tracked tables")
 }
 
 func TestPlanWorkerReconcileReportsReadyAndBlockedProjectStages(t *testing.T) {

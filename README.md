@@ -224,7 +224,7 @@ go run ./cmd/sqlserver2tidb worker-cdc \
   --project-id sales-db-to-tidb-prod-a
 ```
 
-These workers only convert approved plan files into planned state/evidence files. They do not export data, import data, start CDC, connect to databases, or write object storage.
+These workers only convert approved non-empty plan files into planned state/evidence files. They do not export data, import data, start CDC, connect to databases, or write object storage.
 
 Preview external executor commands for an approved stage:
 

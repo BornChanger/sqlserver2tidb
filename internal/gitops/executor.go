@@ -125,8 +125,8 @@ func prepareImportExecutorCommands(projectDir, binary, sourceClusterID, projectI
 	if err != nil {
 		return nil, err
 	}
-	if len(jobs) == 0 {
-		return nil, fmt.Errorf("import plan contains no jobs")
+	if err := validateImportPlanJobs(jobs); err != nil {
+		return nil, err
 	}
 	targetConnectionStringEnv := strings.TrimSpace(spec.TargetConnectionStringEnv)
 	commands := make([]WorkerExecutorCommand, 0, len(jobs))
@@ -157,8 +157,8 @@ func prepareCDCExecutorCommands(projectDir, binary, sourceClusterID, projectID s
 	if err != nil {
 		return nil, err
 	}
-	if len(plan.Tables) == 0 {
-		return nil, fmt.Errorf("cdc plan contains no tracked tables")
+	if err := validateCDCPlanSummary(plan); err != nil {
+		return nil, err
 	}
 	commands := make([]WorkerExecutorCommand, 0, len(plan.Tables))
 	for _, table := range plan.Tables {
