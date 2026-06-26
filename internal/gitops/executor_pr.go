@@ -1,0 +1,252 @@
+package gitops
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+type ExecutorEvidencePRDraft struct {
+	SourceClusterID string
+	ProjectID       string
+	Stage           string
+	Title           string
+	BranchName      string
+	BodyFile        string
+	Files           []string
+}
+
+type ExecutorEvidencePRCreateSpec struct {
+	SourceClusterID string
+	ProjectID       string
+	Stage           string
+	Title           string
+	BranchName      string
+	BodyFile        string
+	Files           []string
+	GitArgs         [][]string
+	GitHubArgs      []string
+	ShellCommands   []string
+}
+
+type executorEvidenceSummary struct {
+	Stage           string `json:"stage"`
+	Status          string `json:"status"`
+	ProjectID       string `json:"project_id"`
+	SourceClusterID string `json:"source_cluster_id"`
+	PayloadHash     string `json:"payload_hash"`
+}
+
+func GenerateExecutorEvidencePRDraft(root, sourceClusterID, projectID, stage string) (ExecutorEvidencePRDraft, error) {
+	ctx, err := loadExecutorEvidencePRContext(root, sourceClusterID, projectID, stage)
+	if err != nil {
+		return ExecutorEvidencePRDraft{}, err
+	}
+	draft := ExecutorEvidencePRDraft{
+		SourceClusterID: ctx.sourceClusterID,
+		ProjectID:       ctx.projectID,
+		Stage:           ctx.stage,
+		Title:           executorEvidencePRTitle(ctx.stage, ctx.projectID),
+		BranchName:      executorEvidencePRBranch(ctx.stage, ctx.projectID),
+		BodyFile:        executorEvidencePRBodyFile(ctx.sourceClusterID, ctx.projectID, ctx.stage),
+		Files: []string{
+			ctx.evidenceFile,
+			ctx.approvalFile,
+		},
+	}
+
+	body := renderExecutorEvidencePRDraftMarkdown(ctx, draft)
+	path := filepath.Join(root, filepath.FromSlash(draft.BodyFile))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return ExecutorEvidencePRDraft{}, fmt.Errorf("create executor evidence PR draft directory: %w", err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		return ExecutorEvidencePRDraft{}, fmt.Errorf("write executor evidence PR draft: %w", err)
+	}
+	return draft, nil
+}
+
+func PrepareExecutorEvidencePRCreate(root, sourceClusterID, projectID, stage string) (ExecutorEvidencePRCreateSpec, error) {
+	ctx, err := loadExecutorEvidencePRContext(root, sourceClusterID, projectID, stage)
+	if err != nil {
+		return ExecutorEvidencePRCreateSpec{}, err
+	}
+	title := executorEvidencePRTitle(ctx.stage, ctx.projectID)
+	branchName := executorEvidencePRBranch(ctx.stage, ctx.projectID)
+	bodyFile := executorEvidencePRBodyFile(ctx.sourceClusterID, ctx.projectID, ctx.stage)
+	bodyPath := filepath.Join(root, filepath.FromSlash(bodyFile))
+	if info, err := os.Stat(bodyPath); err != nil || info.IsDir() {
+		return ExecutorEvidencePRCreateSpec{}, fmt.Errorf("executor evidence PR draft %s does not exist; run generate-executor-evidence-pr-draft first", bodyFile)
+	}
+
+	files := []string{
+		ctx.evidenceFile,
+		bodyFile,
+	}
+	for _, file := range files {
+		path := filepath.Join(root, filepath.FromSlash(file))
+		if info, err := os.Stat(path); err != nil || info.IsDir() {
+			return ExecutorEvidencePRCreateSpec{}, fmt.Errorf("executor evidence PR file %s does not exist", file)
+		}
+	}
+
+	gitArgs := [][]string{
+		{"switch", "-c", branchName},
+		append([]string{"add"}, files...),
+		{"commit", "-m", title},
+		{"push", "-u", "origin", branchName},
+	}
+	ghArgs := []string{
+		"pr", "create",
+		"--base", "main",
+		"--head", branchName,
+		"--title", title,
+		"--body-file", bodyFile,
+	}
+	shellCommands := make([]string, 0, len(gitArgs)+1)
+	for _, args := range gitArgs {
+		shellCommands = append(shellCommands, renderShellCommand(append([]string{"git"}, args...)))
+	}
+	shellCommands = append(shellCommands, renderShellCommand(append([]string{"gh"}, ghArgs...)))
+
+	return ExecutorEvidencePRCreateSpec{
+		SourceClusterID: ctx.sourceClusterID,
+		ProjectID:       ctx.projectID,
+		Stage:           ctx.stage,
+		Title:           title,
+		BranchName:      branchName,
+		BodyFile:        bodyFile,
+		Files:           files,
+		GitArgs:         gitArgs,
+		GitHubArgs:      ghArgs,
+		ShellCommands:   shellCommands,
+	}, nil
+}
+
+type executorEvidencePRContext struct {
+	sourceClusterID string
+	projectID       string
+	stage           string
+	payloadHash     string
+	evidenceFile    string
+	approvalFile    string
+	evidence        executorEvidenceSummary
+}
+
+func loadExecutorEvidencePRContext(root, sourceClusterID, projectID, stage string) (executorEvidencePRContext, error) {
+	sourceClusterID = strings.TrimSpace(sourceClusterID)
+	projectID = strings.TrimSpace(projectID)
+	stage = strings.ToLower(strings.TrimSpace(stage))
+	if err := validateProjectAddress(root, sourceClusterID, projectID); err != nil {
+		return executorEvidencePRContext{}, err
+	}
+	if !isExecutorEvidenceStage(stage) {
+		return executorEvidencePRContext{}, fmt.Errorf("unsupported executor evidence PR stage %q", stage)
+	}
+
+	payloadHash, err := requireApprovedStage(root, sourceClusterID, projectID, stage)
+	if err != nil {
+		return executorEvidencePRContext{}, err
+	}
+	evidenceFile := executorEvidenceFile(sourceClusterID, projectID, stage)
+	data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(evidenceFile)))
+	if err != nil {
+		return executorEvidencePRContext{}, fmt.Errorf("read executor evidence %s: %w", evidenceFile, err)
+	}
+	var evidence executorEvidenceSummary
+	if err := json.Unmarshal(data, &evidence); err != nil {
+		return executorEvidencePRContext{}, fmt.Errorf("parse executor evidence %s: %w", evidenceFile, err)
+	}
+	if evidence.Stage != stage {
+		return executorEvidencePRContext{}, fmt.Errorf("executor evidence stage %q does not match requested stage %q", evidence.Stage, stage)
+	}
+	if evidence.SourceClusterID != sourceClusterID {
+		return executorEvidencePRContext{}, fmt.Errorf("executor evidence source_cluster_id %q does not match requested source cluster %q", evidence.SourceClusterID, sourceClusterID)
+	}
+	if evidence.ProjectID != projectID {
+		return executorEvidencePRContext{}, fmt.Errorf("executor evidence project_id %q does not match requested project %q", evidence.ProjectID, projectID)
+	}
+	if strings.TrimSpace(evidence.Status) == "" {
+		return executorEvidencePRContext{}, fmt.Errorf("executor evidence status is required")
+	}
+	if evidence.PayloadHash != payloadHash {
+		return executorEvidencePRContext{}, fmt.Errorf("executor evidence payload hash %s does not match current approved payload hash %s", evidence.PayloadHash, payloadHash)
+	}
+
+	return executorEvidencePRContext{
+		sourceClusterID: sourceClusterID,
+		projectID:       projectID,
+		stage:           stage,
+		payloadHash:     payloadHash,
+		evidenceFile:    evidenceFile,
+		approvalFile:    executorEvidenceApprovalFile(sourceClusterID, projectID, stage),
+		evidence:        evidence,
+	}, nil
+}
+
+func isExecutorEvidenceStage(stage string) bool {
+	switch stage {
+	case "ddl", "export", "import", "cdc", "validation":
+		return true
+	default:
+		return false
+	}
+}
+
+func executorEvidencePRTitle(stage, projectID string) string {
+	return fmt.Sprintf("[executor-evidence:%s] %s", stage, projectID)
+}
+
+func executorEvidencePRBranch(stage, projectID string) string {
+	return fmt.Sprintf("agent/%s/executor-%s-evidence", projectID, stage)
+}
+
+func executorEvidenceFile(sourceClusterID, projectID, stage string) string {
+	return filepath.ToSlash(filepath.Join("clusters", sourceClusterID, "projects", projectID, "evidence", "executor-"+stage+"-run.json"))
+}
+
+func executorEvidenceApprovalFile(sourceClusterID, projectID, stage string) string {
+	return filepath.ToSlash(filepath.Join("clusters", sourceClusterID, "projects", projectID, "approvals", stage+"-approval.yaml"))
+}
+
+func executorEvidencePRBodyFile(sourceClusterID, projectID, stage string) string {
+	return filepath.ToSlash(filepath.Join("clusters", sourceClusterID, "projects", projectID, "prs", "executor-"+stage+"-evidence-pr.md"))
+}
+
+func renderExecutorEvidencePRDraftMarkdown(ctx executorEvidencePRContext, draft ExecutorEvidencePRDraft) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# PR Draft: %s\n\n", draft.Title)
+	b.WriteString("## Summary\n\n")
+	fmt.Fprintf(&b, "- Source cluster: `%s`\n", ctx.sourceClusterID)
+	fmt.Fprintf(&b, "- Project: `%s`\n", ctx.projectID)
+	fmt.Fprintf(&b, "- Stage: `%s`\n", ctx.stage)
+	fmt.Fprintf(&b, "- Status: `%s`\n", ctx.evidence.Status)
+	fmt.Fprintf(&b, "- Payload hash: `%s`\n", ctx.payloadHash)
+	fmt.Fprintf(&b, "- Branch: `%s`\n", draft.BranchName)
+	b.WriteString("- Generated by: `sqlserver2tidb generate-executor-evidence-pr-draft`\n\n")
+
+	b.WriteString("## Files To Review\n\n")
+	for _, file := range draft.Files {
+		fmt.Fprintf(&b, "- `%s`\n", file)
+	}
+
+	b.WriteString("\n## Operator Checklist\n\n")
+	b.WriteString("- [ ] Confirm the executor evidence corresponds to the approved payload hash.\n")
+	b.WriteString("- [ ] Confirm command output does not include plaintext secrets.\n")
+	b.WriteString("- [ ] Confirm the executor status and exit codes match operational expectations.\n")
+	if ctx.stage == "ddl" {
+		b.WriteString("- [ ] Confirm the applied DDL matches the reviewed TiDB DDL files.\n")
+	}
+
+	b.WriteString("\n## Suggested GitHub Command\n\n")
+	b.WriteString("```bash\n")
+	fmt.Fprintf(&b, "gh pr create --base main --head %s --title %s --body-file %s\n",
+		draft.BranchName,
+		shellQuote(draft.Title),
+		draft.BodyFile,
+	)
+	b.WriteString("```\n")
+	return b.String()
+}

@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/BornChanger/sqlserver2tidb/internal/gitops"
 )
 
 func TestRunInitRepoCommand(t *testing.T) {
@@ -1714,6 +1716,89 @@ func TestRunWorkerReconcileExecuteNextCommand(t *testing.T) {
 	}
 	if string(prBodyAfterDryRun) != string(prBody) {
 		t.Fatal("create-worker-state-pr dry-run mutated the PR body")
+	}
+}
+
+func TestRunExecutorEvidencePRDraftAndCreateDryRunCommands(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createCLIProjectWithOneExportChunk(t, root, &stdout, &stderr)
+	stdout.Reset()
+	stderr.Reset()
+	if code := Run([]string{
+		"generate-schema-draft",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+	}, &stdout, &stderr); code != 0 {
+		t.Fatalf("generate-schema-draft code = %d, stderr = %s", code, stderr.String())
+	}
+	hash, err := gitops.ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "ddl")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(ddl) error = %v", err)
+	}
+	writeCLIStageApproval(t, root, "ddl", hash)
+	evidenceRel := filepath.Join("clusters", "prod-sqlserver-a", "projects", "sales-db-to-tidb-prod-a", "evidence", "executor-ddl-run.json")
+	if err := os.WriteFile(filepath.Join(root, evidenceRel), []byte(`{
+  "stage": "ddl",
+  "status": "succeeded",
+  "project_id": "sales-db-to-tidb-prod-a",
+  "source_cluster_id": "prod-sqlserver-a",
+  "payload_hash": "`+hash+`"
+}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"generate-executor-evidence-pr-draft",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "ddl",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("generate-executor-evidence-pr-draft code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "executor evidence PR draft generated") {
+		t.Fatalf("generate-executor-evidence-pr-draft stdout = %q, want generated message", output)
+	}
+	if !strings.Contains(output, "body file: clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/prs/executor-ddl-evidence-pr.md") {
+		t.Fatalf("generate-executor-evidence-pr-draft stdout = %q, want body file", output)
+	}
+	assertExists(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/prs/executor-ddl-evidence-pr.md")
+
+	stdout.Reset()
+	stderr.Reset()
+	code = Run([]string{
+		"create-executor-evidence-pr",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "ddl",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("create-executor-evidence-pr code = %d, stderr = %s", code, stderr.String())
+	}
+	output = stdout.String()
+	if !strings.Contains(output, "dry run: not changing git or calling GitHub") {
+		t.Fatalf("create-executor-evidence-pr stdout = %q, want dry-run message", output)
+	}
+	if !strings.Contains(output, "git switch -c agent/sales-db-to-tidb-prod-a/executor-ddl-evidence") {
+		t.Fatalf("create-executor-evidence-pr stdout = %q, want git switch command", output)
+	}
+	if !strings.Contains(output, "git commit -m '[executor-evidence:ddl] sales-db-to-tidb-prod-a'") {
+		t.Fatalf("create-executor-evidence-pr stdout = %q, want git commit command", output)
+	}
+	if !strings.Contains(output, "gh pr create --base main --head agent/sales-db-to-tidb-prod-a/executor-ddl-evidence") {
+		t.Fatalf("create-executor-evidence-pr stdout = %q, want gh pr command", output)
+	}
+	if !strings.Contains(output, filepath.ToSlash(evidenceRel)) {
+		t.Fatalf("create-executor-evidence-pr stdout = %q, want executor evidence file", output)
 	}
 }
 

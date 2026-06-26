@@ -46,6 +46,10 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runCreatePR(args[1:], stdout, stderr)
 	case "create-worker-state-pr":
 		return runCreateWorkerStatePR(args[1:], stdout, stderr)
+	case "generate-executor-evidence-pr-draft":
+		return runGenerateExecutorEvidencePRDraft(args[1:], stdout, stderr)
+	case "create-executor-evidence-pr":
+		return runCreateExecutorEvidencePR(args[1:], stdout, stderr)
 	case "compute-payload-hash":
 		return runComputePayloadHash(args[1:], stdout, stderr)
 	case "worker-export":
@@ -428,6 +432,82 @@ func runCreateWorkerStatePR(args []string, stdout, stderr io.Writer) int {
 	}
 	if err != nil {
 		fmt.Fprintf(stderr, "create worker state PR: gh pr create failed: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+func runGenerateExecutorEvidencePRDraft(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("generate-executor-evidence-pr-draft", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	root := fs.String("root", ".", "repository root")
+	sourceClusterID := fs.String("source-cluster-id", "", "upstream SQL Server cluster id")
+	projectID := fs.String("project-id", "", "migration project id")
+	stage := fs.String("stage", "", "executor evidence PR stage: ddl, export, import, cdc, validation")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	draft, err := gitops.GenerateExecutorEvidencePRDraft(*root, *sourceClusterID, *projectID, *stage)
+	if err != nil {
+		fmt.Fprintf(stderr, "generate executor evidence PR draft: %v\n", err)
+		return 1
+	}
+	fmt.Fprintln(stdout, "executor evidence PR draft generated")
+	fmt.Fprintf(stdout, "title: %s\n", draft.Title)
+	fmt.Fprintf(stdout, "branch: %s\n", draft.BranchName)
+	fmt.Fprintf(stdout, "body file: %s\n", draft.BodyFile)
+	fmt.Fprintf(stdout, "files to review: %d\n", len(draft.Files))
+	return 0
+}
+
+func runCreateExecutorEvidencePR(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("create-executor-evidence-pr", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	root := fs.String("root", ".", "repository root")
+	sourceClusterID := fs.String("source-cluster-id", "", "upstream SQL Server cluster id")
+	projectID := fs.String("project-id", "", "migration project id")
+	stage := fs.String("stage", "", "executor evidence PR stage: ddl, export, import, cdc, validation")
+	execute := fs.Bool("execute", false, "create git branch, commit executor evidence, and call gh pr create; default is dry-run")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	spec, err := gitops.PrepareExecutorEvidencePRCreate(*root, *sourceClusterID, *projectID, *stage)
+	if err != nil {
+		fmt.Fprintf(stderr, "create executor evidence PR: %v\n", err)
+		return 1
+	}
+	if !*execute {
+		fmt.Fprintln(stdout, "dry run: not changing git or calling GitHub")
+		for _, command := range spec.ShellCommands {
+			fmt.Fprintf(stdout, "command: %s\n", command)
+		}
+		fmt.Fprintf(stdout, "title: %s\n", spec.Title)
+		fmt.Fprintf(stdout, "branch: %s\n", spec.BranchName)
+		fmt.Fprintf(stdout, "body file: %s\n", spec.BodyFile)
+		fmt.Fprintf(stdout, "files to commit: %d\n", len(spec.Files))
+		return 0
+	}
+
+	for _, gitArgs := range spec.GitArgs {
+		cmd := exec.Command("git", gitArgs...)
+		cmd.Dir = *root
+		output, err := cmd.CombinedOutput()
+		if len(output) > 0 {
+			fmt.Fprint(stdout, string(output))
+		}
+		if err != nil {
+			fmt.Fprintf(stderr, "create executor evidence PR: git %s failed: %v\n", strings.Join(gitArgs, " "), err)
+			return 1
+		}
+	}
+	cmd := exec.Command("gh", spec.GitHubArgs...)
+	cmd.Dir = *root
+	output, err := cmd.CombinedOutput()
+	if len(output) > 0 {
+		fmt.Fprint(stdout, string(output))
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "create executor evidence PR: gh pr create failed: %v\n", err)
 		return 1
 	}
 	return 0
@@ -863,6 +943,8 @@ Usage:
   sqlserver2tidb generate-pr-draft --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage schema
   sqlserver2tidb create-pr --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage schema
   sqlserver2tidb create-worker-state-pr --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage export
+  sqlserver2tidb generate-executor-evidence-pr-draft --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage ddl
+  sqlserver2tidb create-executor-evidence-pr --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage ddl
   sqlserver2tidb compute-payload-hash --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage export
   sqlserver2tidb worker-export --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
   sqlserver2tidb worker-import --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a

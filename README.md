@@ -47,7 +47,7 @@ This MVP provides:
   ```
 
 - JSON Schema files for core metadata, including cluster, project, migration, export, import, CDC, and validation plan metadata.
-- Tests for repository initialization, validation, validation plan content checks, discovery planning and execution, compatibility analysis, schema draft generation, data movement, CDC, and validation plan generation, PR draft generation, GitHub PR create dry-runs, DDL/export/import/CDC/validation worker gates, external executor command dry-runs, executor binary dry-runs, DDL apply checks, local CSV export/import execution checks, row-count validation command checks, worker reconcile dry-runs and execute-next state PR drafts, worker state PR create dry-runs, upstream SQL Server cluster creation, and migration project creation.
+- Tests for repository initialization, validation, validation plan content checks, discovery planning and execution, compatibility analysis, schema draft generation, data movement, CDC, and validation plan generation, PR draft generation, GitHub PR create dry-runs, DDL/export/import/CDC/validation worker gates, external executor command dry-runs, executor binary dry-runs, DDL apply checks, local CSV export/import execution checks, row-count validation command checks, worker reconcile dry-runs and execute-next state PR drafts, worker state PR create dry-runs, executor evidence PR drafts and dry-runs, upstream SQL Server cluster creation, and migration project creation.
 
 This MVP connects to SQL Server for read-only catalog discovery and, when `sqlserver2tidb-executor export --execute` is explicitly used, for a minimal local CSV export path. It connects to TiDB when `sqlserver2tidb-executor apply-ddl --execute` is explicitly used with a reviewed DDL file, or when `sqlserver2tidb-executor import --execute` is explicitly used with a local `file://` CSV source and a TiDB/MySQL connection string environment variable; CSV rows are streamed and committed in batches. It can also connect to both SQL Server and TiDB for an explicit `sqlserver2tidb-executor validate-count --execute` row-count comparison. It does **not** execute object storage export/import, TiDB Lightning or `IMPORT INTO`, CDC streaming/apply, cutover, cleanup, checksum validation, sampled hash validation, or business SQL validation. The included `sqlserver2tidb-executor cdc --execute` path intentionally returns an explicit not-implemented error.
 
@@ -285,6 +285,24 @@ go run ./cmd/sqlserver2tidb create-worker-state-pr \
 ```
 
 This is a dry-run by default. It requires the state PR draft and state/evidence/lease files to exist, includes `evidence/executor-<stage>-run.json` when present, then prints deterministic `git switch`, `git add`, `git commit`, `git push`, and `gh pr create` commands. Dry-run reports whether the PR body needs a file-list refresh; `--execute` refreshes that body before commit and then runs the commands locally.
+
+Generate and prepare a PR for executor-only evidence such as DDL apply evidence:
+
+```bash
+go run ./cmd/sqlserver2tidb generate-executor-evidence-pr-draft \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --stage ddl
+
+go run ./cmd/sqlserver2tidb create-executor-evidence-pr \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --stage ddl
+```
+
+`generate-executor-evidence-pr-draft` validates the existing `evidence/executor-<stage>-run.json` against the current approved payload hash, then writes a Markdown PR body under `prs/`. `create-executor-evidence-pr` is a dry-run by default and prints deterministic `git switch`, `git add`, `git commit`, `git push`, and `gh pr create` commands. Add `--execute` only when the local checkout should create the branch, commit the evidence/body, push it, and open a GitHub PR.
 
 Generate a project-scoped PR draft for schema review:
 

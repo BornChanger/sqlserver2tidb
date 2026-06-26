@@ -977,6 +977,119 @@ func TestPrepareGitHubPRCreateRequiresGeneratedDraft(t *testing.T) {
 	assertContains(t, err.Error(), "run generate-pr-draft first")
 }
 
+func TestGenerateExecutorEvidencePRDraftWritesDDLBody(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateSchemaDraftOnly(root))
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "ddl")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(ddl) error = %v", err)
+	}
+	writeStageApproval(t, root, "ddl", hash)
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-ddl-run.json", `{
+  "stage": "ddl",
+  "status": "succeeded",
+  "project_id": "sales-db-to-tidb-prod-a",
+  "source_cluster_id": "prod-sqlserver-a",
+  "payload_hash": "`+hash+`",
+  "commands": [
+    {
+      "id": "schema/tidb-ddl/dbo.orders.sql",
+      "shell_command": "sqlserver2tidb-executor apply-ddl --execute",
+      "exit_code": 0,
+      "output": "applied\n"
+    }
+  ]
+}
+`)
+
+	draft, err := GenerateExecutorEvidencePRDraft(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "ddl")
+	if err != nil {
+		t.Fatalf("GenerateExecutorEvidencePRDraft() error = %v", err)
+	}
+	if draft.Title != "[executor-evidence:ddl] sales-db-to-tidb-prod-a" {
+		t.Fatalf("Title = %q, want executor evidence title", draft.Title)
+	}
+	if draft.BranchName != "agent/sales-db-to-tidb-prod-a/executor-ddl-evidence" {
+		t.Fatalf("BranchName = %q, want executor evidence branch", draft.BranchName)
+	}
+	if draft.BodyFile != "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/prs/executor-ddl-evidence-pr.md" {
+		t.Fatalf("BodyFile = %q, want executor evidence body", draft.BodyFile)
+	}
+	assertStringSliceContains(t, draft.Files, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-ddl-run.json")
+	assertStringSliceContains(t, draft.Files, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/approvals/ddl-approval.yaml")
+	body := readFile(t, root, draft.BodyFile)
+	assertContains(t, body, "Stage: `ddl`")
+	assertContains(t, body, "Status: `succeeded`")
+	assertContains(t, body, "Payload hash: `"+hash+"`")
+	assertContains(t, body, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-ddl-run.json")
+	assertContains(t, body, "gh pr create --base main --head agent/sales-db-to-tidb-prod-a/executor-ddl-evidence")
+}
+
+func TestPrepareExecutorEvidencePRCreateBuildsGitAndGitHubCommands(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateSchemaDraftOnly(root))
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "ddl")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(ddl) error = %v", err)
+	}
+	writeStageApproval(t, root, "ddl", hash)
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-ddl-run.json", `{
+  "stage": "ddl",
+  "status": "succeeded",
+  "project_id": "sales-db-to-tidb-prod-a",
+  "source_cluster_id": "prod-sqlserver-a",
+  "payload_hash": "`+hash+`"
+}
+`)
+	if _, err := GenerateExecutorEvidencePRDraft(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "ddl"); err != nil {
+		t.Fatalf("GenerateExecutorEvidencePRDraft() error = %v", err)
+	}
+
+	spec, err := PrepareExecutorEvidencePRCreate(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "ddl")
+	if err != nil {
+		t.Fatalf("PrepareExecutorEvidencePRCreate() error = %v", err)
+	}
+	wantFiles := []string{
+		"clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-ddl-run.json",
+		"clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/prs/executor-ddl-evidence-pr.md",
+	}
+	if !reflect.DeepEqual(spec.Files, wantFiles) {
+		t.Fatalf("Files = %#v, want %#v", spec.Files, wantFiles)
+	}
+	assertContains(t, spec.ShellCommands[0], "git switch -c agent/sales-db-to-tidb-prod-a/executor-ddl-evidence")
+	assertContains(t, spec.ShellCommands[1], "git add clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-ddl-run.json")
+	assertContains(t, spec.ShellCommands[2], "git commit -m '[executor-evidence:ddl] sales-db-to-tidb-prod-a'")
+	assertContains(t, spec.ShellCommands[3], "git push -u origin agent/sales-db-to-tidb-prod-a/executor-ddl-evidence")
+	assertContains(t, spec.ShellCommands[4], "gh pr create --base main --head agent/sales-db-to-tidb-prod-a/executor-ddl-evidence")
+}
+
+func TestGenerateExecutorEvidencePRDraftRejectsStalePayloadHash(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateSchemaDraftOnly(root))
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "ddl")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(ddl) error = %v", err)
+	}
+	writeStageApproval(t, root, "ddl", hash)
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-ddl-run.json", `{
+  "stage": "ddl",
+  "status": "succeeded",
+  "project_id": "sales-db-to-tidb-prod-a",
+  "source_cluster_id": "prod-sqlserver-a",
+  "payload_hash": "stale"
+}
+`)
+
+	_, err = GenerateExecutorEvidencePRDraft(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "ddl")
+	if err == nil {
+		t.Fatal("GenerateExecutorEvidencePRDraft() expected stale payload error")
+	}
+	assertContains(t, err.Error(), "executor evidence payload hash stale does not match current approved payload hash")
+}
+
 func TestGenerateDataMovementPlansWritesExportAndImportPlans(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, `{
