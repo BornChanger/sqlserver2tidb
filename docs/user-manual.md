@@ -32,13 +32,14 @@ LLM 只生成解释、候选方案和文档，不直接执行迁移
 - 通过环境变量连接串执行只读 SQL Server catalog discovery。
 - 基于 `inventory/inventory.json` 生成规则化兼容性分析报告。
 - 基于 SQL Server inventory 和 project metadata 生成项目级 TiDB DDL 草稿。
+- 基于 stage 生成本地 PR draft 文件和建议的 `gh pr create` 命令。
 - 创建上游 SQL Server 集群目录。
 - 在上游 SQL Server 集群下创建迁移项目目录。
 - 生成基础 YAML/JSON/Markdown 状态文件。
 - 生成核心 JSON Schema 文件。
 - 单元测试和 CLI smoke test。
 
-当前 CLI 只有在执行 `discover-sqlserver --connection-string-env ...` 时会连接 SQL Server，并且只读取 catalog metadata。它不会连接 TiDB，也不会执行生成的 DDL、真实导出、导入、CDC 或切流。`discover-sqlserver --dry-run` 只输出计划，不打开数据库连接，也不写 inventory 文件。`analyze-compatibility` 和 `generate-schema-draft` 只读取并写回 GitHub metadata 文件。
+当前 CLI 只有在执行 `discover-sqlserver --connection-string-env ...` 时会连接 SQL Server，并且只读取 catalog metadata。它不会连接 TiDB，也不会执行生成的 DDL、真实导出、导入、CDC 或切流。`discover-sqlserver --dry-run` 只输出计划，不打开数据库连接，也不写 inventory 文件。`analyze-compatibility`、`generate-schema-draft` 和 `generate-pr-draft` 只读取并写回 GitHub metadata 文件。
 
 ### 2.2 终极目标
 
@@ -102,6 +103,15 @@ clusters/<source_cluster_id>/projects/<project_id>/
 ### 3.3 GitHub PR
 
 PR 是审批边界。Agent 或 CLI 可以生成文件，但这些文件必须进入 PR，由 DBA、应用 owner、SRE 等角色 review 后，worker 才能执行对应步骤。
+
+当前 MVP 可以生成本地 PR draft 文件，不会直接调用 GitHub API。生成的 draft 保存到：
+
+```text
+clusters/<source_cluster_id>/prs/<stage>-pr.md
+clusters/<source_cluster_id>/projects/<project_id>/prs/<stage>-pr.md
+```
+
+这些文件包含标题、建议分支名、review 文件清单、审批文件、reviewer 角色、operator checklist 和建议的 `gh pr create` 命令。
 
 ### 3.4 Worker
 
@@ -256,6 +266,7 @@ clusters/prod-sqlserver-a/
   state/
     cdc-checkpoint.yaml
     worker-lease.yaml
+  prs/
   projects/
 ```
 
@@ -336,6 +347,7 @@ clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/
     import-approval.yaml
     cdc-approval.yaml
     cutover-approval.yaml
+  prs/
 ```
 
 `project.yaml` 示例：
@@ -398,6 +410,54 @@ worker/<project_id>/<stage>
 - Import：至少 DBA + SRE。
 - CDC：至少 DBA + SRE。
 - Cutover：至少 DBA + SRE + App Owner，且双人审批。
+
+### 9.4 生成 PR draft
+
+项目级 PR draft 示例：
+
+```bash
+bin/sqlserver2tidb generate-pr-draft \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --stage schema
+```
+
+输出文件：
+
+```text
+clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/prs/schema-pr.md
+```
+
+集群级 discovery PR draft 示例：
+
+```bash
+bin/sqlserver2tidb generate-pr-draft \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --stage discovery
+```
+
+输出文件：
+
+```text
+clusters/prod-sqlserver-a/prs/discovery-pr.md
+```
+
+支持的 stage：
+
+| Stage | Scope | 典型用途 |
+| --- | --- | --- |
+| `discovery` | source cluster | review inventory 和兼容性报告 |
+| `schema` | project | review TiDB DDL 草稿和 schema diff |
+| `plan` | project | review 迁移计划和阶段策略 |
+| `export` | project | review 全量导出计划和 approval |
+| `import` | project | review 全量导入计划和 approval |
+| `cdc` | project | review CDC 计划和 approval |
+| `validation` | project | review 数据校验计划和报告 |
+| `cutover` | project | review 切流 runbook、approval 和 evidence |
+
+注意：该命令只生成 PR 正文草稿和建议命令，不会创建 GitHub PR，不会 merge PR，也不会检查 GitHub approval 状态。
 
 ## 10. 终极迁移流程
 
@@ -991,6 +1051,29 @@ bin/sqlserver2tidb generate-schema-draft \
 
 该命令读取源集群 inventory 和项目 metadata，写回项目目录下的 `schema/tidb-ddl/`、`schema/conversion-report.md` 和 `schema/schema-diff.json`。它只生成草稿，不连接 TiDB，不执行 DDL。
 
+### 16.8 generate-pr-draft
+
+项目级 stage：
+
+```bash
+bin/sqlserver2tidb generate-pr-draft \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --stage schema
+```
+
+集群级 stage：
+
+```bash
+bin/sqlserver2tidb generate-pr-draft \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --stage discovery
+```
+
+该命令生成本地 PR body draft，并在 stdout 输出 PR 标题、建议分支名、body file 路径和 review 文件数量。它不会调用 GitHub API。
+
 ## 17. 推荐落地顺序
 
 1. 使用当前 CLI 初始化 repo。
@@ -1002,6 +1085,7 @@ bin/sqlserver2tidb generate-schema-draft \
 7. 通过 PR review metadata 文件。
 8. 对已有 inventory 执行 `analyze-compatibility`，生成规则化兼容性报告。
 9. 执行 `generate-schema-draft`，生成 DDL 草稿、转换报告和 schema diff，并通过 Schema PR review。
-10. 接入 validation-only worker。
-11. 再接入 export/import/CDC。
-12. 最后接入 cutover orchestration。
+10. 对 discovery/schema/plan 等阶段执行 `generate-pr-draft`，生成 PR body 草稿和建议命令。
+11. 接入 validation-only worker。
+12. 再接入 export/import/CDC。
+13. 最后接入 cutover orchestration。

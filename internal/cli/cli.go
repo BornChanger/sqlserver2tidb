@@ -31,6 +31,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runAnalyzeCompatibility(args[1:], stdout, stderr)
 	case "generate-schema-draft":
 		return runGenerateSchemaDraft(args[1:], stdout, stderr)
+	case "generate-pr-draft":
+		return runGeneratePRDraft(args[1:], stdout, stderr)
 	case "create-cluster":
 		return runCreateCluster(args[1:], stdout, stderr)
 	case "create-project":
@@ -198,6 +200,29 @@ func runGenerateSchemaDraft(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+func runGeneratePRDraft(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("generate-pr-draft", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	root := fs.String("root", ".", "repository root")
+	sourceClusterID := fs.String("source-cluster-id", "", "upstream SQL Server cluster id")
+	projectID := fs.String("project-id", "", "migration project id; omit for cluster-level stages such as discovery")
+	stage := fs.String("stage", "", "PR stage: discovery, schema, plan, export, import, cdc, validation, cutover")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	result, err := gitops.GeneratePRDraft(*root, *sourceClusterID, *projectID, *stage)
+	if err != nil {
+		fmt.Fprintf(stderr, "generate PR draft: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "PR draft generated for %s\n", result.Stage)
+	fmt.Fprintf(stdout, "title: %s\n", result.Title)
+	fmt.Fprintf(stdout, "branch: %s\n", result.BranchName)
+	fmt.Fprintf(stdout, "body file: %s\n", result.BodyFile)
+	fmt.Fprintf(stdout, "files to review: %d\n", len(result.Files))
+	return 0
+}
+
 func runCreateCluster(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("create-cluster", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -294,6 +319,7 @@ Usage:
   sqlserver2tidb discover-sqlserver --root . --source-cluster-id prod-sqlserver-a --connection-string-env SQLSERVER2TIDB_SQLSERVER_DSN
   sqlserver2tidb analyze-compatibility --root . --source-cluster-id prod-sqlserver-a
   sqlserver2tidb generate-schema-draft --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
+  sqlserver2tidb generate-pr-draft --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage schema
   sqlserver2tidb create-cluster --cluster-id prod-sqlserver-a --display-name "prod SQL Server A" --listener sqlserver-a.internal --secret-ref vault://...
   sqlserver2tidb create-project --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --source-database sales --source-schema dbo --target-name tidb-prod-a --target-database app --target-secret-ref vault://...
 `)

@@ -331,6 +331,61 @@ func TestRunGenerateSchemaDraftCommand(t *testing.T) {
 	assertExists(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/schema/schema-diff.json")
 }
 
+func TestRunGeneratePRDraftCommand(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	if code := Run([]string{"init-repo", "--root", root}, &stdout, &stderr); code != 0 {
+		t.Fatalf("init-repo code = %d, stderr = %s", code, stderr.String())
+	}
+	if code := Run([]string{
+		"create-cluster",
+		"--root", root,
+		"--cluster-id", "prod-sqlserver-a",
+		"--display-name", "prod SQL Server A",
+		"--listener", "sqlserver-a.internal",
+		"--secret-ref", "vault://migration/prod-sqlserver-a/readonly",
+		"--owner", "dba-team",
+	}, &stdout, &stderr); code != 0 {
+		t.Fatalf("create-cluster code = %d, stderr = %s", code, stderr.String())
+	}
+	if code := Run([]string{
+		"create-project",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--display-name", "sales DB to TiDB prod A",
+		"--source-database", "sales",
+		"--source-schema", "dbo",
+		"--target-name", "tidb-prod-a",
+		"--target-database", "app",
+		"--target-secret-ref", "vault://migration/tidb-prod-a/migrate-user",
+		"--owner", "dba-team",
+	}, &stdout, &stderr); code != 0 {
+		t.Fatalf("create-project code = %d, stderr = %s", code, stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"generate-pr-draft",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "schema",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("generate-pr-draft code = %d, stderr = %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "PR draft generated for schema") {
+		t.Fatalf("generate-pr-draft stdout = %q, want generated message", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "agent/sales-db-to-tidb-prod-a/schema") {
+		t.Fatalf("generate-pr-draft stdout = %q, want branch name", stdout.String())
+	}
+	assertExists(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/prs/schema-pr.md")
+}
+
 func TestRunUnknownCommandReturnsUsageError(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 

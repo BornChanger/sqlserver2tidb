@@ -604,6 +604,109 @@ func TestGenerateSchemaDraftRequiresExistingProject(t *testing.T) {
 	assertContains(t, err.Error(), `project "missing-project" does not exist under source cluster "prod-sqlserver-a"`)
 }
 
+func TestGeneratePRDraftWritesSchemaProjectPRBody(t *testing.T) {
+	root := t.TempDir()
+	must(t, InitRepo(root))
+	must(t, CreateCluster(root, ClusterSpec{
+		ClusterID:              "prod-sqlserver-a",
+		DisplayName:            "prod SQL Server A",
+		Listener:               "sqlserver-a.internal",
+		Port:                   1433,
+		SecretRef:              "vault://migration/prod-sqlserver-a/readonly",
+		CDCMode:                "sqlserver-cdc",
+		RetentionHoursRequired: 168,
+		Owners:                 []string{"dba-team"},
+	}))
+	must(t, CreateProject(root, ProjectSpec{
+		SourceClusterID: "prod-sqlserver-a",
+		ProjectID:       "sales-db-to-tidb-prod-a",
+		DisplayName:     "sales DB to TiDB prod A",
+		SourceDatabase:  "sales",
+		SourceSchemas:   []string{"dbo"},
+		TargetName:      "tidb-prod-a",
+		TargetDatabase:  "app",
+		TargetSecretRef: "vault://migration/tidb-prod-a/migrate-user",
+		Mode:            "short-downtime",
+		Owners:          []string{"dba-team"},
+	}))
+
+	result, err := GeneratePRDraft(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "schema")
+	if err != nil {
+		t.Fatalf("GeneratePRDraft() error = %v", err)
+	}
+	if result.Title != "[schema] sales-db-to-tidb-prod-a" {
+		t.Fatalf("Title = %q, want schema project title", result.Title)
+	}
+	if result.BranchName != "agent/sales-db-to-tidb-prod-a/schema" {
+		t.Fatalf("BranchName = %q, want project schema branch", result.BranchName)
+	}
+	assertStringSliceContains(t, result.Files, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/schema/tidb-ddl/")
+	assertStringSliceContains(t, result.Files, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/approvals/ddl-approval.yaml")
+
+	body := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/prs/schema-pr.md")
+	assertContains(t, body, "# PR Draft: [schema] sales-db-to-tidb-prod-a")
+	assertContains(t, body, "Source cluster: `prod-sqlserver-a`")
+	assertContains(t, body, "Project: `sales-db-to-tidb-prod-a`")
+	assertContains(t, body, "Branch: `agent/sales-db-to-tidb-prod-a/schema`")
+	assertContains(t, body, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/schema/schema-diff.json")
+	assertContains(t, body, "gh pr create --base main --head agent/sales-db-to-tidb-prod-a/schema")
+	assertContains(t, body, "Confirm no plaintext secrets are included.")
+}
+
+func TestGeneratePRDraftWritesDiscoveryClusterPRBody(t *testing.T) {
+	root := t.TempDir()
+	must(t, InitRepo(root))
+	must(t, CreateCluster(root, ClusterSpec{
+		ClusterID:              "prod-sqlserver-a",
+		DisplayName:            "prod SQL Server A",
+		Listener:               "sqlserver-a.internal",
+		Port:                   1433,
+		SecretRef:              "vault://migration/prod-sqlserver-a/readonly",
+		CDCMode:                "sqlserver-cdc",
+		RetentionHoursRequired: 168,
+		Owners:                 []string{"dba-team"},
+	}))
+
+	result, err := GeneratePRDraft(root, "prod-sqlserver-a", "", "discovery")
+	if err != nil {
+		t.Fatalf("GeneratePRDraft() error = %v", err)
+	}
+	if result.Title != "[discovery] prod-sqlserver-a" {
+		t.Fatalf("Title = %q, want discovery cluster title", result.Title)
+	}
+	if result.BranchName != "agent/prod-sqlserver-a/discovery" {
+		t.Fatalf("BranchName = %q, want cluster discovery branch", result.BranchName)
+	}
+	assertStringSliceContains(t, result.Files, "clusters/prod-sqlserver-a/inventory/inventory.json")
+
+	body := readFile(t, root, "clusters/prod-sqlserver-a/prs/discovery-pr.md")
+	assertContains(t, body, "# PR Draft: [discovery] prod-sqlserver-a")
+	assertContains(t, body, "Project: cluster-level")
+	assertContains(t, body, "clusters/prod-sqlserver-a/inventory/compatibility-report.md")
+	assertContains(t, body, "gh pr create --base main --head agent/prod-sqlserver-a/discovery")
+}
+
+func TestGeneratePRDraftRejectsProjectStageWithoutProject(t *testing.T) {
+	root := t.TempDir()
+	must(t, InitRepo(root))
+	must(t, CreateCluster(root, ClusterSpec{
+		ClusterID:              "prod-sqlserver-a",
+		DisplayName:            "prod SQL Server A",
+		Listener:               "sqlserver-a.internal",
+		Port:                   1433,
+		SecretRef:              "vault://migration/prod-sqlserver-a/readonly",
+		CDCMode:                "sqlserver-cdc",
+		RetentionHoursRequired: 168,
+		Owners:                 []string{"dba-team"},
+	}))
+
+	_, err := GeneratePRDraft(root, "prod-sqlserver-a", "", "schema")
+	if err == nil {
+		t.Fatal("GeneratePRDraft() expected error for missing project")
+	}
+	assertContains(t, err.Error(), "project id is required for schema PR draft")
+}
+
 func assertFile(t *testing.T, root, rel string) {
 	t.Helper()
 	info, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel)))

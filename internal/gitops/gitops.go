@@ -192,6 +192,7 @@ func CreateCluster(root string, spec ClusterSpec) error {
 		filepath.Join(base, "inventory", "source-ddl"),
 		filepath.Join(base, "state"),
 		filepath.Join(base, "projects"),
+		filepath.Join(base, "prs"),
 	); err != nil {
 		return err
 	}
@@ -279,6 +280,7 @@ func CreateProject(root string, spec ProjectSpec) error {
 		filepath.Join(base, "state"),
 		filepath.Join(base, "evidence"),
 		filepath.Join(base, "approvals"),
+		filepath.Join(base, "prs"),
 	); err != nil {
 		return err
 	}

@@ -15,6 +15,7 @@ This MVP provides:
 - SQL Server catalog discovery using a connection string supplied through an environment variable.
 - Rule-based SQL Server compatibility analysis from `inventory/inventory.json`.
 - Project-scoped TiDB schema draft generation from SQL Server inventory and project metadata.
+- PR draft generation for review stages without calling the GitHub API.
 - Source-cluster-first metadata organization:
 
   ```text
@@ -24,6 +25,7 @@ This MVP provides:
     state/
       cdc-checkpoint.yaml
       worker-lease.yaml
+    prs/
     projects/<project_id>/
       project.yaml
       schema/
@@ -31,10 +33,11 @@ This MVP provides:
       state/
       evidence/
       approvals/
+      prs/
   ```
 
 - JSON Schema files for core metadata.
-- Tests for repository initialization, validation, discovery planning and execution, compatibility analysis, schema draft generation, upstream SQL Server cluster creation, and migration project creation.
+- Tests for repository initialization, validation, discovery planning and execution, compatibility analysis, schema draft generation, PR draft generation, upstream SQL Server cluster creation, and migration project creation.
 
 This MVP connects to SQL Server only for read-only catalog discovery when a connection string is supplied through an environment variable. It does **not** connect to TiDB or execute generated DDL, export, import, CDC, cutover, cleanup, or other migration actions yet.
 
@@ -136,6 +139,18 @@ go run ./cmd/sqlserver2tidb generate-schema-draft \
 
 This writes `schema/tidb-ddl/`, `schema/conversion-report.md`, and `schema/schema-diff.json` under the project. Manual-review mappings are marked in both the DDL comments and schema diff.
 
+Generate a project-scoped PR draft for schema review:
+
+```bash
+go run ./cmd/sqlserver2tidb generate-pr-draft \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --stage schema
+```
+
+This writes a Markdown PR body under `prs/` and prints the suggested `gh pr create` command. It does not call the GitHub API.
+
 ## Documentation
 
 - [User Manual](docs/user-manual.md): end-to-end operator guide for the target SQL Server to TiDB migration agent workflow.
@@ -153,5 +168,5 @@ This writes `schema/tidb-ddl/`, `schema/conversion-report.md`, and `schema/schem
 
 ## Next Milestones
 
-- Add PR generation helpers.
+- Add GitHub PR creation wrappers around generated PR drafts.
 - Add deterministic worker execution for approved validation steps.

@@ -15,6 +15,25 @@ The migration control plane is GitHub-based. This repository stores low-frequenc
 
 GitHub PRs are used for review and approval.
 
+## PR Draft Generation
+
+The current PR helper is deterministic and local-only. It writes Markdown PR bodies into the metadata tree:
+
+- Cluster-level drafts: `clusters/<source_cluster_id>/prs/<stage>-pr.md`.
+- Project-level drafts: `clusters/<source_cluster_id>/projects/<project_id>/prs/<stage>-pr.md`.
+
+Supported stages are `discovery`, `schema`, `plan`, `export`, `import`, `cdc`, `validation`, and `cutover`. The helper records:
+
+- PR title.
+- Suggested branch name.
+- Files to review.
+- Required reviewer roles.
+- Approval files when the stage has one.
+- Operator checklist.
+- Suggested `gh pr create` command.
+
+It does not call the GitHub API, open a PR, merge a PR, or infer approval state.
+
 ## Metadata Boundary
 
 Metadata is organized by upstream SQL Server cluster:
@@ -56,7 +75,7 @@ LLMs may generate:
 - validation report narratives
 - incident diagnosis suggestions
 
-LLMs are not required for deterministic repository commands such as `validate-repo`, `discover-sqlserver --dry-run`, `analyze-compatibility`, or `generate-schema-draft`. For schema work, the LLM may read `conversion-report.md` and `schema-diff.json` to propose candidate rewrites, but the candidate must be committed as reviewed files before any worker can use it.
+LLMs are not required for deterministic repository commands such as `validate-repo`, `discover-sqlserver --dry-run`, `analyze-compatibility`, `generate-schema-draft`, or `generate-pr-draft`. For schema work, the LLM may read `conversion-report.md` and `schema-diff.json` to propose candidate rewrites, but the candidate must be committed as reviewed files before any worker can use it. For PR work, the LLM may refine prose, but file lists, approval files, and stage gates must remain deterministic.
 
 LLMs must not decide:
 
