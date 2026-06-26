@@ -356,11 +356,11 @@ func validateImportPlanExportDependencies(exportPlanPath, importPlanPath string)
 	if err != nil {
 		return err
 	}
-	exportChunkIDs := make(map[string]struct{}, len(chunks))
+	exportChunkOutputURIs := make(map[string]string, len(chunks))
 	for _, chunk := range chunks {
 		chunkID := strings.TrimSpace(chunk.ID)
 		if chunkID != "" {
-			exportChunkIDs[chunkID] = struct{}{}
+			exportChunkOutputURIs[chunkID] = strings.TrimSpace(chunk.OutputURI)
 		}
 	}
 	for _, job := range jobs {
@@ -368,8 +368,13 @@ func validateImportPlanExportDependencies(exportPlanPath, importPlanPath string)
 		if dependency == "" {
 			continue
 		}
-		if _, ok := exportChunkIDs[dependency]; !ok {
+		exportOutputURI, ok := exportChunkOutputURIs[dependency]
+		if !ok {
 			return fmt.Errorf("import job %s depends_on_export_chunk %s does not exist in export plan", job.ID, dependency)
+		}
+		sourceURI := strings.TrimSpace(job.SourceURI)
+		if sourceURI != "" && exportOutputURI != "" && sourceURI != exportOutputURI {
+			return fmt.Errorf("import job %s source_uri %s does not match export chunk %s output_uri %s", job.ID, sourceURI, dependency, exportOutputURI)
 		}
 	}
 	return nil
