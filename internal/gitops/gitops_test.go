@@ -1272,6 +1272,38 @@ func TestGenerateExecutorEvidencePRDraftRejectsSucceededStatusWithFailedCommand(
 	assertContains(t, err.Error(), "executor evidence status succeeded conflicts with command schema/tidb-ddl/dbo.orders.sql exit_code 17")
 }
 
+func TestGenerateExecutorEvidencePRDraftRejectsUnknownExecutorStatus(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateSchemaDraftOnly(root))
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "ddl")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(ddl) error = %v", err)
+	}
+	writeStageApproval(t, root, "ddl", hash)
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-ddl-run.json", `{
+  "stage": "ddl",
+  "status": "success",
+  "project_id": "sales-db-to-tidb-prod-a",
+  "source_cluster_id": "prod-sqlserver-a",
+  "payload_hash": "`+hash+`",
+  "commands": [
+    {
+      "id": "schema/tidb-ddl/dbo.orders.sql",
+      "shell_command": "sqlserver2tidb-executor apply-ddl --execute",
+      "exit_code": 0
+    }
+  ]
+}
+`)
+
+	_, err = GenerateExecutorEvidencePRDraft(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "ddl")
+	if err == nil {
+		t.Fatal("GenerateExecutorEvidencePRDraft() expected unsupported status error")
+	}
+	assertContains(t, err.Error(), `executor evidence status "success" is unsupported`)
+}
+
 func TestPrepareExecutorEvidencePRCreateBuildsGitAndGitHubCommands(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())

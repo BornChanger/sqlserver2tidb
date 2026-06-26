@@ -175,13 +175,17 @@ func loadExecutorEvidencePRContext(root, sourceClusterID, projectID, stage strin
 	if evidence.ProjectID != projectID {
 		return executorEvidencePRContext{}, fmt.Errorf("executor evidence project_id %q does not match requested project %q", evidence.ProjectID, projectID)
 	}
-	if strings.TrimSpace(evidence.Status) == "" {
+	status := strings.TrimSpace(evidence.Status)
+	if status == "" {
 		return executorEvidencePRContext{}, fmt.Errorf("executor evidence status is required")
+	}
+	if !isExecutorEvidenceRunStatus(status) {
+		return executorEvidencePRContext{}, fmt.Errorf("executor evidence status %q is unsupported", evidence.Status)
 	}
 	if evidence.PayloadHash != payloadHash {
 		return executorEvidencePRContext{}, fmt.Errorf("executor evidence payload hash %s does not match current approved payload hash %s", evidence.PayloadHash, payloadHash)
 	}
-	if err := validateExecutorEvidenceCommands(evidence.Status, evidence.Commands); err != nil {
+	if err := validateExecutorEvidenceCommands(status, evidence.Commands); err != nil {
 		return executorEvidencePRContext{}, err
 	}
 
@@ -215,6 +219,15 @@ func validateExecutorEvidenceCommands(status string, commands []executorEvidence
 		}
 	}
 	return nil
+}
+
+func isExecutorEvidenceRunStatus(status string) bool {
+	switch status {
+	case "succeeded", "failed":
+		return true
+	default:
+		return false
+	}
 }
 
 func isExecutorEvidenceStage(stage string) bool {
