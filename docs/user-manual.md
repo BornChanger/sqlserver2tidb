@@ -772,6 +772,7 @@ bin/sqlserver2tidb generate-data-plans \
 - 只处理 `project.yaml` 中指定的 source database 和 source schemas。
 - 根据 inventory 中的 `row_count` 和 `--chunk-size-rows` 估算 export chunk 数。
 - 为每个 export chunk 生成对应 import job。
+- 只生成当前内置 executor 支持的计划：`--export-format csv`、`--import-engine sql-insert`，以及 `file://`、`http://`、`https://` URI 前缀。
 - 单 schema project 默认保留原表名；多 schema project 会用 `<schema>_<table>` 作为目标表名。
 - 单 chunk 表会生成 `1 = 1` predicate；需要拆成多个 chunk 的表仍会先写成 `TODO` split predicate，必须由 DBA 或 operator 根据主键、唯一键、时间列或分桶策略 review；approval 后 `worker-export` 和 `worker-executor --stage export` 会拒绝仍包含 `TODO` 的 predicate。
 - 不连接 SQL Server，不连接 TiDB，不读取业务数据，不写对象存储，也不执行 `IMPORT INTO`。
@@ -1620,7 +1621,7 @@ bin/sqlserver2tidb generate-data-plans \
   --import-engine sql-insert
 ```
 
-该命令读取源集群 inventory 和项目 metadata，写回项目目录下的 `plan/export-plan.yaml` 和 `plan/import-plan.yaml`。它只生成草稿，不连接 SQL Server 或 TiDB，不执行导出或导入。`--chunk-size-rows` 默认是 `1000000`，`--export-format` 默认是 `csv`，`--import-engine` 默认是 `sql-insert`。
+该命令读取源集群 inventory 和项目 metadata，写回项目目录下的 `plan/export-plan.yaml` 和 `plan/import-plan.yaml`。它只生成当前内置 executor 支持的 CSV/sql-insert 草稿，`--object-uri-prefix` 必须使用 `file://`、`http://` 或 `https://` 前缀；不连接 SQL Server 或 TiDB，不执行导出或导入。`--chunk-size-rows` 默认是 `1000000`，`--export-format` 默认是 `csv`，`--import-engine` 默认是 `sql-insert`。
 
 ### 16.9 generate-cdc-plan
 

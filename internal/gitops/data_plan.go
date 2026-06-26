@@ -2,6 +2,7 @@ package gitops
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -55,6 +56,15 @@ func GenerateDataMovementPlans(root, sourceClusterID, projectID string, spec Dat
 	}
 	if spec.ChunkSizeRows <= 0 {
 		return DataMovementPlanResult{}, fmt.Errorf("chunk size rows must be positive")
+	}
+	if spec.ExportFormat != "csv" {
+		return DataMovementPlanResult{}, fmt.Errorf("export format %s is not supported by sqlserver2tidb-executor; supported format: csv", spec.ExportFormat)
+	}
+	if spec.ImportEngine != "sql-insert" {
+		return DataMovementPlanResult{}, fmt.Errorf("import engine %s is not supported by sqlserver2tidb-executor; supported engine: sql-insert", spec.ImportEngine)
+	}
+	if err := validateExecutableObjectURIPrefix(spec.ObjectURIPrefix); err != nil {
+		return DataMovementPlanResult{}, err
 	}
 
 	clusterDir := filepath.Join(root, "clusters", sourceClusterID)
@@ -137,6 +147,21 @@ func normalizeDataMovementPlanSpec(spec DataMovementPlanSpec) DataMovementPlanSp
 		spec.ImportEngine = "sql-insert"
 	}
 	return spec
+}
+
+func validateExecutableObjectURIPrefix(prefix string) error {
+	parsed, err := url.Parse(prefix)
+	if err != nil {
+		return fmt.Errorf("parse object URI prefix: %w", err)
+	}
+	switch parsed.Scheme {
+	case "file", "http", "https":
+		return nil
+	case "":
+		return fmt.Errorf("object URI prefix must use file://, http://, or https://")
+	default:
+		return fmt.Errorf("object URI prefix scheme %s is not supported by sqlserver2tidb-executor; supported schemes: file, http, https", parsed.Scheme)
+	}
 }
 
 func buildDataExportTablePlan(project projectMetadata, databaseName, schemaName string, table SQLServerTable, prefixSchema bool, spec DataMovementPlanSpec) dataExportTablePlan {

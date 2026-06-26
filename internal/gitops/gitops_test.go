@@ -1925,10 +1925,10 @@ func TestGenerateDataMovementPlansWritesExportAndImportPlans(t *testing.T) {
 `)
 
 	result, err := GenerateDataMovementPlans(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", DataMovementPlanSpec{
-		ObjectURIPrefix: "s3://migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full",
+		ObjectURIPrefix: "https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full",
 		ChunkSizeRows:   1000000,
-		ExportFormat:    "parquet",
-		ImportEngine:    "import-into",
+		ExportFormat:    "csv",
+		ImportEngine:    "sql-insert",
 	})
 	if err != nil {
 		t.Fatalf("GenerateDataMovementPlans() error = %v", err)
@@ -1939,22 +1939,22 @@ func TestGenerateDataMovementPlansWritesExportAndImportPlans(t *testing.T) {
 
 	exportPlan := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/export-plan.yaml")
 	assertContains(t, exportPlan, "status: draft")
-	assertContains(t, exportPlan, "format: parquet")
+	assertContains(t, exportPlan, "format: csv")
 	assertContains(t, exportPlan, "chunk_size_rows: 1000000")
 	assertContains(t, exportPlan, "source_object: sales.dbo.orders")
 	assertContains(t, exportPlan, "target_object: app.orders")
 	assertContains(t, exportPlan, "id: dbo.orders.000001")
 	assertContains(t, exportPlan, "id: dbo.orders.000003")
-	assertContains(t, exportPlan, "output_uri: s3://migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full/dbo.orders.000003.parquet")
+	assertContains(t, exportPlan, "output_uri: https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full/dbo.orders.000003.csv")
 	if strings.Contains(exportPlan, "sales.audit.events") {
 		t.Fatalf("export plan included table outside project schema:\n%s", exportPlan)
 	}
 
 	importPlan := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml")
 	assertContains(t, importPlan, "status: draft")
-	assertContains(t, importPlan, "engine: import-into")
+	assertContains(t, importPlan, "engine: sql-insert")
 	assertContains(t, importPlan, "target_object: app.orders")
-	assertContains(t, importPlan, "source_uri: s3://migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full/dbo.orders.000001.parquet")
+	assertContains(t, importPlan, "source_uri: https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full/dbo.orders.000001.csv")
 	assertContains(t, importPlan, "depends_on_export_chunk: dbo.orders.000003")
 }
 
@@ -1985,10 +1985,10 @@ func TestGenerateDataMovementPlansUsesTrivialPredicateForSingleChunkTable(t *tes
 `)
 
 	result, err := GenerateDataMovementPlans(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", DataMovementPlanSpec{
-		ObjectURIPrefix: "s3://migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full",
+		ObjectURIPrefix: "https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full",
 		ChunkSizeRows:   1000000,
-		ExportFormat:    "parquet",
-		ImportEngine:    "import-into",
+		ExportFormat:    "csv",
+		ImportEngine:    "sql-insert",
 	})
 	if err != nil {
 		t.Fatalf("GenerateDataMovementPlans() error = %v", err)
@@ -2023,8 +2023,8 @@ func TestGenerateDataMovementPlansRequiresObjectURIPrefix(t *testing.T) {
 
 	_, err := GenerateDataMovementPlans(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", DataMovementPlanSpec{
 		ChunkSizeRows: 1000000,
-		ExportFormat:  "parquet",
-		ImportEngine:  "import-into",
+		ExportFormat:  "csv",
+		ImportEngine:  "sql-insert",
 	})
 	if err == nil {
 		t.Fatal("GenerateDataMovementPlans() expected missing object URI prefix error")
@@ -2032,9 +2032,57 @@ func TestGenerateDataMovementPlansRequiresObjectURIPrefix(t *testing.T) {
 	assertContains(t, err.Error(), "object URI prefix is required")
 }
 
+func TestGenerateDataMovementPlansRejectsUnsupportedExportFormat(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, `{"status":"discovered","databases":[]}`)
+
+	_, err := GenerateDataMovementPlans(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", DataMovementPlanSpec{
+		ObjectURIPrefix: "https://object-store.example/migration/prod/full",
+		ChunkSizeRows:   1000000,
+		ExportFormat:    "parquet",
+		ImportEngine:    "sql-insert",
+	})
+	if err == nil {
+		t.Fatal("GenerateDataMovementPlans() expected unsupported export format error")
+	}
+	assertContains(t, err.Error(), "export format parquet is not supported by sqlserver2tidb-executor")
+}
+
+func TestGenerateDataMovementPlansRejectsUnsupportedImportEngine(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, `{"status":"discovered","databases":[]}`)
+
+	_, err := GenerateDataMovementPlans(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", DataMovementPlanSpec{
+		ObjectURIPrefix: "https://object-store.example/migration/prod/full",
+		ChunkSizeRows:   1000000,
+		ExportFormat:    "csv",
+		ImportEngine:    "import-into",
+	})
+	if err == nil {
+		t.Fatal("GenerateDataMovementPlans() expected unsupported import engine error")
+	}
+	assertContains(t, err.Error(), "import engine import-into is not supported by sqlserver2tidb-executor")
+}
+
+func TestGenerateDataMovementPlansRejectsUnsupportedObjectURIScheme(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, `{"status":"discovered","databases":[]}`)
+
+	_, err := GenerateDataMovementPlans(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", DataMovementPlanSpec{
+		ObjectURIPrefix: "s3://migration/prod/full",
+		ChunkSizeRows:   1000000,
+		ExportFormat:    "csv",
+		ImportEngine:    "sql-insert",
+	})
+	if err == nil {
+		t.Fatal("GenerateDataMovementPlans() expected unsupported object URI scheme error")
+	}
+	assertContains(t, err.Error(), "object URI prefix scheme s3 is not supported by sqlserver2tidb-executor")
+}
+
 func TestNormalizeDataMovementPlanSpecDefaultsToExecutableCSVPlan(t *testing.T) {
 	spec := normalizeDataMovementPlanSpec(DataMovementPlanSpec{
-		ObjectURIPrefix: "s3://migration/prod/full",
+		ObjectURIPrefix: "https://object-store.example/migration/prod/full",
 		ChunkSizeRows:   1000000,
 	})
 
@@ -2253,16 +2301,11 @@ func TestPrepareWorkerExecutorBuildsExportCommandsWhenApprovedHashMatches(t *tes
 func TestPrepareWorkerExecutorRejectsUnsupportedExportFormat(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
-	_, err := GenerateDataMovementPlans(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", DataMovementPlanSpec{
-		ObjectURIPrefix: "https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full",
-		ChunkSizeRows:   1000000,
-		ExportFormat:    "parquet",
-		ImportEngine:    "sql-insert",
-	})
-	if err != nil {
-		t.Fatalf("GenerateDataMovementPlans() error = %v", err)
-	}
-	reviewExportPlanPredicates(t, root)
+	must(t, GenerateDataPlansOnly(root))
+	exportPlanRel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/export-plan.yaml"
+	exportPlan := readFile(t, root, exportPlanRel)
+	exportPlan = strings.Replace(exportPlan, "format: csv", "format: parquet", 1)
+	writeFileForTest(t, root, exportPlanRel, exportPlan)
 	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
 	if err != nil {
 		t.Fatalf("ComputePayloadHashForStage(export) error = %v", err)
@@ -2361,15 +2404,11 @@ func TestPrepareWorkerExecutorRejectsUnsupportedImportEngine(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
 	must(t, GenerateSchemaDraftOnly(root))
-	_, err := GenerateDataMovementPlans(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", DataMovementPlanSpec{
-		ObjectURIPrefix: "https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full",
-		ChunkSizeRows:   1000000,
-		ExportFormat:    "csv",
-		ImportEngine:    "import-into",
-	})
-	if err != nil {
-		t.Fatalf("GenerateDataMovementPlans() error = %v", err)
-	}
+	must(t, GenerateDataPlansOnly(root))
+	importPlanRel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml"
+	importPlan := readFile(t, root, importPlanRel)
+	importPlan = strings.Replace(importPlan, "engine: sql-insert", "engine: import-into", 1)
+	writeFileForTest(t, root, importPlanRel, importPlan)
 	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import")
 	if err != nil {
 		t.Fatalf("ComputePayloadHashForStage(import) error = %v", err)

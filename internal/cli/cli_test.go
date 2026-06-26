@@ -416,10 +416,10 @@ func TestRunGenerateDataPlansCommand(t *testing.T) {
 		"--root", root,
 		"--source-cluster-id", "prod-sqlserver-a",
 		"--project-id", "sales-db-to-tidb-prod-a",
-		"--object-uri-prefix", "s3://migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full",
+		"--object-uri-prefix", "https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full",
 		"--chunk-size-rows", "1000000",
-		"--export-format", "parquet",
-		"--import-engine", "import-into",
+		"--export-format", "csv",
+		"--import-engine", "sql-insert",
 	}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("generate-data-plans code = %d, stderr = %s", code, stderr.String())
@@ -444,10 +444,10 @@ func TestRunGenerateDataPlansCommand(t *testing.T) {
 		"--root", root,
 		"--source-cluster-id", "prod-sqlserver-a",
 		"--project-id", "sales-db-to-tidb-prod-a",
-		"--object-uri-prefix", "s3://migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full",
+		"--object-uri-prefix", "https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full",
 		"--chunk-size-rows", "3000000",
-		"--export-format", "parquet",
-		"--import-engine", "import-into",
+		"--export-format", "csv",
+		"--import-engine", "sql-insert",
 	}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("generate-data-plans single chunk code = %d, stderr = %s", code, stderr.String())
@@ -762,7 +762,7 @@ func TestRunWorkerExportAndImportCommands(t *testing.T) {
 		"--root", root,
 		"--source-cluster-id", "prod-sqlserver-a",
 		"--project-id", "sales-db-to-tidb-prod-a",
-		"--object-uri-prefix", "s3://migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full",
+		"--object-uri-prefix", "https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full",
 		"--chunk-size-rows", "1000000",
 	}, &stdout, &stderr); code != 0 {
 		t.Fatalf("generate-data-plans code = %d, stderr = %s", code, stderr.String())
@@ -1510,7 +1510,7 @@ func TestRunWorkerReconcileDryRunCommand(t *testing.T) {
 		"--root", root,
 		"--source-cluster-id", "prod-sqlserver-a",
 		"--project-id", "sales-db-to-tidb-prod-a",
-		"--object-uri-prefix", "s3://migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full",
+		"--object-uri-prefix", "https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full",
 	}, &stdout, &stderr); code != 0 {
 		t.Fatalf("generate-data-plans code = %d, stderr = %s", code, stderr.String())
 	}
@@ -1660,7 +1660,7 @@ func TestRunWorkerReconcileExecuteNextCommand(t *testing.T) {
 		"--root", root,
 		"--source-cluster-id", "prod-sqlserver-a",
 		"--project-id", "sales-db-to-tidb-prod-a",
-		"--object-uri-prefix", "s3://migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full",
+		"--object-uri-prefix", "https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full",
 	}, &stdout, &stderr); code != 0 {
 		t.Fatalf("generate-data-plans code = %d, stderr = %s", code, stderr.String())
 	}

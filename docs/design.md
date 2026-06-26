@@ -247,11 +247,11 @@ It filters inventory by the project source database and source schemas. It gener
 
 - Input: `clusters/<source_cluster_id>/inventory/inventory.json`.
 - Input: `clusters/<source_cluster_id>/projects/<project_id>/project.yaml`.
-- Input: operator-supplied object URI prefix and chunk sizing flags.
+- Input: operator-supplied CSV URI prefix and chunk sizing flags.
 - Output: project-local `plan/export-plan.yaml`.
 - Output: project-local `plan/import-plan.yaml`.
 
-It filters inventory by the project source database and source schemas. It estimates full-load export chunks from inventory `row_count`, writes object storage URIs for each chunk, and creates matching import jobs that depend on those export chunks.
+It filters inventory by the project source database and source schemas. It estimates full-load export chunks from inventory `row_count`, writes executor-supported CSV URIs for each chunk, and creates matching import jobs that depend on those export chunks. The generator rejects unsupported export formats, unsupported import engines, and URI prefixes outside `file://`, `http://`, and `https://`.
 
 The generated split predicate is intentionally a `TODO` placeholder because a safe split key must be reviewed per table. After export approval, `worker-export` and `worker-executor --stage export` reject export plans whose predicates still contain `TODO`. The command does not connect to SQL Server or TiDB, does not read data, does not write object storage, and does not start `IMPORT INTO` or TiDB Lightning.
 

@@ -203,7 +203,7 @@ go run ./cmd/sqlserver2tidb generate-data-plans \
   --object-uri-prefix https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full
 ```
 
-This writes `plan/export-plan.yaml` and `plan/import-plan.yaml` under the project. The command estimates chunks from inventory `row_count`; single-chunk tables get a reviewed-safe `1 = 1` predicate, while multi-chunk tables still get `TODO` split predicates that must be reviewed before export execution. It does not connect to SQL Server or TiDB and does not move data.
+This writes `plan/export-plan.yaml` and `plan/import-plan.yaml` under the project. The command estimates chunks from inventory `row_count`; single-chunk tables get a reviewed-safe `1 = 1` predicate, while multi-chunk tables still get `TODO` split predicates that must be reviewed before export execution. It only generates executor-supported CSV plans with `file://`, `http://`, or `https://` URI prefixes and `sql-insert` imports. It does not connect to SQL Server or TiDB and does not move data.
 
 Generate a project-scoped CDC draft plan from the current SQL Server inventory and project metadata:
 
