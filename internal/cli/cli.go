@@ -388,11 +388,24 @@ func runCreateWorkerStatePR(args []string, stdout, stderr io.Writer) int {
 		for _, command := range spec.ShellCommands {
 			fmt.Fprintf(stdout, "command: %s\n", command)
 		}
+		if spec.BodyFileNeedsUpdate {
+			fmt.Fprintln(stdout, "body file update: needed; execute mode refreshes it before commit")
+		} else {
+			fmt.Fprintln(stdout, "body file update: not needed")
+		}
 		fmt.Fprintf(stdout, "title: %s\n", spec.Title)
 		fmt.Fprintf(stdout, "branch: %s\n", spec.BranchName)
 		fmt.Fprintf(stdout, "body file: %s\n", spec.BodyFile)
 		fmt.Fprintf(stdout, "files to commit: %d\n", len(spec.Files))
 		return 0
+	}
+
+	if err := gitops.RefreshWorkerStatePRBody(*root, spec); err != nil {
+		fmt.Fprintf(stderr, "create worker state PR: %v\n", err)
+		return 1
+	}
+	if spec.BodyFileNeedsUpdate {
+		fmt.Fprintf(stdout, "updated %s\n", spec.BodyFile)
 	}
 
 	for _, gitArgs := range spec.GitArgs {

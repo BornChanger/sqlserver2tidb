@@ -15,16 +15,18 @@ type workerStatePRDraft struct {
 }
 
 type WorkerStatePRCreateSpec struct {
-	SourceClusterID string
-	ProjectID       string
-	Stage           string
-	Title           string
-	BranchName      string
-	BodyFile        string
-	Files           []string
-	GitArgs         [][]string
-	GitHubArgs      []string
-	ShellCommands   []string
+	SourceClusterID     string
+	ProjectID           string
+	Stage               string
+	Title               string
+	BranchName          string
+	BodyFile            string
+	BodyFileContent     string
+	BodyFileNeedsUpdate bool
+	Files               []string
+	GitArgs             [][]string
+	GitHubArgs          []string
+	ShellCommands       []string
 }
 
 func writeWorkerStatePRDraft(root string, result WorkerReconcileExecutionResult) (workerStatePRDraft, error) {
@@ -82,6 +84,10 @@ func PrepareWorkerStatePRCreate(root, sourceClusterID, projectID, stage string) 
 	if info, err := os.Stat(bodyPath); err != nil || info.IsDir() {
 		return WorkerStatePRCreateSpec{}, fmt.Errorf("worker state PR draft %s does not exist; run worker-reconcile --execute-next --state-pr-draft first", bodyFile)
 	}
+	bodyContentBytes, err := os.ReadFile(bodyPath)
+	if err != nil {
+		return WorkerStatePRCreateSpec{}, fmt.Errorf("read worker state PR draft %s: %w", bodyFile, err)
+	}
 
 	files := workerStateCommitFiles(root, sourceClusterID, projectID, stage, bodyFile)
 	for _, file := range files {
@@ -89,6 +95,10 @@ func PrepareWorkerStatePRCreate(root, sourceClusterID, projectID, stage string) 
 		if info, err := os.Stat(path); err != nil || info.IsDir() {
 			return WorkerStatePRCreateSpec{}, fmt.Errorf("worker state PR file %s does not exist", file)
 		}
+	}
+	bodyFileContent, bodyFileNeedsUpdate, err := refreshWorkerStatePRBodyContent(string(bodyContentBytes), workerStateReviewFiles(files, bodyFile))
+	if err != nil {
+		return WorkerStatePRCreateSpec{}, err
 	}
 
 	gitArgs := [][]string{
@@ -111,17 +121,30 @@ func PrepareWorkerStatePRCreate(root, sourceClusterID, projectID, stage string) 
 	shellCommands = append(shellCommands, renderShellCommand(append([]string{"gh"}, ghArgs...)))
 
 	return WorkerStatePRCreateSpec{
-		SourceClusterID: sourceClusterID,
-		ProjectID:       projectID,
-		Stage:           stage,
-		Title:           title,
-		BranchName:      branchName,
-		BodyFile:        bodyFile,
-		Files:           files,
-		GitArgs:         gitArgs,
-		GitHubArgs:      ghArgs,
-		ShellCommands:   shellCommands,
+		SourceClusterID:     sourceClusterID,
+		ProjectID:           projectID,
+		Stage:               stage,
+		Title:               title,
+		BranchName:          branchName,
+		BodyFile:            bodyFile,
+		BodyFileContent:     bodyFileContent,
+		BodyFileNeedsUpdate: bodyFileNeedsUpdate,
+		Files:               files,
+		GitArgs:             gitArgs,
+		GitHubArgs:          ghArgs,
+		ShellCommands:       shellCommands,
 	}, nil
+}
+
+func RefreshWorkerStatePRBody(root string, spec WorkerStatePRCreateSpec) error {
+	if !spec.BodyFileNeedsUpdate {
+		return nil
+	}
+	path := filepath.Join(root, filepath.FromSlash(spec.BodyFile))
+	if err := os.WriteFile(path, []byte(spec.BodyFileContent), 0o644); err != nil {
+		return fmt.Errorf("write worker state PR draft %s: %w", spec.BodyFile, err)
+	}
+	return nil
 }
 
 func workerStatePRFiles(result WorkerReconcileExecutionResult) []string {
@@ -165,6 +188,46 @@ func workerStateCommitFiles(root, sourceClusterID, projectID, stage, bodyFile st
 		bodyFile,
 	)
 	return files
+}
+
+func workerStateReviewFiles(files []string, bodyFile string) []string {
+	reviewFiles := make([]string, 0, len(files))
+	for _, file := range files {
+		if file == bodyFile {
+			continue
+		}
+		reviewFiles = append(reviewFiles, file)
+	}
+	return reviewFiles
+}
+
+func refreshWorkerStatePRBodyContent(body string, files []string) (string, bool, error) {
+	missing := make([]string, 0)
+	for _, file := range files {
+		if !strings.Contains(body, "- `"+file+"`") {
+			missing = append(missing, file)
+		}
+	}
+	if len(missing) == 0 {
+		return body, false, nil
+	}
+
+	marker := "\n## Operator Checklist\n"
+	index := strings.Index(body, marker)
+	if index < 0 {
+		return "", false, fmt.Errorf("worker state PR draft missing Operator Checklist section")
+	}
+	prefix := body[:index]
+	if !strings.HasSuffix(prefix, "\n") {
+		prefix += "\n"
+	}
+	var b strings.Builder
+	b.WriteString(prefix)
+	for _, file := range missing {
+		fmt.Fprintf(&b, "- `%s`\n", file)
+	}
+	b.WriteString(body[index:])
+	return b.String(), true, nil
 }
 
 func workerStateFileForStage(stage string) string {

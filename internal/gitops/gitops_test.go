@@ -1810,6 +1810,50 @@ func TestPrepareWorkerStatePRCreateIncludesExecutorEvidenceWhenPresent(t *testin
 	assertContains(t, spec.ShellCommands[1], "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-export-run.json")
 }
 
+func TestPrepareWorkerStatePRCreatePlansBodyRefreshForExecutorEvidence(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateDataPlansOnly(root))
+	reviewExportPlanPredicates(t, root)
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(export) error = %v", err)
+	}
+	writeStageApproval(t, root, "export", hash)
+	must(t, func() error {
+		_, err := ExecuteNextWorkerReconcile(root, WorkerReconcileExecuteSpec{
+			Holder:        "agent-a",
+			CreatePRDraft: true,
+		})
+		return err
+	}())
+	bodyFile := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/prs/reconcile-export-state-pr.md"
+	bodyBefore := readFile(t, root, bodyFile)
+	executorEvidence := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-export-run.json"
+	if strings.Contains(bodyBefore, executorEvidence) {
+		t.Fatalf("state PR body unexpectedly contains executor evidence before it exists")
+	}
+	writeFileForTest(t, root, executorEvidence, `{
+  "stage": "export",
+  "status": "succeeded"
+}
+`)
+
+	spec, err := PrepareWorkerStatePRCreate(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
+	if err != nil {
+		t.Fatalf("PrepareWorkerStatePRCreate() error = %v", err)
+	}
+	if !spec.BodyFileNeedsUpdate {
+		t.Fatal("BodyFileNeedsUpdate = false, want true")
+	}
+	assertContains(t, spec.BodyFileContent, executorEvidence)
+	if got := readFile(t, root, bodyFile); got != bodyBefore {
+		t.Fatal("PrepareWorkerStatePRCreate mutated the PR body; dry-run preparation must be read-only")
+	}
+	must(t, RefreshWorkerStatePRBody(root, spec))
+	assertContains(t, readFile(t, root, bodyFile), executorEvidence)
+}
+
 func TestPrepareWorkerStatePRCreateRequiresGeneratedStateDraft(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())

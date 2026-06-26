@@ -51,6 +51,7 @@ The wrapper does not merge PRs, approve PRs, bypass branch protection, or inspec
 - requires the worker-written state/evidence files and source-cluster `state/worker-lease.yaml`;
 - includes `evidence/executor-<stage>-run.json` when executor run evidence exists;
 - includes source-cluster `state/cdc-checkpoint.yaml` for CDC state PRs;
+- reports stale PR body file lists during dry-run and refreshes the body before commit in `--execute` mode;
 - reconstructs deterministic `git switch`, `git add`, `git commit`, `git push`, and `gh pr create` commands;
 - defaults to dry-run and only mutates the local checkout when `--execute` is explicitly set.
 

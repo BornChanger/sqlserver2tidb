@@ -1599,6 +1599,14 @@ func TestRunWorkerReconcileExecuteNextCommand(t *testing.T) {
 	if !strings.Contains(string(prBody), "[worker-state:export] sales-db-to-tidb-prod-a") {
 		t.Fatalf("state PR draft = %q, want worker-state title", string(prBody))
 	}
+	executorEvidenceRel := filepath.Join("clusters", "prod-sqlserver-a", "projects", "sales-db-to-tidb-prod-a", "evidence", "executor-export-run.json")
+	if err := os.WriteFile(filepath.Join(root, executorEvidenceRel), []byte(`{
+  "stage": "export",
+  "status": "succeeded"
+}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	lease, err := os.ReadFile(filepath.Join(root, "clusters", "prod-sqlserver-a", "state", "worker-lease.yaml"))
 	if err != nil {
 		t.Fatal(err)
@@ -1634,6 +1642,19 @@ func TestRunWorkerReconcileExecuteNextCommand(t *testing.T) {
 	}
 	if !strings.Contains(output, "gh pr create --base main --head agent/sales-db-to-tidb-prod-a/reconcile-export-state") {
 		t.Fatalf("create-worker-state-pr stdout = %q, want gh pr command", output)
+	}
+	if !strings.Contains(output, filepath.ToSlash(executorEvidenceRel)) {
+		t.Fatalf("create-worker-state-pr stdout = %q, want executor evidence in git add command", output)
+	}
+	if !strings.Contains(output, "body file update: needed; execute mode refreshes it before commit") {
+		t.Fatalf("create-worker-state-pr stdout = %q, want body update notice", output)
+	}
+	prBodyAfterDryRun, err := os.ReadFile(filepath.Join(root, "clusters", "prod-sqlserver-a", "projects", "sales-db-to-tidb-prod-a", "prs", "reconcile-export-state-pr.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(prBodyAfterDryRun) != string(prBody) {
+		t.Fatal("create-worker-state-pr dry-run mutated the PR body")
 	}
 }
 
