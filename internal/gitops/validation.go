@@ -217,7 +217,31 @@ func validateClusterDir(root, clusterRel string, report *ValidationReport) {
 	for _, rel := range requiredClusterFiles {
 		report.requireFile(root, filepath.ToSlash(filepath.Join(clusterRel, rel)))
 	}
+	clusterMetadataRel := filepath.ToSlash(filepath.Join(clusterRel, "cluster.yaml"))
+	clusterMetadataPath := filepath.Join(root, filepath.FromSlash(clusterMetadataRel))
+	if info, err := os.Stat(clusterMetadataPath); err == nil && !info.IsDir() {
+		if err := validateClusterMetadataContent(clusterMetadataPath); err != nil {
+			report.addError(fmt.Sprintf("invalid cluster metadata %s: %v", clusterMetadataRel, err))
+		}
+	}
 	validateProjects(root, filepath.ToSlash(filepath.Join(clusterRel, "projects")), report)
+}
+
+func validateClusterMetadataContent(path string) error {
+	meta, err := readClusterMetadata(path)
+	if err != nil {
+		return err
+	}
+	return validateCluster(ClusterSpec{
+		ClusterID:              meta.ClusterID,
+		DisplayName:            meta.DisplayName,
+		Listener:               meta.Listener,
+		Port:                   meta.Port,
+		SecretRef:              meta.SecretRef,
+		CDCMode:                meta.CDCMode,
+		RetentionHoursRequired: meta.RetentionHoursRequired,
+		Owners:                 meta.Owners,
+	})
 }
 
 func validateProjects(root, projectsRel string, report *ValidationReport) {

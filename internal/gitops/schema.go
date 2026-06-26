@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -26,6 +27,17 @@ type projectMetadata struct {
 	TargetDatabase  string
 	Mode            string
 	Owners          []string
+}
+
+type clusterMetadata struct {
+	ClusterID              string
+	DisplayName            string
+	Listener               string
+	Port                   int
+	SecretRef              string
+	CDCMode                string
+	RetentionHoursRequired int
+	Owners                 []string
 }
 
 type schemaDiffDocument struct {
@@ -179,6 +191,97 @@ func GenerateSchemaDraft(root, sourceClusterID, projectID string) (SchemaDraftRe
 	}
 
 	return result, nil
+}
+
+func readClusterMetadata(path string) (clusterMetadata, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return clusterMetadata{}, fmt.Errorf("read cluster metadata: %w", err)
+	}
+
+	var meta clusterMetadata
+	section := ""
+	listKey := ""
+	scanner := bufio.NewScanner(strings.NewReader(string(data)))
+	for scanner.Scan() {
+		raw := scanner.Text()
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		indent := len(raw) - len(strings.TrimLeft(raw, " "))
+		if indent == 0 {
+			listKey = ""
+		}
+		if strings.HasPrefix(trimmed, "- ") {
+			if listKey == "owners" {
+				meta.Owners = append(meta.Owners, trimYAMLScalar(strings.TrimSpace(strings.TrimPrefix(trimmed, "- "))))
+			}
+			continue
+		}
+		if strings.HasSuffix(trimmed, ":") {
+			key := strings.TrimSpace(strings.TrimSuffix(trimmed, ":"))
+			if indent == 0 {
+				section = key
+				listKey = ""
+				if key == "owners" {
+					listKey = "owners"
+				}
+				continue
+			}
+			listKey = ""
+			continue
+		}
+
+		parts := strings.SplitN(trimmed, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key := strings.TrimSpace(parts[0])
+		value := trimYAMLScalar(parts[1])
+		switch {
+		case indent == 0 && key == "cluster_id":
+			meta.ClusterID = value
+			section = ""
+		case indent == 0 && key == "display_name":
+			meta.DisplayName = value
+			section = ""
+		case indent == 0 && key == "owners":
+			if value == "[]" {
+				meta.Owners = nil
+			} else if value != "" {
+				meta.Owners = []string{value}
+			}
+			section = "owners"
+			listKey = "owners"
+		case section == "source" && key == "listener":
+			meta.Listener = value
+		case section == "source" && key == "port":
+			if value != "" {
+				port, err := strconv.Atoi(value)
+				if err != nil {
+					return clusterMetadata{}, fmt.Errorf("parse cluster port %q: %w", value, err)
+				}
+				meta.Port = port
+			}
+		case section == "source" && key == "secret_ref":
+			meta.SecretRef = value
+		case section == "cdc" && key == "mode":
+			meta.CDCMode = value
+		case section == "cdc" && key == "retention_hours_required":
+			if value != "" {
+				retentionHours, err := strconv.Atoi(value)
+				if err != nil {
+					return clusterMetadata{}, fmt.Errorf("parse cdc retention_hours_required %q: %w", value, err)
+				}
+				meta.RetentionHoursRequired = retentionHours
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return clusterMetadata{}, fmt.Errorf("scan cluster metadata: %w", err)
+	}
+	return meta, nil
 }
 
 func readProjectMetadata(path string) (projectMetadata, error) {

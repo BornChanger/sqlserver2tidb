@@ -357,6 +357,42 @@ func TestValidateRepoReportsUnsupportedProjectMode(t *testing.T) {
 	assertContains(t, strings.Join(report.Errors, "\n"), `invalid project metadata clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/project.yaml: unsupported migration mode "blue-green"`)
 }
 
+func TestValidateRepoReportsClusterWithoutOwners(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)
+	clusterRel := "clusters/prod-sqlserver-a/cluster.yaml"
+	clusterYAML := readFile(t, root, clusterRel)
+	clusterYAML = strings.Replace(clusterYAML, "owners:\n  - dba-team\n", "owners: []\n", 1)
+	writeFileForTest(t, root, clusterRel, clusterYAML)
+
+	report, err := ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
+	if report.Valid {
+		t.Fatal("ValidateRepo() valid = true, want invalid cluster owner metadata")
+	}
+	assertContains(t, strings.Join(report.Errors, "\n"), "invalid cluster metadata clusters/prod-sqlserver-a/cluster.yaml: at least one cluster owner is required")
+}
+
+func TestValidateRepoReportsInvalidClusterRetention(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)
+	clusterRel := "clusters/prod-sqlserver-a/cluster.yaml"
+	clusterYAML := readFile(t, root, clusterRel)
+	clusterYAML = strings.Replace(clusterYAML, "retention_hours_required: 168", "retention_hours_required: 0", 1)
+	writeFileForTest(t, root, clusterRel, clusterYAML)
+
+	report, err := ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
+	if report.Valid {
+		t.Fatal("ValidateRepo() valid = true, want invalid cluster retention metadata")
+	}
+	assertContains(t, strings.Join(report.Errors, "\n"), "invalid cluster metadata clusters/prod-sqlserver-a/cluster.yaml: cdc retention hours must be positive")
+}
+
 func TestValidateRepoReportsMissingRequiredGlobalFile(t *testing.T) {
 	root := t.TempDir()
 	must(t, InitRepo(root))
