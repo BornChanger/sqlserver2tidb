@@ -83,7 +83,7 @@ func PrepareWorkerStatePRCreate(root, sourceClusterID, projectID, stage string) 
 		return WorkerStatePRCreateSpec{}, fmt.Errorf("worker state PR draft %s does not exist; run worker-reconcile --execute-next --state-pr-draft first", bodyFile)
 	}
 
-	files := workerStateCommitFiles(sourceClusterID, projectID, stage, bodyFile)
+	files := workerStateCommitFiles(root, sourceClusterID, projectID, stage, bodyFile)
 	for _, file := range files {
 		path := filepath.Join(root, filepath.FromSlash(file))
 		if info, err := os.Stat(path); err != nil || info.IsDir() {
@@ -145,13 +145,17 @@ func workerStatePRFiles(result WorkerReconcileExecutionResult) []string {
 	return files
 }
 
-func workerStateCommitFiles(sourceClusterID, projectID, stage, bodyFile string) []string {
+func workerStateCommitFiles(root, sourceClusterID, projectID, stage, bodyFile string) []string {
 	projectPrefix := filepath.ToSlash(filepath.Join("clusters", sourceClusterID, "projects", projectID))
 	clusterPrefix := filepath.ToSlash(filepath.Join("clusters", sourceClusterID))
 
 	files := []string{
 		filepath.ToSlash(filepath.Join(projectPrefix, workerStateFileForStage(stage))),
 		filepath.ToSlash(filepath.Join(projectPrefix, workerEvidenceFileForStage(stage))),
+	}
+	executorEvidence := filepath.ToSlash(filepath.Join(projectPrefix, "evidence", "executor-"+stage+"-run.json"))
+	if info, err := os.Stat(filepath.Join(root, filepath.FromSlash(executorEvidence))); err == nil && !info.IsDir() {
+		files = append(files, executorEvidence)
 	}
 	if stage == "cdc" {
 		files = append(files, filepath.ToSlash(filepath.Join(clusterPrefix, "state/cdc-checkpoint.yaml")))

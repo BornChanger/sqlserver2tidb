@@ -1779,6 +1779,37 @@ func TestPrepareWorkerStatePRCreateBuildsGitAndGitHubCommands(t *testing.T) {
 	assertContains(t, spec.ShellCommands[4], "gh pr create --base main --head agent/sales-db-to-tidb-prod-a/reconcile-export-state")
 }
 
+func TestPrepareWorkerStatePRCreateIncludesExecutorEvidenceWhenPresent(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateDataPlansOnly(root))
+	reviewExportPlanPredicates(t, root)
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(export) error = %v", err)
+	}
+	writeStageApproval(t, root, "export", hash)
+	must(t, func() error {
+		_, err := ExecuteNextWorkerReconcile(root, WorkerReconcileExecuteSpec{
+			Holder:        "agent-a",
+			CreatePRDraft: true,
+		})
+		return err
+	}())
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-export-run.json", `{
+  "stage": "export",
+  "status": "succeeded"
+}
+`)
+
+	spec, err := PrepareWorkerStatePRCreate(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
+	if err != nil {
+		t.Fatalf("PrepareWorkerStatePRCreate() error = %v", err)
+	}
+	assertStringSliceContains(t, spec.Files, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-export-run.json")
+	assertContains(t, spec.ShellCommands[1], "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-export-run.json")
+}
+
 func TestPrepareWorkerStatePRCreateRequiresGeneratedStateDraft(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
