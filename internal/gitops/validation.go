@@ -300,6 +300,14 @@ func validateProjectContent(root, projectRel string, report *ValidationReport) {
 }
 
 func validateExportPlanContent(path string) error {
+	format, err := readPlanTopLevelScalar(path, "format")
+	if err != nil {
+		return err
+	}
+	format = strings.ToLower(strings.TrimSpace(format))
+	if format != "" && format != "csv" {
+		return fmt.Errorf("export format %s is not supported by sqlserver2tidb-executor; supported format: csv", format)
+	}
 	chunks, err := readExportPlanChunks(path)
 	if err != nil {
 		return err
@@ -334,6 +342,14 @@ func validateExportPlanContent(path string) error {
 }
 
 func validateImportPlanContent(path string) error {
+	engine, err := readPlanTopLevelScalar(path, "engine")
+	if err != nil {
+		return err
+	}
+	engine = strings.ToLower(strings.TrimSpace(engine))
+	if engine != "" && engine != "sql-insert" {
+		return fmt.Errorf("import engine %s is not supported by sqlserver2tidb-executor; supported engine: sql-insert", engine)
+	}
 	jobs, err := readImportPlanJobs(path)
 	if err != nil {
 		return err
