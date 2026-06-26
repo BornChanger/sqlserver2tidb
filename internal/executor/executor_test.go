@@ -36,7 +36,7 @@ func TestRunExportDryRunCommand(t *testing.T) {
 		"--chunk-id", "dbo.orders.000001",
 		"--source-object", "sales.dbo.orders",
 		"--target-object", "app.orders",
-		"--output-uri", "s3://migration/prod/full/dbo.orders.000001.parquet",
+		"--output-uri", "https://object-store.example/migration/prod/full/dbo.orders.000001.csv",
 		"--predicate", "id >= 1 AND id < 1000",
 	}, &stdout, &stderr)
 	if code != 0 {
@@ -49,10 +49,10 @@ func TestRunExportDryRunCommand(t *testing.T) {
 	assertOutputContains(t, output, "chunk id: dbo.orders.000001")
 	assertOutputContains(t, output, "source object: sales.dbo.orders")
 	assertOutputContains(t, output, "target object: app.orders")
-	assertOutputContains(t, output, "output uri: s3://migration/prod/full/dbo.orders.000001.parquet")
+	assertOutputContains(t, output, "output uri: https://object-store.example/migration/prod/full/dbo.orders.000001.csv")
 	assertOutputContains(t, output, "predicate: id >= 1 AND id < 1000")
 	assertOutputContains(t, output, "No SQL Server connection will be opened.")
-	assertOutputContains(t, output, "No object storage write will be attempted.")
+	assertOutputContains(t, output, "No CSV output write will be attempted.")
 }
 
 func TestRunImportDryRunCommand(t *testing.T) {
@@ -65,7 +65,7 @@ func TestRunImportDryRunCommand(t *testing.T) {
 		"--project-id", "sales-db-to-tidb-prod-a",
 		"--job-id", "import-dbo.orders.000001",
 		"--target-object", "app.orders",
-		"--source-uri", "s3://migration/prod/full/dbo.orders.000001.parquet",
+		"--source-uri", "https://object-store.example/migration/prod/full/dbo.orders.000001.csv",
 		"--depends-on-export-chunk", "dbo.orders.000001",
 	}, &stdout, &stderr)
 	if code != 0 {
@@ -75,7 +75,7 @@ func TestRunImportDryRunCommand(t *testing.T) {
 	assertOutputContains(t, output, "executor import dry run")
 	assertOutputContains(t, output, "job id: import-dbo.orders.000001")
 	assertOutputContains(t, output, "target object: app.orders")
-	assertOutputContains(t, output, "source uri: s3://migration/prod/full/dbo.orders.000001.parquet")
+	assertOutputContains(t, output, "source uri: https://object-store.example/migration/prod/full/dbo.orders.000001.csv")
 	assertOutputContains(t, output, "depends on export chunk: dbo.orders.000001")
 	assertOutputContains(t, output, "No TiDB connection will be opened.")
 }
