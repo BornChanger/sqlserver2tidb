@@ -1886,6 +1886,22 @@ func TestRunUnknownCommandReturnsUsageError(t *testing.T) {
 	}
 }
 
+func TestRunHelpUsesExecutableCSVDataPlanExample(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{"help"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("help code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "--object-uri-prefix https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full") {
+		t.Fatalf("help output = %q, want HTTP(S) CSV object URI prefix example", output)
+	}
+	if strings.Contains(output, "s3://bucket/prefix") {
+		t.Fatalf("help output = %q, still contains unsupported s3 example", output)
+	}
+}
+
 func createCLIProjectWithOneExportChunk(t *testing.T, root string, stdout, stderr *bytes.Buffer) {
 	t.Helper()
 	if code := Run([]string{"init-repo", "--root", root}, stdout, stderr); code != 0 {
