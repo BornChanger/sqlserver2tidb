@@ -204,6 +204,7 @@ func validateExecutorEvidenceCommands(status string, commands []executorEvidence
 	if len(commands) == 0 {
 		return fmt.Errorf("executor evidence commands must contain at least one command")
 	}
+	hasFailedCommand := false
 	for i, command := range commands {
 		if strings.TrimSpace(command.ID) == "" {
 			return fmt.Errorf("executor evidence command %d id is required", i+1)
@@ -217,6 +218,12 @@ func validateExecutorEvidenceCommands(status string, commands []executorEvidence
 		if strings.TrimSpace(status) == "succeeded" && *command.ExitCode != 0 {
 			return fmt.Errorf("executor evidence status succeeded conflicts with command %s exit_code %d", command.ID, *command.ExitCode)
 		}
+		if *command.ExitCode != 0 {
+			hasFailedCommand = true
+		}
+	}
+	if strings.TrimSpace(status) == "failed" && !hasFailedCommand {
+		return fmt.Errorf("executor evidence status failed requires at least one non-zero command exit_code")
 	}
 	return nil
 }
