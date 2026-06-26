@@ -1,6 +1,7 @@
 package gitops
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -257,6 +258,14 @@ func validateProjects(root, projectsRel string, report *ValidationReport) {
 }
 
 func validateProjectContent(root, projectRel string, report *ValidationReport) {
+	projectMetadataRel := filepath.ToSlash(filepath.Join(projectRel, "project.yaml"))
+	projectMetadataPath := filepath.Join(root, filepath.FromSlash(projectMetadataRel))
+	if info, err := os.Stat(projectMetadataPath); err == nil && !info.IsDir() {
+		if err := validateProjectMetadataContent(projectMetadataPath); err != nil {
+			report.addError(fmt.Sprintf("invalid project metadata %s: %v", projectMetadataRel, err))
+		}
+	}
+
 	exportPlanRel := filepath.ToSlash(filepath.Join(projectRel, "plan", "export-plan.yaml"))
 	exportPlanPath := filepath.Join(root, filepath.FromSlash(exportPlanRel))
 	exportPlanExists := false
@@ -297,6 +306,23 @@ func validateProjectContent(root, projectRel string, report *ValidationReport) {
 	if err := validateValidationPlanContent(validationPlanPath); err != nil {
 		report.addError(fmt.Sprintf("invalid validation plan %s: %v", validationPlanRel, err))
 	}
+}
+
+func validateProjectMetadataContent(path string) error {
+	meta, err := readProjectMetadata(path)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(meta.Mode) == "" {
+		return errors.New("migration mode is required")
+	}
+	if !isSupportedMigrationMode(meta.Mode) {
+		return fmt.Errorf("unsupported migration mode %q; supported modes: offline, short-downtime, low-downtime", meta.Mode)
+	}
+	if err := validateOwners("project", meta.Owners); err != nil {
+		return err
+	}
+	return nil
 }
 
 func validateExportPlanContent(path string) error {

@@ -24,6 +24,8 @@ type projectMetadata struct {
 	SourceDatabase  string
 	SourceSchemas   []string
 	TargetDatabase  string
+	Mode            string
+	Owners          []string
 }
 
 type schemaDiffDocument struct {
@@ -203,6 +205,9 @@ func readProjectMetadata(path string) (projectMetadata, error) {
 			if listKey == "source.schemas" {
 				meta.SourceSchemas = append(meta.SourceSchemas, trimYAMLScalar(strings.TrimSpace(strings.TrimPrefix(trimmed, "- "))))
 			}
+			if listKey == "owners" {
+				meta.Owners = append(meta.Owners, trimYAMLScalar(strings.TrimSpace(strings.TrimPrefix(trimmed, "- "))))
+			}
 			continue
 		}
 		if strings.HasSuffix(trimmed, ":") {
@@ -210,6 +215,9 @@ func readProjectMetadata(path string) (projectMetadata, error) {
 			if indent == 0 {
 				section = key
 				listKey = ""
+				if key == "owners" {
+					listKey = "owners"
+				}
 				continue
 			}
 			if section == "source" && key == "schemas" {
@@ -233,6 +241,17 @@ func readProjectMetadata(path string) (projectMetadata, error) {
 		case indent == 0 && key == "source_cluster_id":
 			meta.SourceClusterID = value
 			section = ""
+		case indent == 0 && key == "mode":
+			meta.Mode = value
+			section = ""
+		case indent == 0 && key == "owners":
+			if value == "[]" {
+				meta.Owners = nil
+			} else if value != "" {
+				meta.Owners = []string{value}
+			}
+			section = "owners"
+			listKey = "owners"
 		case section == "source" && key == "database":
 			meta.SourceDatabase = value
 		case section == "source" && key == "schemas":

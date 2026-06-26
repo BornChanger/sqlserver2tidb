@@ -321,6 +321,42 @@ func TestValidateRepoAcceptsInitializedRepository(t *testing.T) {
 	}
 }
 
+func TestValidateRepoReportsProjectWithoutOwners(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)
+	projectRel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/project.yaml"
+	projectYAML := readFile(t, root, projectRel)
+	projectYAML = strings.Replace(projectYAML, "owners:\n  - dba-team\n", "owners: []\n", 1)
+	writeFileForTest(t, root, projectRel, projectYAML)
+
+	report, err := ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
+	if report.Valid {
+		t.Fatal("ValidateRepo() valid = true, want invalid project owner metadata")
+	}
+	assertContains(t, strings.Join(report.Errors, "\n"), "invalid project metadata clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/project.yaml: at least one project owner is required")
+}
+
+func TestValidateRepoReportsUnsupportedProjectMode(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)
+	projectRel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/project.yaml"
+	projectYAML := readFile(t, root, projectRel)
+	projectYAML = strings.Replace(projectYAML, "mode: short-downtime", "mode: blue-green", 1)
+	writeFileForTest(t, root, projectRel, projectYAML)
+
+	report, err := ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
+	if report.Valid {
+		t.Fatal("ValidateRepo() valid = true, want invalid project mode metadata")
+	}
+	assertContains(t, strings.Join(report.Errors, "\n"), `invalid project metadata clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/project.yaml: unsupported migration mode "blue-green"`)
+}
+
 func TestValidateRepoReportsMissingRequiredGlobalFile(t *testing.T) {
 	root := t.TempDir()
 	must(t, InitRepo(root))
