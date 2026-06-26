@@ -477,10 +477,10 @@ schema:
   conversion_report: schema/conversion-report.md
 full_export:
   plan_file: plan/export-plan.yaml
-  format: parquet
+  format: csv
 full_import:
   plan_file: plan/import-plan.yaml
-  engine: import-into
+  engine: sql-insert
 incremental:
   plan_file: plan/cdc-plan.yaml
   mode: sqlserver-cdc

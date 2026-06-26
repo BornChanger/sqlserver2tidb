@@ -123,6 +123,10 @@ func TestCreateProjectCreatesProjectUnderSourceCluster(t *testing.T) {
 	assertContains(t, projectYAML, "source_cluster_id: prod-sqlserver-a")
 	assertContains(t, projectYAML, "database: sales")
 	assertContains(t, projectYAML, "name: tidb-prod-a")
+
+	migrationPlan := readFile(t, root, base+"/plan/migration-plan.yaml")
+	assertContains(t, migrationPlan, "format: csv")
+	assertContains(t, migrationPlan, "engine: sql-insert")
 }
 
 func TestCreateProjectRequiresExistingSourceCluster(t *testing.T) {
