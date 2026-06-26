@@ -337,6 +337,21 @@ func validateProjectMetadataContent(path string) error {
 	if err != nil {
 		return err
 	}
+	if strings.TrimSpace(meta.ProjectID) == "" {
+		return errors.New("project id is required")
+	}
+	if strings.TrimSpace(meta.SourceClusterID) == "" {
+		return errors.New("source cluster id is required")
+	}
+	if strings.TrimSpace(meta.SourceDatabase) == "" {
+		return errors.New("source database is required")
+	}
+	if len(meta.SourceSchemas) == 0 {
+		return errors.New("at least one source schema is required")
+	}
+	if strings.TrimSpace(meta.TargetDatabase) == "" {
+		return errors.New("target database is required")
+	}
 	if strings.TrimSpace(meta.Mode) == "" {
 		return errors.New("migration mode is required")
 	}

@@ -357,6 +357,24 @@ func TestValidateRepoReportsUnsupportedProjectMode(t *testing.T) {
 	assertContains(t, strings.Join(report.Errors, "\n"), `invalid project metadata clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/project.yaml: unsupported migration mode "blue-green"`)
 }
 
+func TestValidateRepoReportsProjectWithoutSourceSchema(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)
+	projectRel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/project.yaml"
+	projectYAML := readFile(t, root, projectRel)
+	projectYAML = strings.Replace(projectYAML, "  schemas:\n    - dbo\n", "  schemas: []\n", 1)
+	writeFileForTest(t, root, projectRel, projectYAML)
+
+	report, err := ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
+	if report.Valid {
+		t.Fatal("ValidateRepo() valid = true, want invalid project source schema metadata")
+	}
+	assertContains(t, strings.Join(report.Errors, "\n"), "invalid project metadata clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/project.yaml: at least one source schema is required")
+}
+
 func TestValidateRepoReportsClusterWithoutOwners(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)
