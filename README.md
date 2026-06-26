@@ -1,5 +1,7 @@
 # sqlserver2tidb
 
+[![ci](https://github.com/BornChanger/sqlserver2tidb/actions/workflows/ci.yml/badge.svg)](https://github.com/BornChanger/sqlserver2tidb/actions/workflows/ci.yml)
+
 `sqlserver2tidb` is a GitOps-oriented migration control toolkit for SQL Server to TiDB migrations.
 
 The repository itself is the durable metadata store. Migration state, plans, approvals, checkpoints, and evidence are stored as YAML, JSON, and Markdown files under this repo. GitHub PRs provide the review and approval boundary.
