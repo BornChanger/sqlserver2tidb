@@ -93,8 +93,8 @@ func prepareExportExecutorCommands(projectDir, binary, sourceClusterID, projectI
 	if err != nil {
 		return nil, err
 	}
-	if len(chunks) == 0 {
-		return nil, fmt.Errorf("export plan contains no chunks")
+	if err := validateExportPlanChunks(chunks); err != nil {
+		return nil, err
 	}
 	sourceConnectionStringEnv := strings.TrimSpace(spec.SourceConnectionStringEnv)
 	commands := make([]WorkerExecutorCommand, 0, len(chunks))

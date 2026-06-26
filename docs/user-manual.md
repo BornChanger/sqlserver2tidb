@@ -732,7 +732,7 @@ bin/sqlserver2tidb generate-data-plans \
 - 根据 inventory 中的 `row_count` 和 `--chunk-size-rows` 估算 export chunk 数。
 - 为每个 export chunk 生成对应 import job。
 - 单 schema project 默认保留原表名；多 schema project 会用 `<schema>_<table>` 作为目标表名。
-- 每个 chunk 的 split predicate 先写成 `TODO`，必须由 DBA 或 operator 根据主键、唯一键、时间列或分桶策略 review。
+- 每个 chunk 的 split predicate 先写成 `TODO`，必须由 DBA 或 operator 根据主键、唯一键、时间列或分桶策略 review；approval 后 `worker-export` 和 `worker-executor --stage export` 会拒绝仍包含 `TODO` 的 predicate。
 - 不连接 SQL Server，不连接 TiDB，不读取业务数据，不写对象存储，也不执行 `IMPORT INTO`。
 
 示例 `plan/export-plan.yaml`：
@@ -852,7 +852,7 @@ checks:
 state/export-chunks.yaml
 ```
 
-当前 MVP 的 `worker-export` 只在 export approval 和 payload hash 匹配后，把 `plan/export-plan.yaml` 写成 planned 状态和 evidence。它不执行导出、不连接 SQL Server、不写对象存储。
+当前 MVP 的 `worker-export` 只在 export approval 和 payload hash 匹配后，把 `plan/export-plan.yaml` 写成 planned 状态和 evidence。它会拒绝仍包含 `TODO` predicate 的 export chunk。它不执行导出、不连接 SQL Server、不写对象存储。
 
 先计算 export payload hash：
 
@@ -1743,7 +1743,7 @@ bin/sqlserver2tidb worker-executor \
   --target-connection-string-env SQLSERVER2TIDB_TARGET_CONNECTION_STRING
 ```
 
-该命令支持 `export`、`import`、`cdc` 和 `validation`。它复用对应 stage 的 approval/hash gate，只有 approval 通过且 payload hash 匹配时才生成执行器命令。默认外部 binary 是 `sqlserver2tidb-executor`，可以通过 `--executor-binary` 覆盖。`--source-connection-string-env`、`--target-connection-string-env` 和 `--import-batch-size` 会被渲染进生成的 executor 命令，不写入 GitHub metadata。默认 dry-run 只打印命令；只有加 `--execute` 才会调用外部 binary，并在 executor 子命令后自动注入 `--execute`，让随仓库提供的 executor 离开 dry-run 模式。审批后的 export/import/CDC plan 如果没有任何 work item，会直接失败；`validation` stage 会为 `row_count` 检查生成 `validate-count` 命令，如果审批后的 validation plan 没有任何支持的 row-count 检查，也会直接失败。当前随仓库提供的 `sqlserver2tidb-executor export --execute` 仅支持 SQL Server 到本地 `file://` CSV；`import --execute` 仅支持本地 `file://` CSV 到 TiDB 的流式逐行 insert；`cdc --execute` 仍返回 not implemented。
+该命令支持 `export`、`import`、`cdc` 和 `validation`。它复用对应 stage 的 approval/hash gate，只有 approval 通过且 payload hash 匹配时才生成执行器命令。默认外部 binary 是 `sqlserver2tidb-executor`，可以通过 `--executor-binary` 覆盖。`--source-connection-string-env`、`--target-connection-string-env` 和 `--import-batch-size` 会被渲染进生成的 executor 命令，不写入 GitHub metadata。默认 dry-run 只打印命令；只有加 `--execute` 才会调用外部 binary，并在 executor 子命令后自动注入 `--execute`，让随仓库提供的 executor 离开 dry-run 模式。审批后的 export/import/CDC plan 如果没有任何 work item，会直接失败；export chunk predicate 如果仍包含 `TODO` 也会失败；`validation` stage 会为 `row_count` 检查生成 `validate-count` 命令，如果审批后的 validation plan 没有任何支持的 row-count 检查，也会直接失败。当前随仓库提供的 `sqlserver2tidb-executor export --execute` 仅支持 SQL Server 到本地 `file://` CSV；`import --execute` 仅支持本地 `file://` CSV 到 TiDB 的流式逐行 insert；`cdc --execute` 仍返回 not implemented。
 
 ### 16.18 sqlserver2tidb-executor
 

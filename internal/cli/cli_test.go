@@ -722,6 +722,7 @@ func TestRunWorkerExportAndImportCommands(t *testing.T) {
 	}, &stdout, &stderr); code != 0 {
 		t.Fatalf("generate-data-plans code = %d, stderr = %s", code, stderr.String())
 	}
+	reviewCLIExportPlanPredicates(t, root)
 
 	stdout.Reset()
 	stderr.Reset()
@@ -910,6 +911,7 @@ func TestRunWorkerExecutorExecutePassesExecuteFlagToExternalExecutor(t *testing.
 	}, &stdout, &stderr); code != 0 {
 		t.Fatalf("generate-data-plans code = %d, stderr = %s", code, stderr.String())
 	}
+	reviewCLIExportPlanPredicates(t, root)
 
 	stdout.Reset()
 	stderr.Reset()
@@ -1325,6 +1327,7 @@ func TestRunWorkerReconcileDryRunCommand(t *testing.T) {
 	}, &stdout, &stderr); code != 0 {
 		t.Fatalf("generate-data-plans code = %d, stderr = %s", code, stderr.String())
 	}
+	reviewCLIExportPlanPredicates(t, root)
 	if code := Run([]string{
 		"generate-cdc-plan",
 		"--root", root,
@@ -1466,6 +1469,7 @@ func TestRunWorkerReconcileExecuteNextCommand(t *testing.T) {
 	}, &stdout, &stderr); code != 0 {
 		t.Fatalf("generate-data-plans code = %d, stderr = %s", code, stderr.String())
 	}
+	reviewCLIExportPlanPredicates(t, root)
 
 	stdout.Reset()
 	stderr.Reset()
@@ -1593,6 +1597,27 @@ func parsePayloadHash(t *testing.T, output string) string {
 func writeCLIValidationApproval(t *testing.T, root, payloadHash string) {
 	t.Helper()
 	writeCLIStageApproval(t, root, "validation", payloadHash)
+}
+
+func reviewCLIExportPlanPredicates(t *testing.T, root string) {
+	t.Helper()
+	path := filepath.Join(root, "clusters", "prod-sqlserver-a", "projects", "sales-db-to-tidb-prod-a", "plan", "export-plan.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reviewed strings.Builder
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.Contains(line, "predicate: \"TODO: choose stable split predicate") {
+			prefix := line[:strings.Index(line, "predicate:")]
+			line = prefix + "predicate: id >= 0"
+		}
+		reviewed.WriteString(line)
+		reviewed.WriteByte('\n')
+	}
+	if err := os.WriteFile(path, []byte(reviewed.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func writeCLIStageApproval(t *testing.T, root, stage, payloadHash string) {

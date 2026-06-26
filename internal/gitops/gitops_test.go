@@ -1115,6 +1115,7 @@ func TestRunExportWorkerWritesPlannedStateWhenApprovedHashMatches(t *testing.T) 
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
 	must(t, GenerateDataPlansOnly(root))
+	reviewExportPlanPredicates(t, root)
 	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
 	if err != nil {
 		t.Fatalf("ComputePayloadHashForStage(export) error = %v", err)
@@ -1147,10 +1148,28 @@ func TestRunExportWorkerWritesPlannedStateWhenApprovedHashMatches(t *testing.T) 
 	assertContains(t, evidence, `"payload_hash": "`+hash+`"`)
 }
 
+func TestRunExportWorkerRejectsTODOExportPredicate(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateDataPlansOnly(root))
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(export) error = %v", err)
+	}
+	writeStageApproval(t, root, "export", hash)
+
+	_, err = RunExportWorker(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a")
+	if err == nil {
+		t.Fatal("RunExportWorker() expected TODO predicate error")
+	}
+	assertContains(t, err.Error(), "export chunk dbo.orders.000001 predicate still contains TODO")
+}
+
 func TestPrepareWorkerExecutorBuildsExportCommandsWhenApprovedHashMatches(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
 	must(t, GenerateDataPlansOnly(root))
+	reviewExportPlanPredicates(t, root)
 	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
 	if err != nil {
 		t.Fatalf("ComputePayloadHashForStage(export) error = %v", err)
@@ -1181,10 +1200,28 @@ func TestPrepareWorkerExecutorBuildsExportCommandsWhenApprovedHashMatches(t *tes
 	assertContains(t, first.ShellCommand, "--output-uri s3://migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full/dbo.orders.000001.parquet")
 }
 
+func TestPrepareWorkerExecutorRejectsTODOExportPredicate(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateDataPlansOnly(root))
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(export) error = %v", err)
+	}
+	writeStageApproval(t, root, "export", hash)
+
+	_, err = PrepareWorkerExecutor(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export", WorkerExecutorPrepareSpec{})
+	if err == nil {
+		t.Fatal("PrepareWorkerExecutor() expected TODO predicate error")
+	}
+	assertContains(t, err.Error(), "export chunk dbo.orders.000001 predicate still contains TODO")
+}
+
 func TestPrepareWorkerExecutorAddsExportConnectionStringEnv(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
 	must(t, GenerateDataPlansOnly(root))
+	reviewExportPlanPredicates(t, root)
 	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
 	if err != nil {
 		t.Fatalf("ComputePayloadHashForStage(export) error = %v", err)
@@ -1534,6 +1571,7 @@ func TestPlanWorkerReconcileReportsReadyAndBlockedProjectStages(t *testing.T) {
 	createValidationWorkerProject(t, root, dataWorkerInventory())
 	must(t, GenerateSchemaDraftOnly(root))
 	must(t, GenerateDataPlansOnly(root))
+	reviewExportPlanPredicates(t, root)
 	must(t, GenerateCDCPlanOnly(root))
 	exportHash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
 	if err != nil {
@@ -1582,6 +1620,7 @@ func TestExecuteNextWorkerReconcileAcquiresLeaseAndRunsFirstReadyAction(t *testi
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
 	must(t, GenerateDataPlansOnly(root))
+	reviewExportPlanPredicates(t, root)
 	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
 	if err != nil {
 		t.Fatalf("ComputePayloadHashForStage(export) error = %v", err)
@@ -1622,6 +1661,7 @@ func TestExecuteNextWorkerReconcileWritesStatePRDraftWhenRequested(t *testing.T)
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
 	must(t, GenerateDataPlansOnly(root))
+	reviewExportPlanPredicates(t, root)
 	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
 	if err != nil {
 		t.Fatalf("ComputePayloadHashForStage(export) error = %v", err)
@@ -1663,6 +1703,7 @@ func TestPrepareWorkerStatePRCreateBuildsGitAndGitHubCommands(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
 	must(t, GenerateDataPlansOnly(root))
+	reviewExportPlanPredicates(t, root)
 	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
 	if err != nil {
 		t.Fatalf("ComputePayloadHashForStage(export) error = %v", err)
@@ -2070,6 +2111,22 @@ func GenerateDataPlansOnly(root string) error {
 		ImportEngine:    "import-into",
 	})
 	return err
+}
+
+func reviewExportPlanPredicates(t *testing.T, root string) {
+	t.Helper()
+	rel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/export-plan.yaml"
+	plan := readFile(t, root, rel)
+	var reviewed strings.Builder
+	for _, line := range strings.Split(plan, "\n") {
+		if strings.Contains(line, "predicate: \"TODO: choose stable split predicate") {
+			prefix := line[:strings.Index(line, "predicate:")]
+			line = prefix + "predicate: id >= 0"
+		}
+		reviewed.WriteString(line)
+		reviewed.WriteByte('\n')
+	}
+	writeFileForTest(t, root, rel, reviewed.String())
 }
 
 func GenerateCDCPlanOnly(root string) error {

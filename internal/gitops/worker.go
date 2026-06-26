@@ -230,6 +230,9 @@ func runDataWorker(root, sourceClusterID, projectID, stage string) (DataWorkerRe
 		if err != nil {
 			return DataWorkerResult{}, err
 		}
+		if err := validateExportPlanChunks(chunks); err != nil {
+			return DataWorkerResult{}, err
+		}
 		result.Items = len(chunks)
 		result.StateFile = "state/export-chunks.yaml"
 		result.EvidenceFile = "evidence/precheck.json"
@@ -404,6 +407,30 @@ func readExportPlanChunks(path string) ([]dataExportChunkState, error) {
 		}
 	}
 	return chunks, nil
+}
+
+func validateExportPlanChunks(chunks []dataExportChunkState) error {
+	if len(chunks) == 0 {
+		return fmt.Errorf("export plan contains no chunks")
+	}
+	for _, chunk := range chunks {
+		if strings.TrimSpace(chunk.ID) == "" {
+			return fmt.Errorf("export chunk id is required")
+		}
+		if strings.TrimSpace(chunk.SourceObject) == "" {
+			return fmt.Errorf("export chunk %s source_object is required", chunk.ID)
+		}
+		if strings.TrimSpace(chunk.TargetObject) == "" {
+			return fmt.Errorf("export chunk %s target_object is required", chunk.ID)
+		}
+		if strings.TrimSpace(chunk.OutputURI) == "" {
+			return fmt.Errorf("export chunk %s output_uri is required", chunk.ID)
+		}
+		if containsTODOMarker(chunk.Predicate) {
+			return fmt.Errorf("export chunk %s predicate still contains TODO", chunk.ID)
+		}
+	}
+	return nil
 }
 
 func readImportPlanJobs(path string) ([]dataImportJobState, error) {
