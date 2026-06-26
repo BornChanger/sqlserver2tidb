@@ -220,17 +220,21 @@ func validateClusterDir(root, clusterRel string, report *ValidationReport) {
 	clusterMetadataRel := filepath.ToSlash(filepath.Join(clusterRel, "cluster.yaml"))
 	clusterMetadataPath := filepath.Join(root, filepath.FromSlash(clusterMetadataRel))
 	if info, err := os.Stat(clusterMetadataPath); err == nil && !info.IsDir() {
-		if err := validateClusterMetadataContent(clusterMetadataPath); err != nil {
+		expectedClusterID := filepath.Base(filepath.FromSlash(clusterRel))
+		if err := validateClusterMetadataContent(clusterMetadataPath, expectedClusterID); err != nil {
 			report.addError(fmt.Sprintf("invalid cluster metadata %s: %v", clusterMetadataRel, err))
 		}
 	}
 	validateProjects(root, filepath.ToSlash(filepath.Join(clusterRel, "projects")), report)
 }
 
-func validateClusterMetadataContent(path string) error {
+func validateClusterMetadataContent(path, expectedClusterID string) error {
 	meta, err := readClusterMetadata(path)
 	if err != nil {
 		return err
+	}
+	if meta.ClusterID != expectedClusterID {
+		return fmt.Errorf("cluster_id %q does not match directory id %q", meta.ClusterID, expectedClusterID)
 	}
 	return validateCluster(ClusterSpec{
 		ClusterID:              meta.ClusterID,
@@ -285,7 +289,9 @@ func validateProjectContent(root, projectRel string, report *ValidationReport) {
 	projectMetadataRel := filepath.ToSlash(filepath.Join(projectRel, "project.yaml"))
 	projectMetadataPath := filepath.Join(root, filepath.FromSlash(projectMetadataRel))
 	if info, err := os.Stat(projectMetadataPath); err == nil && !info.IsDir() {
-		if err := validateProjectMetadataContent(projectMetadataPath); err != nil {
+		expectedProjectID := filepath.Base(filepath.FromSlash(projectRel))
+		expectedClusterID := filepath.Base(filepath.Dir(filepath.Dir(filepath.FromSlash(projectRel))))
+		if err := validateProjectMetadataContent(projectMetadataPath, expectedClusterID, expectedProjectID); err != nil {
 			report.addError(fmt.Sprintf("invalid project metadata %s: %v", projectMetadataRel, err))
 		}
 	}
@@ -332,7 +338,7 @@ func validateProjectContent(root, projectRel string, report *ValidationReport) {
 	}
 }
 
-func validateProjectMetadataContent(path string) error {
+func validateProjectMetadataContent(path, expectedClusterID, expectedProjectID string) error {
 	meta, err := readProjectMetadata(path)
 	if err != nil {
 		return err
@@ -340,8 +346,14 @@ func validateProjectMetadataContent(path string) error {
 	if strings.TrimSpace(meta.ProjectID) == "" {
 		return errors.New("project id is required")
 	}
+	if meta.ProjectID != expectedProjectID {
+		return fmt.Errorf("project_id %q does not match directory id %q", meta.ProjectID, expectedProjectID)
+	}
 	if strings.TrimSpace(meta.SourceClusterID) == "" {
 		return errors.New("source cluster id is required")
+	}
+	if meta.SourceClusterID != expectedClusterID {
+		return fmt.Errorf("source_cluster_id %q does not match parent cluster id %q", meta.SourceClusterID, expectedClusterID)
 	}
 	if strings.TrimSpace(meta.SourceDatabase) == "" {
 		return errors.New("source database is required")

@@ -411,6 +411,42 @@ func TestValidateRepoReportsInvalidClusterRetention(t *testing.T) {
 	assertContains(t, strings.Join(report.Errors, "\n"), "invalid cluster metadata clusters/prod-sqlserver-a/cluster.yaml: cdc retention hours must be positive")
 }
 
+func TestValidateRepoReportsClusterIDMismatch(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)
+	clusterRel := "clusters/prod-sqlserver-a/cluster.yaml"
+	clusterYAML := readFile(t, root, clusterRel)
+	clusterYAML = strings.Replace(clusterYAML, "cluster_id: prod-sqlserver-a", "cluster_id: prod-sqlserver-b", 1)
+	writeFileForTest(t, root, clusterRel, clusterYAML)
+
+	report, err := ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
+	if report.Valid {
+		t.Fatal("ValidateRepo() valid = true, want cluster id mismatch")
+	}
+	assertContains(t, strings.Join(report.Errors, "\n"), `invalid cluster metadata clusters/prod-sqlserver-a/cluster.yaml: cluster_id "prod-sqlserver-b" does not match directory id "prod-sqlserver-a"`)
+}
+
+func TestValidateRepoReportsProjectIDMismatch(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)
+	projectRel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/project.yaml"
+	projectYAML := readFile(t, root, projectRel)
+	projectYAML = strings.Replace(projectYAML, "project_id: sales-db-to-tidb-prod-a", "project_id: inventory-db-to-tidb-prod-a", 1)
+	writeFileForTest(t, root, projectRel, projectYAML)
+
+	report, err := ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
+	if report.Valid {
+		t.Fatal("ValidateRepo() valid = true, want project id mismatch")
+	}
+	assertContains(t, strings.Join(report.Errors, "\n"), `invalid project metadata clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/project.yaml: project_id "inventory-db-to-tidb-prod-a" does not match directory id "sales-db-to-tidb-prod-a"`)
+}
+
 func TestValidateRepoReportsMissingRequiredGlobalFile(t *testing.T) {
 	root := t.TempDir()
 	must(t, InitRepo(root))
