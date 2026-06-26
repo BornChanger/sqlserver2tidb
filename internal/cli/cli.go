@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BornChanger/sqlserver2tidb/internal/buildinfo"
 	"github.com/BornChanger/sqlserver2tidb/internal/gitops"
 	sqlservercatalog "github.com/BornChanger/sqlserver2tidb/internal/sqlserver"
 )
@@ -68,6 +69,9 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runCreateCluster(args[1:], stdout, stderr)
 	case "create-project":
 		return runCreateProject(args[1:], stdout, stderr)
+	case "version", "-v", "--version":
+		fmt.Fprint(stdout, buildinfo.Format("sqlserver2tidb"))
+		return 0
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return 0
@@ -931,6 +935,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprint(w, `sqlserver2tidb manages GitOps metadata for SQL Server to TiDB migrations.
 
 Usage:
+  sqlserver2tidb version
   sqlserver2tidb init-repo --root .
   sqlserver2tidb validate-repo --root .
   sqlserver2tidb discover-sqlserver --root . --source-cluster-id prod-sqlserver-a --dry-run

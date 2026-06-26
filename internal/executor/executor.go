@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BornChanger/sqlserver2tidb/internal/buildinfo"
+
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/microsoft/go-mssqldb"
 )
@@ -39,6 +41,9 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runValidateCount(args[1:], stdout, stderr)
 	case "cdc":
 		return runCDC(args[1:], stdout, stderr)
+	case "version", "-v", "--version":
+		fmt.Fprint(stdout, buildinfo.Format("sqlserver2tidb-executor"))
+		return 0
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return 0
@@ -1057,6 +1062,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprint(w, `sqlserver2tidb-executor executes reviewed migration work items.
 
 Usage:
+  sqlserver2tidb-executor version
   sqlserver2tidb-executor apply-ddl --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --ddl-file clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/schema/tidb-ddl/dbo.orders.sql
   sqlserver2tidb-executor apply-ddl --execute --target-connection-string-env SQLSERVER2TIDB_TARGET_CONNECTION_STRING --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --ddl-file clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/schema/tidb-ddl/dbo.orders.sql
   sqlserver2tidb-executor export --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --chunk-id dbo.orders.000001 --source-object sales.dbo.orders --target-object app.orders --output-uri s3://bucket/path.parquet

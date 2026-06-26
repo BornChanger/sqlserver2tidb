@@ -66,6 +66,15 @@ bin/sqlserver2tidb
 bin/sqlserver2tidb-executor
 ```
 
+Both binaries expose build metadata:
+
+```bash
+bin/sqlserver2tidb version
+bin/sqlserver2tidb-executor version
+```
+
+`make build` injects the current Git commit and UTC build time. Direct `go test` and unlinked development builds report `dev`, `unknown`, and `unknown`.
+
 ## Test
 
 ```bash

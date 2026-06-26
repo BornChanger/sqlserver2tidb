@@ -11,6 +11,18 @@ import (
 	"testing"
 )
 
+func TestRunVersionCommand(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{"version"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("version code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	assertOutputContains(t, output, "sqlserver2tidb-executor version dev")
+	assertOutputContains(t, output, "commit: unknown")
+}
+
 func TestRunExportDryRunCommand(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 

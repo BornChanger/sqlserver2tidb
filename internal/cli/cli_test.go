@@ -10,6 +10,22 @@ import (
 	"github.com/BornChanger/sqlserver2tidb/internal/gitops"
 )
 
+func TestRunVersionCommand(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{"version"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("version code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "sqlserver2tidb version dev") {
+		t.Fatalf("version output = %q, want version", output)
+	}
+	if !strings.Contains(output, "commit: unknown") {
+		t.Fatalf("version output = %q, want commit", output)
+	}
+}
+
 func TestRunInitRepoCommand(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer
