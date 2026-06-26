@@ -1797,7 +1797,15 @@ func TestRunExecutorEvidencePRDraftAndCreateDryRunCommands(t *testing.T) {
   "status": "succeeded",
   "project_id": "sales-db-to-tidb-prod-a",
   "source_cluster_id": "prod-sqlserver-a",
-  "payload_hash": "`+hash+`"
+  "payload_hash": "`+hash+`",
+  "commands": [
+    {
+      "id": "schema/tidb-ddl/dbo.orders.sql",
+      "shell_command": "sqlserver2tidb-executor apply-ddl --execute",
+      "exit_code": 0,
+      "output": "applied\n"
+    }
+  ]
 }
 `), 0o644); err != nil {
 		t.Fatal(err)

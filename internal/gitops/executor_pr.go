@@ -32,11 +32,18 @@ type ExecutorEvidencePRCreateSpec struct {
 }
 
 type executorEvidenceSummary struct {
-	Stage           string `json:"stage"`
-	Status          string `json:"status"`
-	ProjectID       string `json:"project_id"`
-	SourceClusterID string `json:"source_cluster_id"`
-	PayloadHash     string `json:"payload_hash"`
+	Stage           string                           `json:"stage"`
+	Status          string                           `json:"status"`
+	ProjectID       string                           `json:"project_id"`
+	SourceClusterID string                           `json:"source_cluster_id"`
+	PayloadHash     string                           `json:"payload_hash"`
+	Commands        []executorEvidenceCommandSummary `json:"commands"`
+}
+
+type executorEvidenceCommandSummary struct {
+	ID           string `json:"id"`
+	ShellCommand string `json:"shell_command"`
+	ExitCode     *int   `json:"exit_code"`
 }
 
 func GenerateExecutorEvidencePRDraft(root, sourceClusterID, projectID, stage string) (ExecutorEvidencePRDraft, error) {
@@ -174,6 +181,9 @@ func loadExecutorEvidencePRContext(root, sourceClusterID, projectID, stage strin
 	if evidence.PayloadHash != payloadHash {
 		return executorEvidencePRContext{}, fmt.Errorf("executor evidence payload hash %s does not match current approved payload hash %s", evidence.PayloadHash, payloadHash)
 	}
+	if err := validateExecutorEvidenceCommands(evidence.Commands); err != nil {
+		return executorEvidencePRContext{}, err
+	}
 
 	return executorEvidencePRContext{
 		sourceClusterID: sourceClusterID,
@@ -184,6 +194,24 @@ func loadExecutorEvidencePRContext(root, sourceClusterID, projectID, stage strin
 		approvalFile:    executorEvidenceApprovalFile(sourceClusterID, projectID, stage),
 		evidence:        evidence,
 	}, nil
+}
+
+func validateExecutorEvidenceCommands(commands []executorEvidenceCommandSummary) error {
+	if len(commands) == 0 {
+		return fmt.Errorf("executor evidence commands must contain at least one command")
+	}
+	for i, command := range commands {
+		if strings.TrimSpace(command.ID) == "" {
+			return fmt.Errorf("executor evidence command %d id is required", i+1)
+		}
+		if strings.TrimSpace(command.ShellCommand) == "" {
+			return fmt.Errorf("executor evidence command %s shell_command is required", command.ID)
+		}
+		if command.ExitCode == nil {
+			return fmt.Errorf("executor evidence command %s exit_code is required", command.ID)
+		}
+	}
+	return nil
 }
 
 func isExecutorEvidenceStage(stage string) bool {

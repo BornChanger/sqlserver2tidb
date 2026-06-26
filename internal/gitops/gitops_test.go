@@ -1214,6 +1214,32 @@ func TestGenerateExecutorEvidencePRDraftWritesDDLBody(t *testing.T) {
 	assertContains(t, body, "gh pr create --base main --head agent/sales-db-to-tidb-prod-a/executor-ddl-evidence")
 }
 
+func TestGenerateExecutorEvidencePRDraftRejectsEmptyCommands(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateSchemaDraftOnly(root))
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "ddl")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(ddl) error = %v", err)
+	}
+	writeStageApproval(t, root, "ddl", hash)
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-ddl-run.json", `{
+  "stage": "ddl",
+  "status": "succeeded",
+  "project_id": "sales-db-to-tidb-prod-a",
+  "source_cluster_id": "prod-sqlserver-a",
+  "payload_hash": "`+hash+`",
+  "commands": []
+}
+`)
+
+	_, err = GenerateExecutorEvidencePRDraft(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "ddl")
+	if err == nil {
+		t.Fatal("GenerateExecutorEvidencePRDraft() expected empty commands error")
+	}
+	assertContains(t, err.Error(), "executor evidence commands must contain at least one command")
+}
+
 func TestPrepareExecutorEvidencePRCreateBuildsGitAndGitHubCommands(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
@@ -1228,7 +1254,15 @@ func TestPrepareExecutorEvidencePRCreateBuildsGitAndGitHubCommands(t *testing.T)
   "status": "succeeded",
   "project_id": "sales-db-to-tidb-prod-a",
   "source_cluster_id": "prod-sqlserver-a",
-  "payload_hash": "`+hash+`"
+  "payload_hash": "`+hash+`",
+  "commands": [
+    {
+      "id": "schema/tidb-ddl/dbo.orders.sql",
+      "shell_command": "sqlserver2tidb-executor apply-ddl --execute",
+      "exit_code": 0,
+      "output": "applied\n"
+    }
+  ]
 }
 `)
 	if _, err := GenerateExecutorEvidencePRDraft(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "ddl"); err != nil {
