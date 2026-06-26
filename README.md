@@ -14,6 +14,7 @@ This MVP provides:
 - SQL Server discovery dry-run planning without opening a database connection.
 - SQL Server catalog discovery using a connection string supplied through an environment variable.
 - Rule-based SQL Server compatibility analysis from `inventory/inventory.json`.
+- Project-scoped TiDB schema draft generation from SQL Server inventory and project metadata.
 - Source-cluster-first metadata organization:
 
   ```text
@@ -33,9 +34,9 @@ This MVP provides:
   ```
 
 - JSON Schema files for core metadata.
-- Tests for repository initialization, validation, discovery planning and execution, compatibility analysis, upstream SQL Server cluster creation, and migration project creation.
+- Tests for repository initialization, validation, discovery planning and execution, compatibility analysis, schema draft generation, upstream SQL Server cluster creation, and migration project creation.
 
-This MVP connects to SQL Server only for read-only catalog discovery when a connection string is supplied through an environment variable. It does **not** connect to TiDB or execute export, import, CDC, cutover, cleanup, or other migration actions yet.
+This MVP connects to SQL Server only for read-only catalog discovery when a connection string is supplied through an environment variable. It does **not** connect to TiDB or execute generated DDL, export, import, CDC, cutover, cleanup, or other migration actions yet.
 
 ## Build
 
@@ -124,6 +125,17 @@ go run ./cmd/sqlserver2tidb create-project \
   --owner dba-team,app-team
 ```
 
+Generate project-scoped TiDB DDL drafts from the current SQL Server inventory and project metadata:
+
+```bash
+go run ./cmd/sqlserver2tidb generate-schema-draft \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a
+```
+
+This writes `schema/tidb-ddl/`, `schema/conversion-report.md`, and `schema/schema-diff.json` under the project. Manual-review mappings are marked in both the DDL comments and schema diff.
+
 ## Documentation
 
 - [User Manual](docs/user-manual.md): end-to-end operator guide for the target SQL Server to TiDB migration agent workflow.
@@ -141,6 +153,5 @@ go run ./cmd/sqlserver2tidb create-project \
 
 ## Next Milestones
 
-- Add schema conversion draft generator.
 - Add PR generation helpers.
 - Add deterministic worker execution for approved validation steps.

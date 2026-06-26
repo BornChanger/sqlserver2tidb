@@ -29,6 +29,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runDiscoverSQLServer(args[1:], stdout, stderr)
 	case "analyze-compatibility":
 		return runAnalyzeCompatibility(args[1:], stdout, stderr)
+	case "generate-schema-draft":
+		return runGenerateSchemaDraft(args[1:], stdout, stderr)
 	case "create-cluster":
 		return runCreateCluster(args[1:], stdout, stderr)
 	case "create-project":
@@ -170,6 +172,32 @@ func runAnalyzeCompatibility(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+func runGenerateSchemaDraft(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("generate-schema-draft", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	root := fs.String("root", ".", "repository root")
+	sourceClusterID := fs.String("source-cluster-id", "", "upstream SQL Server cluster id")
+	projectID := fs.String("project-id", "", "migration project id")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	result, err := gitops.GenerateSchemaDraft(*root, *sourceClusterID, *projectID)
+	if err != nil {
+		fmt.Fprintf(stderr, "generate schema draft: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "schema draft generated for %s under source cluster %s\n", result.ProjectID, result.SourceClusterID)
+	fmt.Fprintf(stdout, "tables: %d, columns: %d, manual review items: %d\n",
+		result.Tables,
+		result.Columns,
+		result.ManualReviewItems,
+	)
+	fmt.Fprintf(stdout, "wrote %s\n", "schema/tidb-ddl")
+	fmt.Fprintf(stdout, "wrote %s\n", "schema/conversion-report.md")
+	fmt.Fprintf(stdout, "wrote %s\n", "schema/schema-diff.json")
+	return 0
+}
+
 func runCreateCluster(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("create-cluster", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -265,6 +293,7 @@ Usage:
   sqlserver2tidb discover-sqlserver --root . --source-cluster-id prod-sqlserver-a --dry-run
   sqlserver2tidb discover-sqlserver --root . --source-cluster-id prod-sqlserver-a --connection-string-env SQLSERVER2TIDB_SQLSERVER_DSN
   sqlserver2tidb analyze-compatibility --root . --source-cluster-id prod-sqlserver-a
+  sqlserver2tidb generate-schema-draft --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
   sqlserver2tidb create-cluster --cluster-id prod-sqlserver-a --display-name "prod SQL Server A" --listener sqlserver-a.internal --secret-ref vault://...
   sqlserver2tidb create-project --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --source-database sales --source-schema dbo --target-name tidb-prod-a --target-database app --target-secret-ref vault://...
 `)

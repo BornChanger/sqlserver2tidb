@@ -469,6 +469,141 @@ func TestAnalyzeSQLServerCompatibilityRequiresExistingCluster(t *testing.T) {
 	assertContains(t, err.Error(), `source cluster "missing-cluster" does not exist`)
 }
 
+func TestGenerateSchemaDraftWritesProjectScopedDDLAndReports(t *testing.T) {
+	root := t.TempDir()
+	must(t, InitRepo(root))
+	must(t, CreateCluster(root, ClusterSpec{
+		ClusterID:              "prod-sqlserver-a",
+		DisplayName:            "prod SQL Server A",
+		Listener:               "sqlserver-a.internal",
+		Port:                   1433,
+		SecretRef:              "vault://migration/prod-sqlserver-a/readonly",
+		CDCMode:                "sqlserver-cdc",
+		RetentionHoursRequired: 168,
+		Owners:                 []string{"dba-team"},
+	}))
+	must(t, CreateProject(root, ProjectSpec{
+		SourceClusterID: "prod-sqlserver-a",
+		ProjectID:       "sales-db-to-tidb-prod-a",
+		DisplayName:     "sales DB to TiDB prod A",
+		SourceDatabase:  "sales",
+		SourceSchemas:   []string{"dbo"},
+		TargetName:      "tidb-prod-a",
+		TargetDatabase:  "app",
+		TargetSecretRef: "vault://migration/tidb-prod-a/migrate-user",
+		Mode:            "short-downtime",
+		Owners:          []string{"dba-team"},
+	}))
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/inventory/inventory.json", `{
+  "status": "discovered",
+  "databases": [
+    {
+      "name": "sales",
+      "schemas": [
+        {
+          "name": "dbo",
+          "tables": [
+            {
+              "name": "orders",
+              "row_count": 42,
+              "columns": [
+                {"name": "id", "type": "int", "identity": true},
+                {"name": "customer_name", "type": "nvarchar"},
+                {"name": "computed_total", "type": "decimal", "computed": true},
+                {"name": "payload", "type": "xml"},
+                {"name": "rv", "type": "rowversion"}
+              ]
+            }
+          ]
+        },
+        {
+          "name": "audit",
+          "tables": [
+            {
+              "name": "events",
+              "columns": [
+                {"name": "id", "type": "bigint"}
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "hr",
+      "schemas": [
+        {
+          "name": "dbo",
+          "tables": [
+            {
+              "name": "employees",
+              "columns": [
+                {"name": "id", "type": "int"}
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+`)
+
+	result, err := GenerateSchemaDraft(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a")
+	if err != nil {
+		t.Fatalf("GenerateSchemaDraft() error = %v", err)
+	}
+	if result.Tables != 1 || result.Columns != 5 || result.ManualReviewItems != 3 {
+		t.Fatalf("GenerateSchemaDraft() result = %+v, want 1 table, 5 columns, 3 manual review items", result)
+	}
+
+	base := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a"
+	ddl := readFile(t, root, base+"/schema/tidb-ddl/dbo.orders.sql")
+	assertContains(t, ddl, "CREATE TABLE IF NOT EXISTS `app`.`orders`")
+	assertContains(t, ddl, "`id` INT")
+	assertContains(t, ddl, "`customer_name` VARCHAR(255)")
+	assertContains(t, ddl, "`computed_total` DECIMAL /* TODO: computed column expression requires manual rewrite */")
+	assertContains(t, ddl, "`payload` TEXT /* TODO: SQL Server xml requires manual mapping */")
+	assertContains(t, ddl, "`rv` VARBINARY(8) /* TODO: SQL Server rowversion requires application-managed replacement */")
+	if _, err := os.Stat(filepath.Join(root, "clusters", "prod-sqlserver-a", "projects", "sales-db-to-tidb-prod-a", "schema", "tidb-ddl", "audit.events.sql")); err == nil {
+		t.Fatal("GenerateSchemaDraft() wrote table outside project source schema")
+	}
+
+	report := readFile(t, root, base+"/schema/conversion-report.md")
+	assertContains(t, report, "# Schema Conversion Report")
+	assertContains(t, report, "sales.dbo.orders")
+	assertContains(t, report, "Manual review items: 3")
+	assertContains(t, report, "SQLSERVER_COMPUTED_COLUMN")
+	assertContains(t, report, "SQLSERVER_TYPE_XML")
+	assertContains(t, report, "SQLSERVER_TYPE_ROWVERSION")
+
+	diff := readFile(t, root, base+"/schema/schema-diff.json")
+	assertContains(t, diff, `"project_id": "sales-db-to-tidb-prod-a"`)
+	assertContains(t, diff, `"source_object": "sales.dbo.orders"`)
+	assertContains(t, diff, `"manual_review": true`)
+}
+
+func TestGenerateSchemaDraftRequiresExistingProject(t *testing.T) {
+	root := t.TempDir()
+	must(t, InitRepo(root))
+	must(t, CreateCluster(root, ClusterSpec{
+		ClusterID:              "prod-sqlserver-a",
+		DisplayName:            "prod SQL Server A",
+		Listener:               "sqlserver-a.internal",
+		Port:                   1433,
+		SecretRef:              "vault://migration/prod-sqlserver-a/readonly",
+		CDCMode:                "sqlserver-cdc",
+		RetentionHoursRequired: 168,
+		Owners:                 []string{"dba-team"},
+	}))
+
+	_, err := GenerateSchemaDraft(root, "prod-sqlserver-a", "missing-project")
+	if err == nil {
+		t.Fatal("GenerateSchemaDraft() expected error for missing project")
+	}
+	assertContains(t, err.Error(), `project "missing-project" does not exist under source cluster "prod-sqlserver-a"`)
+}
+
 func assertFile(t *testing.T, root, rel string) {
 	t.Helper()
 	info, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel)))
