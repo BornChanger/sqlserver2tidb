@@ -436,6 +436,33 @@ func TestRunGenerateDataPlansCommand(t *testing.T) {
 	}
 	assertExists(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/export-plan.yaml")
 	assertExists(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml")
+
+	stdout.Reset()
+	stderr.Reset()
+	code = Run([]string{
+		"generate-data-plans",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--object-uri-prefix", "s3://migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full",
+		"--chunk-size-rows", "3000000",
+		"--export-format", "parquet",
+		"--import-engine", "import-into",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("generate-data-plans single chunk code = %d, stderr = %s", code, stderr.String())
+	}
+	output = stdout.String()
+	if !strings.Contains(output, "export chunks: 1") {
+		t.Fatalf("generate-data-plans stdout = %q, want single export chunk count", output)
+	}
+	exportPlan := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/export-plan.yaml")
+	if !strings.Contains(exportPlan, `predicate: "1 = 1"`) {
+		t.Fatalf("export plan = %q, want trivial single-chunk predicate", exportPlan)
+	}
+	if strings.Contains(exportPlan, "TODO") {
+		t.Fatalf("single-chunk export plan should not contain TODO predicate:\n%s", exportPlan)
+	}
 }
 
 func TestRunGeneratePRDraftCommand(t *testing.T) {
