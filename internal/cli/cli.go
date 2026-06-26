@@ -2,11 +2,13 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -575,6 +577,7 @@ func runWorkerExecutor(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
+	results := make([]workerExecutorRunCommandEvidence, 0, len(spec.Commands))
 	for _, command := range spec.Commands {
 		if len(command.Args) == 0 {
 			fmt.Fprintf(stderr, "worker executor: empty command for %s\n", command.ID)
@@ -587,15 +590,85 @@ func runWorkerExecutor(args []string, stdout, stderr io.Writer) int {
 		if len(output) > 0 {
 			fmt.Fprint(stdout, string(output))
 		}
+		results = append(results, workerExecutorRunCommandEvidence{
+			ID:           command.ID,
+			Args:         args,
+			ShellCommand: renderArgsForEvidence(args),
+			ExitCode:     exitCodeForCommandError(err),
+			Output:       string(output),
+		})
 		if err != nil {
+			if _, evidenceErr := writeWorkerExecutorRunEvidence(*root, spec, "failed", results); evidenceErr != nil {
+				fmt.Fprintf(stderr, "worker executor: %v\n", evidenceErr)
+			}
 			fmt.Fprintf(stderr, "worker executor: command %s failed: %v\n", command.ID, err)
 			return 1
 		}
 	}
+	evidenceFile, err := writeWorkerExecutorRunEvidence(*root, spec, "succeeded", results)
+	if err != nil {
+		fmt.Fprintf(stderr, "worker executor: %v\n", err)
+		return 1
+	}
 	fmt.Fprintf(stdout, "worker executor completed for %s\n", spec.ProjectID)
 	fmt.Fprintf(stdout, "stage: %s\n", spec.Stage)
 	fmt.Fprintf(stdout, "commands: %d\n", len(spec.Commands))
+	fmt.Fprintf(stdout, "wrote %s\n", evidenceFile)
 	return 0
+}
+
+type workerExecutorRunCommandEvidence struct {
+	ID           string   `json:"id"`
+	Args         []string `json:"args"`
+	ShellCommand string   `json:"shell_command"`
+	ExitCode     int      `json:"exit_code"`
+	Output       string   `json:"output"`
+}
+
+type workerExecutorRunEvidence struct {
+	Stage           string                             `json:"stage"`
+	Status          string                             `json:"status"`
+	ProjectID       string                             `json:"project_id"`
+	SourceClusterID string                             `json:"source_cluster_id"`
+	PayloadHash     string                             `json:"payload_hash"`
+	Commands        []workerExecutorRunCommandEvidence `json:"commands"`
+	GeneratedAt     string                             `json:"generated_at"`
+}
+
+func writeWorkerExecutorRunEvidence(root string, spec gitops.WorkerExecutorSpec, status string, commands []workerExecutorRunCommandEvidence) (string, error) {
+	rel := filepath.ToSlash(filepath.Join("clusters", spec.SourceClusterID, "projects", spec.ProjectID, "evidence", "executor-"+spec.Stage+"-run.json"))
+	evidence := workerExecutorRunEvidence{
+		Stage:           spec.Stage,
+		Status:          status,
+		ProjectID:       spec.ProjectID,
+		SourceClusterID: spec.SourceClusterID,
+		PayloadHash:     spec.PayloadHash,
+		Commands:        commands,
+		GeneratedAt:     time.Now().UTC().Format(time.RFC3339),
+	}
+	data, err := json.MarshalIndent(evidence, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("marshal executor evidence: %w", err)
+	}
+	data = append(data, '\n')
+	if err := os.WriteFile(filepath.Join(root, filepath.FromSlash(rel)), data, 0o644); err != nil {
+		return "", fmt.Errorf("write executor evidence: %w", err)
+	}
+	return filepath.ToSlash(filepath.Join("evidence", "executor-"+spec.Stage+"-run.json")), nil
+}
+
+func exitCodeForCommandError(err error) int {
+	if err == nil {
+		return 0
+	}
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		return exitErr.ExitCode()
+	}
+	return 1
+}
+
+func renderArgsForEvidence(args []string) string {
+	return strings.Join(args, " ")
 }
 
 func withExternalExecutorExecuteFlag(args []string) []string {

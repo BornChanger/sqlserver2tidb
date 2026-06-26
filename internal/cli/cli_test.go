@@ -928,7 +928,7 @@ func TestRunWorkerExecutorExecutePassesExecuteFlagToExternalExecutor(t *testing.
 	writeCLIStageApproval(t, root, "export", parsePayloadHash(t, stdout.String()))
 
 	fakeExecutor := filepath.Join(root, "fake-executor")
-	if err := os.WriteFile(fakeExecutor, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> executor-args.log\n"), 0o755); err != nil {
+	if err := os.WriteFile(fakeExecutor, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> executor-args.log\nprintf 'fake executor completed: %s\\n' \"$1\"\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -953,6 +953,80 @@ func TestRunWorkerExecutorExecutePassesExecuteFlagToExternalExecutor(t *testing.
 	}
 	if !strings.Contains(string(argsLog), "export --execute --root .") {
 		t.Fatalf("executor args log = %q, want external executor --execute flag", string(argsLog))
+	}
+	evidence := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-export-run.json")
+	if !strings.Contains(evidence, `"stage": "export"`) {
+		t.Fatalf("executor evidence = %q, want export stage", evidence)
+	}
+	if !strings.Contains(evidence, `"status": "succeeded"`) {
+		t.Fatalf("executor evidence = %q, want succeeded status", evidence)
+	}
+	if !strings.Contains(evidence, `"id": "dbo.orders.000001"`) {
+		t.Fatalf("executor evidence = %q, want command id", evidence)
+	}
+	if !strings.Contains(evidence, `"exit_code": 0`) {
+		t.Fatalf("executor evidence = %q, want zero exit code", evidence)
+	}
+	if !strings.Contains(evidence, `fake executor completed: export`) {
+		t.Fatalf("executor evidence = %q, want executor output", evidence)
+	}
+	if !strings.Contains(stdout.String(), "wrote evidence/executor-export-run.json") {
+		t.Fatalf("worker-executor stdout = %q, want evidence path", stdout.String())
+	}
+}
+
+func TestRunWorkerExecutorExecuteWritesFailedEvidenceOnCommandFailure(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createCLIProjectWithOneExportChunk(t, root, &stdout, &stderr)
+	reviewCLIExportPlanPredicates(t, root)
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"compute-payload-hash",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "export",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("compute-payload-hash export code = %d, stderr = %s", code, stderr.String())
+	}
+	writeCLIStageApproval(t, root, "export", parsePayloadHash(t, stdout.String()))
+
+	fakeExecutor := filepath.Join(root, "fake-executor-fails")
+	if err := os.WriteFile(fakeExecutor, []byte("#!/bin/sh\nprintf 'fake executor failed\\n'\nexit 17\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = Run([]string{
+		"worker-executor",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "export",
+		"--executor-binary", "./fake-executor-fails",
+		"--execute",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("worker-executor execute code = 0, want failure")
+	}
+	if !strings.Contains(stderr.String(), "worker executor: command dbo.orders.000001 failed") {
+		t.Fatalf("worker-executor stderr = %q, want failed command", stderr.String())
+	}
+	evidence := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-export-run.json")
+	if !strings.Contains(evidence, `"status": "failed"`) {
+		t.Fatalf("executor evidence = %q, want failed status", evidence)
+	}
+	if !strings.Contains(evidence, `"exit_code": 17`) {
+		t.Fatalf("executor evidence = %q, want exit code 17", evidence)
+	}
+	if !strings.Contains(evidence, `fake executor failed`) {
+		t.Fatalf("executor evidence = %q, want failure output", evidence)
 	}
 }
 
@@ -1575,11 +1649,89 @@ func TestRunUnknownCommandReturnsUsageError(t *testing.T) {
 	}
 }
 
+func createCLIProjectWithOneExportChunk(t *testing.T, root string, stdout, stderr *bytes.Buffer) {
+	t.Helper()
+	if code := Run([]string{"init-repo", "--root", root}, stdout, stderr); code != 0 {
+		t.Fatalf("init-repo code = %d, stderr = %s", code, stderr.String())
+	}
+	if code := Run([]string{
+		"create-cluster",
+		"--root", root,
+		"--cluster-id", "prod-sqlserver-a",
+		"--display-name", "prod SQL Server A",
+		"--listener", "sqlserver-a.internal",
+		"--secret-ref", "vault://migration/prod-sqlserver-a/readonly",
+		"--owner", "dba-team",
+	}, stdout, stderr); code != 0 {
+		t.Fatalf("create-cluster code = %d, stderr = %s", code, stderr.String())
+	}
+	if code := Run([]string{
+		"create-project",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--display-name", "sales DB to TiDB prod A",
+		"--source-database", "sales",
+		"--source-schema", "dbo",
+		"--target-name", "tidb-prod-a",
+		"--target-database", "app",
+		"--target-secret-ref", "vault://migration/tidb-prod-a/migrate-user",
+		"--owner", "dba-team",
+	}, stdout, stderr); code != 0 {
+		t.Fatalf("create-project code = %d, stderr = %s", code, stderr.String())
+	}
+	inventoryPath := filepath.Join(root, "clusters", "prod-sqlserver-a", "inventory", "inventory.json")
+	if err := os.WriteFile(inventoryPath, []byte(`{
+  "status": "discovered",
+  "databases": [
+    {
+      "name": "sales",
+      "schemas": [
+        {
+          "name": "dbo",
+          "tables": [
+            {
+              "name": "orders",
+              "row_count": 1,
+              "columns": [
+                {"name": "id", "type": "int"}
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code := Run([]string{
+		"generate-data-plans",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--object-uri-prefix", "file:///tmp/sqlserver2tidb-test/full",
+		"--chunk-size-rows", "1000",
+	}, stdout, stderr); code != 0 {
+		t.Fatalf("generate-data-plans code = %d, stderr = %s", code, stderr.String())
+	}
+}
+
 func assertExists(t *testing.T, root, rel string) {
 	t.Helper()
 	if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel))); err != nil {
 		t.Fatalf("expected %s to exist: %v", rel, err)
 	}
+}
+
+func readCLIRelFile(t *testing.T, root, rel string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
+	if err != nil {
+		t.Fatalf("read %s: %v", rel, err)
+	}
+	return string(data)
 }
 
 func parsePayloadHash(t *testing.T, output string) string {
