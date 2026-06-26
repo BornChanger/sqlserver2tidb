@@ -119,7 +119,7 @@ The command reuses `requireApprovedStage`, so it refuses to produce executor com
 
 For export, it produces one command per export chunk. For import, it produces one command per import job. For CDC, it produces one command per tracked source table. The executor shell does not itself connect to SQL Server, TiDB, Kafka, or object storage.
 
-`sqlserver2tidb-executor` is currently included as a dry-run adapter. It parses `export`, `import`, and `cdc` work-item arguments and prints the work-item context. Its `--execute` paths intentionally return explicit not-implemented errors. Real SQL Server export, object storage writes, TiDB import, and CDC apply logic should be implemented inside this binary incrementally behind the same approval/hash gate.
+`sqlserver2tidb-executor` is currently included as a narrow execution adapter. It parses `export`, `import`, and `cdc` work-item arguments and prints the work-item context by default. `export --execute` supports the first real side-effect path: SQL Server query execution into a local `file://` CSV file, using a connection string read from `SQLSERVER2TIDB_SOURCE_CONNECTION_STRING` or `--source-connection-string-env`. It rejects export predicates that still contain `TODO` and refuses non-`file://` output URIs. Object storage export formats, TiDB import, and CDC apply logic should be implemented inside this binary incrementally behind the same approval/hash gate. `import --execute` and `cdc --execute` still return explicit not-implemented errors.
 
 ## CDC Plan And Worker
 

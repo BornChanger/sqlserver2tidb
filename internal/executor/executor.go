@@ -1,12 +1,23 @@
 package executor
 
 import (
+	"context"
+	"database/sql"
+	"encoding/csv"
 	"flag"
 	"fmt"
 	"io"
+	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
+
+	_ "github.com/microsoft/go-mssqldb"
 )
+
+const defaultSourceConnectionStringEnv = "SQLSERVER2TIDB_SOURCE_CONNECTION_STRING"
 
 func Run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
@@ -42,13 +53,10 @@ func runExport(args []string, stdout, stderr io.Writer) int {
 	targetObject := fs.String("target-object", "", "target object")
 	outputURI := fs.String("output-uri", "", "export output URI")
 	predicate := fs.String("predicate", "", "source split predicate")
-	execute := fs.Bool("execute", false, "perform the export; not implemented in this adapter")
+	sourceConnectionStringEnv := fs.String("source-connection-string-env", defaultSourceConnectionStringEnv, "environment variable containing the SQL Server connection string")
+	execute := fs.Bool("execute", false, "perform the export")
 	if err := fs.Parse(args); err != nil {
 		return 2
-	}
-	if *execute {
-		fmt.Fprintln(stderr, "executor export: --execute is not implemented yet")
-		return 1
 	}
 	if err := requireFields("executor export",
 		field{"source cluster id", *sourceClusterID},
@@ -60,6 +68,19 @@ func runExport(args []string, stdout, stderr io.Writer) int {
 	); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
+	}
+	if *execute {
+		if err := executeSQLServerExport(context.Background(), exportExecuteSpec{
+			SourceObject:              *sourceObject,
+			OutputURI:                 *outputURI,
+			Predicate:                 *predicate,
+			SourceConnectionStringEnv: *sourceConnectionStringEnv,
+		}); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "executor export completed: %s -> %s\n", *sourceObject, *outputURI)
+		return 0
 	}
 
 	fmt.Fprintln(stdout, "executor export dry run")
@@ -76,6 +97,166 @@ func runExport(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintln(stdout, "No SQL Server connection will be opened.")
 	fmt.Fprintln(stdout, "No object storage write will be attempted.")
 	return 0
+}
+
+type exportExecuteSpec struct {
+	SourceObject              string
+	OutputURI                 string
+	Predicate                 string
+	SourceConnectionStringEnv string
+}
+
+func executeSQLServerExport(ctx context.Context, spec exportExecuteSpec) error {
+	if strings.Contains(strings.ToUpper(spec.Predicate), "TODO") {
+		return fmt.Errorf("executor export: predicate still contains TODO")
+	}
+
+	outputPath, err := resolveExportOutputFile(spec.OutputURI)
+	if err != nil {
+		return fmt.Errorf("executor export: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
+		return fmt.Errorf("executor export: create output directory: %w", err)
+	}
+
+	envName := strings.TrimSpace(spec.SourceConnectionStringEnv)
+	if envName == "" {
+		envName = defaultSourceConnectionStringEnv
+	}
+	connectionString := strings.TrimSpace(os.Getenv(envName))
+	if connectionString == "" {
+		return fmt.Errorf("executor export: source connection string env %s is not set", envName)
+	}
+
+	query, err := buildSQLServerExportQuery(spec.SourceObject, spec.Predicate)
+	if err != nil {
+		return fmt.Errorf("executor export: %w", err)
+	}
+
+	db, err := sql.Open("sqlserver", connectionString)
+	if err != nil {
+		return fmt.Errorf("executor export: open SQL Server connection: %w", err)
+	}
+	defer db.Close()
+
+	rows, err := db.QueryContext(ctx, query)
+	if err != nil {
+		return fmt.Errorf("executor export: query source object %s: %w", spec.SourceObject, err)
+	}
+
+	file, err := os.Create(outputPath)
+	if err != nil {
+		rows.Close()
+		return fmt.Errorf("executor export: create output file: %w", err)
+	}
+	if err := writeCSVExportRows(file, rows); err != nil {
+		file.Close()
+		return fmt.Errorf("executor export: write CSV output: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("executor export: close output file: %w", err)
+	}
+	return nil
+}
+
+func resolveExportOutputFile(outputURI string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(outputURI))
+	if err != nil {
+		return "", fmt.Errorf("parse output uri: %w", err)
+	}
+	if parsed.Scheme != "file" {
+		return "", fmt.Errorf("only file:// output URIs are supported for --execute")
+	}
+	if parsed.Host != "" && parsed.Host != "localhost" {
+		return "", fmt.Errorf("file output URI host must be empty or localhost")
+	}
+	if strings.TrimSpace(parsed.Path) == "" {
+		return "", fmt.Errorf("file output URI path is required")
+	}
+	return filepath.Clean(parsed.Path), nil
+}
+
+func buildSQLServerExportQuery(sourceObject, predicate string) (string, error) {
+	parts := strings.Split(strings.TrimSpace(sourceObject), ".")
+	if len(parts) != 2 && len(parts) != 3 {
+		return "", fmt.Errorf("source object must be schema.table or database.schema.table")
+	}
+	quoted := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return "", fmt.Errorf("source object contains an empty identifier")
+		}
+		quoted = append(quoted, quoteSQLServerIdentifier(part))
+	}
+
+	query := "SELECT * FROM " + strings.Join(quoted, ".")
+	predicate = strings.TrimSpace(predicate)
+	if predicate != "" {
+		query += " WHERE " + predicate
+	}
+	return query, nil
+}
+
+func quoteSQLServerIdentifier(identifier string) string {
+	return "[" + strings.ReplaceAll(identifier, "]", "]]") + "]"
+}
+
+type exportRows interface {
+	Columns() ([]string, error)
+	Next() bool
+	Scan(dest ...any) error
+	Err() error
+	Close() error
+}
+
+func writeCSVExportRows(w io.Writer, rows exportRows) error {
+	defer rows.Close()
+
+	columns, err := rows.Columns()
+	if err != nil {
+		return err
+	}
+	writer := csv.NewWriter(w)
+	if err := writer.Write(columns); err != nil {
+		return err
+	}
+
+	values := make([]any, len(columns))
+	dest := make([]any, len(columns))
+	for i := range values {
+		dest[i] = &values[i]
+	}
+	for rows.Next() {
+		if err := rows.Scan(dest...); err != nil {
+			return err
+		}
+		record := make([]string, len(values))
+		for i, value := range values {
+			record[i] = formatCSVValue(value)
+		}
+		if err := writer.Write(record); err != nil {
+			return err
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	writer.Flush()
+	return writer.Error()
+}
+
+func formatCSVValue(value any) string {
+	switch v := value.(type) {
+	case nil:
+		return ""
+	case []byte:
+		return string(v)
+	case time.Time:
+		return v.UTC().Format(time.RFC3339Nano)
+	default:
+		return fmt.Sprint(v)
+	}
 }
 
 func runImport(args []string, stdout, stderr io.Writer) int {
@@ -182,6 +363,7 @@ func printUsage(w io.Writer) {
 
 Usage:
   sqlserver2tidb-executor export --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --chunk-id dbo.orders.000001 --source-object sales.dbo.orders --target-object app.orders --output-uri s3://bucket/path.parquet
+  sqlserver2tidb-executor export --execute --source-connection-string-env SQLSERVER2TIDB_SOURCE_CONNECTION_STRING --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --chunk-id dbo.orders.000001 --source-object sales.dbo.orders --target-object app.orders --output-uri file:///tmp/path.csv --predicate "id >= 1 AND id < 1000"
   sqlserver2tidb-executor import --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --job-id import-dbo.orders.000001 --target-object app.orders --source-uri s3://bucket/path.parquet
   sqlserver2tidb-executor cdc --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --source-object sales.dbo.orders --target-object app.orders --apply-batch-size 1000
 `)
