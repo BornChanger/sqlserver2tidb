@@ -207,6 +207,9 @@ func prepareValidationExecutorCommands(projectDir, binary, sourceClusterID, proj
 		}
 		commands = append(commands, newWorkerExecutorCommand(binary, check.ID, args))
 	}
+	if len(commands) == 0 {
+		return nil, fmt.Errorf("validation plan contains no supported row_count checks")
+	}
 	return commands, nil
 }
 

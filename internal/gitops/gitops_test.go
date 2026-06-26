@@ -1287,6 +1287,25 @@ checks:
 	assertContains(t, first.ShellCommand, "--target-connection-string-env TIDB_VALIDATE_DSN")
 }
 
+func TestPrepareWorkerExecutorValidationRequiresSupportedRowCountChecks(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/validation-plan.yaml", `status: draft
+checks: []
+`)
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "validation")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(validation) error = %v", err)
+	}
+	writeStageApproval(t, root, "validation", hash)
+
+	_, err = PrepareWorkerExecutor(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "validation", WorkerExecutorPrepareSpec{})
+	if err == nil {
+		t.Fatal("PrepareWorkerExecutor() expected no validation command error")
+	}
+	assertContains(t, err.Error(), "validation plan contains no supported row_count checks")
+}
+
 func TestRunImportWorkerWritesPlannedStateWhenApprovedHashMatches(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
