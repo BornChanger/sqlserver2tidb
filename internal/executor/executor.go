@@ -25,7 +25,7 @@ import (
 const defaultSourceConnectionStringEnv = "SQLSERVER2TIDB_SOURCE_CONNECTION_STRING"
 const defaultTargetConnectionStringEnv = "SQLSERVER2TIDB_TARGET_CONNECTION_STRING"
 
-var csvImportHTTPClient = &http.Client{Timeout: 10 * time.Minute}
+var csvHTTPClient = &http.Client{Timeout: 10 * time.Minute}
 
 func Run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
@@ -336,11 +336,11 @@ func executeSQLServerExport(ctx context.Context, spec exportExecuteSpec) error {
 		return fmt.Errorf("executor export: predicate still contains TODO")
 	}
 
-	outputPath, err := resolveExportOutputFile(spec.OutputURI)
+	output, err := parseExportOutputURI(spec.OutputURI)
 	if err != nil {
 		return fmt.Errorf("executor export: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
+	if err := prepareExportOutputURI(output); err != nil {
 		return fmt.Errorf("executor export: create output directory: %w", err)
 	}
 
@@ -369,36 +369,138 @@ func executeSQLServerExport(ctx context.Context, spec exportExecuteSpec) error {
 		return fmt.Errorf("executor export: query source object %s: %w", spec.SourceObject, err)
 	}
 
-	file, err := os.Create(outputPath)
+	outputWriter, err := openCSVExportOutput(ctx, output)
 	if err != nil {
 		rows.Close()
-		return fmt.Errorf("executor export: create output file: %w", err)
+		return fmt.Errorf("executor export: %w", err)
 	}
-	if err := writeCSVExportRows(file, rows); err != nil {
-		file.Close()
+	if err := writeCSVExportRows(outputWriter, rows); err != nil {
+		outputWriter.Close()
 		return fmt.Errorf("executor export: write CSV output: %w", err)
 	}
-	if err := file.Close(); err != nil {
-		return fmt.Errorf("executor export: close output file: %w", err)
+	if err := outputWriter.Close(); err != nil {
+		return fmt.Errorf("executor export: close CSV output: %w", err)
 	}
 	return nil
 }
 
 func resolveExportOutputFile(outputURI string) (string, error) {
+	output, err := parseExportOutputURI(outputURI)
+	if err != nil {
+		return "", err
+	}
+	if output.scheme != "file" {
+		return "", fmt.Errorf("output URI is not a file:// URI")
+	}
+	return output.path, nil
+}
+
+type exportOutputURI struct {
+	scheme string
+	path   string
+	uri    string
+}
+
+func parseExportOutputURI(outputURI string) (exportOutputURI, error) {
 	parsed, err := url.Parse(strings.TrimSpace(outputURI))
 	if err != nil {
-		return "", fmt.Errorf("parse output uri: %w", err)
+		return exportOutputURI{}, fmt.Errorf("parse output uri: %w", err)
 	}
-	if parsed.Scheme != "file" {
-		return "", fmt.Errorf("only file:// output URIs are supported for --execute")
+	switch parsed.Scheme {
+	case "file":
+		if parsed.Host != "" && parsed.Host != "localhost" {
+			return exportOutputURI{}, fmt.Errorf("file output URI host must be empty or localhost")
+		}
+		if strings.TrimSpace(parsed.Path) == "" {
+			return exportOutputURI{}, fmt.Errorf("file output URI path is required")
+		}
+		return exportOutputURI{
+			scheme: parsed.Scheme,
+			path:   filepath.Clean(parsed.Path),
+			uri:    parsed.String(),
+		}, nil
+	case "http", "https":
+		if strings.TrimSpace(parsed.Host) == "" {
+			return exportOutputURI{}, fmt.Errorf("%s output URI host is required", parsed.Scheme)
+		}
+		return exportOutputURI{
+			scheme: parsed.Scheme,
+			uri:    parsed.String(),
+		}, nil
+	default:
+		return exportOutputURI{}, fmt.Errorf("only file://, http://, and https:// output URIs are supported for --execute")
 	}
-	if parsed.Host != "" && parsed.Host != "localhost" {
-		return "", fmt.Errorf("file output URI host must be empty or localhost")
+}
+
+func prepareExportOutputURI(output exportOutputURI) error {
+	if output.scheme != "file" {
+		return nil
 	}
-	if strings.TrimSpace(parsed.Path) == "" {
-		return "", fmt.Errorf("file output URI path is required")
+	if err := os.MkdirAll(filepath.Dir(output.path), 0o755); err != nil {
+		return err
 	}
-	return filepath.Clean(parsed.Path), nil
+	return nil
+}
+
+func openCSVExportOutput(ctx context.Context, output exportOutputURI) (io.WriteCloser, error) {
+	switch output.scheme {
+	case "file":
+		file, err := os.Create(output.path)
+		if err != nil {
+			return nil, fmt.Errorf("create output file: %w", err)
+		}
+		return file, nil
+	case "http", "https":
+		return newHTTPExportWriter(ctx, output.uri)
+	default:
+		return nil, fmt.Errorf("unsupported output URI scheme %q", output.scheme)
+	}
+}
+
+type httpExportWriter struct {
+	writer *io.PipeWriter
+	done   chan error
+}
+
+func newHTTPExportWriter(ctx context.Context, outputURI string) (*httpExportWriter, error) {
+	reader, writer := io.Pipe()
+	request, err := http.NewRequestWithContext(ctx, http.MethodPut, outputURI, reader)
+	if err != nil {
+		reader.Close()
+		writer.Close()
+		return nil, fmt.Errorf("create CSV output request: %w", err)
+	}
+	request.Header.Set("Content-Type", "text/csv")
+
+	done := make(chan error, 1)
+	go func() {
+		response, err := csvHTTPClient.Do(request)
+		if err != nil {
+			done <- fmt.Errorf("upload CSV output: %w", err)
+			return
+		}
+		defer response.Body.Close()
+		_, _ = io.Copy(io.Discard, response.Body)
+		if response.StatusCode < 200 || response.StatusCode > 299 {
+			done <- fmt.Errorf("upload CSV output: unexpected HTTP status %s", response.Status)
+			return
+		}
+		done <- nil
+	}()
+	return &httpExportWriter{writer: writer, done: done}, nil
+}
+
+func (w *httpExportWriter) Write(p []byte) (int, error) {
+	return w.writer.Write(p)
+}
+
+func (w *httpExportWriter) Close() error {
+	closeErr := w.writer.Close()
+	uploadErr := <-w.done
+	if closeErr != nil {
+		return closeErr
+	}
+	return uploadErr
 }
 
 func buildSQLServerExportQuery(sourceObject, predicate string) (string, error) {
@@ -811,7 +913,7 @@ func openParsedCSVImportSource(ctx context.Context, source importSourceURI) (io.
 		if err != nil {
 			return nil, fmt.Errorf("create CSV source request: %w", err)
 		}
-		response, err := csvImportHTTPClient.Do(request)
+		response, err := csvHTTPClient.Do(request)
 		if err != nil {
 			return nil, fmt.Errorf("download CSV source: %w", err)
 		}

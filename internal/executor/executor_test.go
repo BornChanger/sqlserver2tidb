@@ -587,7 +587,28 @@ func TestRunExportExecuteRejectsNonFileOutputURI(t *testing.T) {
 	if code == 0 {
 		t.Fatalf("export execute code = 0, want non-zero")
 	}
-	assertOutputContains(t, stderr.String(), "executor export: only file:// output URIs are supported for --execute")
+	assertOutputContains(t, stderr.String(), "executor export: only file://, http://, and https:// output URIs are supported for --execute")
+}
+
+func TestRunExportExecuteAcceptsHTTPOutputURIBeforeConnectionStringEnv(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"export",
+		"--execute",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--chunk-id", "dbo.orders.000001",
+		"--source-object", "sales.dbo.orders",
+		"--target-object", "app.orders",
+		"--output-uri", "https://object-store.example/dbo.orders.000001.csv",
+		"--source-connection-string-env", "MISSING_SQLSERVER_DSN",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("export execute code = 0, want non-zero")
+	}
+	assertOutputContains(t, stderr.String(), "executor export: source connection string env MISSING_SQLSERVER_DSN is not set")
 }
 
 func TestRunExportExecuteRequiresConnectionStringEnv(t *testing.T) {
@@ -640,6 +661,57 @@ func TestWriteCSVExportRows(t *testing.T) {
 	want := "id,name,active,__sqlserver2tidb_null_bitmap\n1,Ada,true,000\n2,,false,010\n"
 	if output.String() != want {
 		t.Fatalf("CSV output = %q, want %q", output.String(), want)
+	}
+	if !rows.closed {
+		t.Fatalf("rows closed = false, want true")
+	}
+}
+
+func TestWriteCSVExportRowsHTTPOutput(t *testing.T) {
+	var method string
+	var contentType string
+	var body bytes.Buffer
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method = r.Method
+		contentType = r.Header.Get("Content-Type")
+		if _, err := io.Copy(&body, r.Body); err != nil {
+			t.Fatalf("read request body: %v", err)
+		}
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+
+	output, err := openCSVExportOutput(context.Background(), exportOutputURI{
+		scheme: "http",
+		uri:    server.URL + "/dbo.orders.000001.csv",
+	})
+	if err != nil {
+		t.Fatalf("openCSVExportOutput() error = %v", err)
+	}
+	rows := &fakeExportRows{
+		columns: []string{"id", "name"},
+		values: [][]any{
+			{int64(1), "Ada"},
+			{int64(2), nil},
+		},
+	}
+
+	if err := writeCSVExportRows(output, rows); err != nil {
+		t.Fatalf("writeCSVExportRows() error = %v", err)
+	}
+	if err := output.Close(); err != nil {
+		t.Fatalf("output.Close() error = %v", err)
+	}
+
+	if method != http.MethodPut {
+		t.Fatalf("HTTP method = %s, want PUT", method)
+	}
+	if contentType != "text/csv" {
+		t.Fatalf("Content-Type = %q, want text/csv", contentType)
+	}
+	want := "id,name,__sqlserver2tidb_null_bitmap\n1,Ada,00\n2,,01\n"
+	if body.String() != want {
+		t.Fatalf("HTTP body = %q, want %q", body.String(), want)
 	}
 	if !rows.closed {
 		t.Fatalf("rows closed = false, want true")
