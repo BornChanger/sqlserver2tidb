@@ -6,7 +6,7 @@ BINDIR ?= $(PREFIX)/bin
 BUILDINFO_PACKAGE := github.com/BornChanger/sqlserver2tidb/internal/buildinfo
 LDFLAGS := -X $(BUILDINFO_PACKAGE).Version=$(VERSION) -X $(BUILDINFO_PACKAGE).Commit=$(COMMIT) -X $(BUILDINFO_PACKAGE).BuildDate=$(BUILD_DATE)
 
-.PHONY: test vet check build install dist validate-repo ci fmt
+.PHONY: test vet check build install dist validate-repo ci fmt fmt-check
 
 test:
 	go test -count=1 ./...
@@ -19,6 +19,9 @@ check:
 
 fmt:
 	go fmt ./...
+
+fmt-check:
+	@test -z "$$(gofmt -l cmd internal)" || (echo "gofmt required for:"; gofmt -l cmd internal; exit 1)
 
 build:
 	mkdir -p bin
@@ -36,4 +39,4 @@ dist:
 validate-repo: build
 	bin/sqlserver2tidb validate-repo --root .
 
-ci: test vet check build validate-repo
+ci: fmt-check test vet check build validate-repo
