@@ -93,6 +93,9 @@ func prepareExportExecutorCommands(projectDir, binary, sourceClusterID, projectI
 	if err != nil {
 		return nil, err
 	}
+	if len(chunks) == 0 {
+		return nil, fmt.Errorf("export plan contains no chunks")
+	}
 	sourceConnectionStringEnv := strings.TrimSpace(spec.SourceConnectionStringEnv)
 	commands := make([]WorkerExecutorCommand, 0, len(chunks))
 	for _, chunk := range chunks {
@@ -122,6 +125,9 @@ func prepareImportExecutorCommands(projectDir, binary, sourceClusterID, projectI
 	if err != nil {
 		return nil, err
 	}
+	if len(jobs) == 0 {
+		return nil, fmt.Errorf("import plan contains no jobs")
+	}
 	targetConnectionStringEnv := strings.TrimSpace(spec.TargetConnectionStringEnv)
 	commands := make([]WorkerExecutorCommand, 0, len(jobs))
 	for _, job := range jobs {
@@ -150,6 +156,9 @@ func prepareCDCExecutorCommands(projectDir, binary, sourceClusterID, projectID s
 	plan, err := readCDCPlanSummary(filepath.Join(projectDir, "plan", "cdc-plan.yaml"))
 	if err != nil {
 		return nil, err
+	}
+	if len(plan.Tables) == 0 {
+		return nil, fmt.Errorf("cdc plan contains no tracked tables")
 	}
 	commands := make([]WorkerExecutorCommand, 0, len(plan.Tables))
 	for _, table := range plan.Tables {

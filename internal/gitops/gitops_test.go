@@ -1289,6 +1289,54 @@ func TestPrepareWorkerExecutorRejectsNegativeImportBatchSize(t *testing.T) {
 	assertContains(t, err.Error(), "import batch size must be non-negative")
 }
 
+func TestPrepareWorkerExecutorRejectsEmptyExportPlan(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(export) error = %v", err)
+	}
+	writeStageApproval(t, root, "export", hash)
+
+	_, err = PrepareWorkerExecutor(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export", WorkerExecutorPrepareSpec{})
+	if err == nil {
+		t.Fatal("PrepareWorkerExecutor() expected empty export plan error")
+	}
+	assertContains(t, err.Error(), "export plan contains no chunks")
+}
+
+func TestPrepareWorkerExecutorRejectsEmptyImportPlan(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(import) error = %v", err)
+	}
+	writeStageApproval(t, root, "import", hash)
+
+	_, err = PrepareWorkerExecutor(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import", WorkerExecutorPrepareSpec{})
+	if err == nil {
+		t.Fatal("PrepareWorkerExecutor() expected empty import plan error")
+	}
+	assertContains(t, err.Error(), "import plan contains no jobs")
+}
+
+func TestPrepareWorkerExecutorRejectsEmptyCDCPlan(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "cdc")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(cdc) error = %v", err)
+	}
+	writeStageApproval(t, root, "cdc", hash)
+
+	_, err = PrepareWorkerExecutor(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "cdc", WorkerExecutorPrepareSpec{})
+	if err == nil {
+		t.Fatal("PrepareWorkerExecutor() expected empty cdc plan error")
+	}
+	assertContains(t, err.Error(), "cdc plan contains no tracked tables")
+}
+
 func TestPrepareWorkerExecutorBuildsCDCCommandsWhenApprovedHashMatches(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
