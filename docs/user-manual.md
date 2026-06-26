@@ -214,6 +214,8 @@ $HOME/.local/bin/sqlserver2tidb
 $HOME/.local/bin/sqlserver2tidb-executor
 ```
 
+发布二进制时，推送形如 `v0.1.0` 的 tag 会触发 release workflow，为 Linux、macOS 和 Windows 构建归档、生成 checksums，并创建 GitHub Release。
+
 ### 5.4 运行测试
 
 ```bash
