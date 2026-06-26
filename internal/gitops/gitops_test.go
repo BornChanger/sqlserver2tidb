@@ -518,6 +518,65 @@ func TestValidateRepoReportsProjectSourceClusterIDMismatch(t *testing.T) {
 	assertContains(t, strings.Join(report.Errors, "\n"), `invalid project metadata clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/project.yaml: source_cluster_id "prod-sqlserver-b" does not match parent cluster id "prod-sqlserver-a"`)
 }
 
+func TestValidateRepoReportsMigrationPlanMetadataMismatch(t *testing.T) {
+	tests := []struct {
+		name      string
+		oldValue  string
+		newValue  string
+		wantError string
+	}{
+		{
+			name:      "plan_version",
+			oldValue:  "plan_version: 1",
+			newValue:  "plan_version: 0",
+			wantError: `invalid migration plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/migration-plan.yaml: plan_version must be greater than or equal to 1`,
+		},
+		{
+			name:      "project_id",
+			oldValue:  "project_id: sales-db-to-tidb-prod-a",
+			newValue:  "project_id: inventory-db-to-tidb-prod-a",
+			wantError: `invalid migration plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/migration-plan.yaml: project_id "inventory-db-to-tidb-prod-a" does not match project metadata "sales-db-to-tidb-prod-a"`,
+		},
+		{
+			name:      "source_cluster_id",
+			oldValue:  "source_cluster_id: prod-sqlserver-a",
+			newValue:  "source_cluster_id: prod-sqlserver-b",
+			wantError: `invalid migration plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/migration-plan.yaml: source_cluster_id "prod-sqlserver-b" does not match project metadata "prod-sqlserver-a"`,
+		},
+		{
+			name:      "mode",
+			oldValue:  "mode: short-downtime",
+			newValue:  "mode: blue-green",
+			wantError: `invalid migration plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/migration-plan.yaml: unsupported migration mode "blue-green"; supported modes: offline, short-downtime, low-downtime`,
+		},
+		{
+			name:      "mode_mismatch",
+			oldValue:  "mode: short-downtime",
+			newValue:  "mode: offline",
+			wantError: `invalid migration plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/migration-plan.yaml: mode "offline" does not match project metadata "short-downtime"`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)
+			planRel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/migration-plan.yaml"
+			planYAML := readFile(t, root, planRel)
+			planYAML = strings.Replace(planYAML, tt.oldValue, tt.newValue, 1)
+			writeFileForTest(t, root, planRel, planYAML)
+
+			report, err := ValidateRepo(root)
+			if err != nil {
+				t.Fatalf("ValidateRepo() error = %v", err)
+			}
+			if report.Valid {
+				t.Fatal("ValidateRepo() valid = true, want migration plan mismatch")
+			}
+			assertContains(t, strings.Join(report.Errors, "\n"), tt.wantError)
+		})
+	}
+}
+
 func TestValidateRepoReportsMissingRequiredGlobalFile(t *testing.T) {
 	root := t.TempDir()
 	must(t, InitRepo(root))

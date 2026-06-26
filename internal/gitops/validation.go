@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -324,11 +325,30 @@ func validateProjects(root, projectsRel string, report *ValidationReport) {
 func validateProjectContent(root, projectRel string, report *ValidationReport) {
 	projectMetadataRel := filepath.ToSlash(filepath.Join(projectRel, "project.yaml"))
 	projectMetadataPath := filepath.Join(root, filepath.FromSlash(projectMetadataRel))
+	var projectMeta projectMetadata
+	projectMetaLoaded := false
 	if info, err := os.Stat(projectMetadataPath); err == nil && !info.IsDir() {
 		expectedProjectID := filepath.Base(filepath.FromSlash(projectRel))
 		expectedClusterID := filepath.Base(filepath.Dir(filepath.Dir(filepath.FromSlash(projectRel))))
-		if err := validateProjectMetadataContent(projectMetadataPath, expectedClusterID, expectedProjectID); err != nil {
+		meta, err := readProjectMetadata(projectMetadataPath)
+		if err != nil {
 			report.addError(fmt.Sprintf("invalid project metadata %s: %v", projectMetadataRel, err))
+		} else {
+			projectMeta = meta
+			projectMetaLoaded = true
+			if err := validateProjectMetadata(meta, expectedClusterID, expectedProjectID); err != nil {
+				report.addError(fmt.Sprintf("invalid project metadata %s: %v", projectMetadataRel, err))
+			}
+		}
+	}
+
+	migrationPlanRel := filepath.ToSlash(filepath.Join(projectRel, "plan", "migration-plan.yaml"))
+	migrationPlanPath := filepath.Join(root, filepath.FromSlash(migrationPlanRel))
+	if projectMetaLoaded {
+		if info, err := os.Stat(migrationPlanPath); err == nil && !info.IsDir() {
+			if err := validateMigrationPlanContent(migrationPlanPath, projectMeta); err != nil {
+				report.addError(fmt.Sprintf("invalid migration plan %s: %v", migrationPlanRel, err))
+			}
 		}
 	}
 
@@ -379,6 +399,10 @@ func validateProjectMetadataContent(path, expectedClusterID, expectedProjectID s
 	if err != nil {
 		return err
 	}
+	return validateProjectMetadata(meta, expectedClusterID, expectedProjectID)
+}
+
+func validateProjectMetadata(meta projectMetadata, expectedClusterID, expectedProjectID string) error {
 	if strings.TrimSpace(meta.ProjectID) == "" {
 		return errors.New("project id is required")
 	}
@@ -409,6 +433,61 @@ func validateProjectMetadataContent(path, expectedClusterID, expectedProjectID s
 	if err := validateOwners("project", meta.Owners); err != nil {
 		return err
 	}
+	return nil
+}
+
+func validateMigrationPlanContent(path string, project projectMetadata) error {
+	planVersion, err := readPlanTopLevelScalar(path, "plan_version")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(planVersion) == "" {
+		return errors.New("plan_version is required")
+	}
+	version, err := strconv.Atoi(planVersion)
+	if err != nil {
+		return fmt.Errorf("parse plan_version %q: %w", planVersion, err)
+	}
+	if version < 1 {
+		return errors.New("plan_version must be greater than or equal to 1")
+	}
+
+	projectID, err := readPlanTopLevelScalar(path, "project_id")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(projectID) == "" {
+		return errors.New("project_id is required")
+	}
+	if projectID != project.ProjectID {
+		return fmt.Errorf("project_id %q does not match project metadata %q", projectID, project.ProjectID)
+	}
+
+	sourceClusterID, err := readPlanTopLevelScalar(path, "source_cluster_id")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(sourceClusterID) == "" {
+		return errors.New("source_cluster_id is required")
+	}
+	if sourceClusterID != project.SourceClusterID {
+		return fmt.Errorf("source_cluster_id %q does not match project metadata %q", sourceClusterID, project.SourceClusterID)
+	}
+
+	mode, err := readPlanTopLevelScalar(path, "mode")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(mode) == "" {
+		return errors.New("migration mode is required")
+	}
+	if !isSupportedMigrationMode(mode) {
+		return fmt.Errorf("unsupported migration mode %q; supported modes: offline, short-downtime, low-downtime", mode)
+	}
+	if mode != project.Mode {
+		return fmt.Errorf("mode %q does not match project metadata %q", mode, project.Mode)
+	}
+
 	return nil
 }
 
