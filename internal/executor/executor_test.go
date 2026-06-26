@@ -3,6 +3,7 @@ package executor
 import (
 	"bytes"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -104,6 +105,27 @@ func TestRunImportExecuteRequiresConnectionStringEnv(t *testing.T) {
 	assertOutputContains(t, stderr.String(), "executor import: target connection string env MISSING_TIDB_DSN is not set")
 }
 
+func TestRunImportExecuteRequiresPositiveImportBatchSize(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"import",
+		"--execute",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--job-id", "import-dbo.orders.000001",
+		"--target-object", "app.orders",
+		"--source-uri", "file:///tmp/dbo.orders.000001.csv",
+		"--target-connection-string-env", "MISSING_TIDB_DSN",
+		"--import-batch-size", "0",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("import execute code = 0, want non-zero")
+	}
+	assertOutputContains(t, stderr.String(), "executor import: import batch size must be positive")
+}
+
 func TestBuildTiDBInsertStatementQuotesObjectAndColumns(t *testing.T) {
 	stmt, err := buildTiDBInsertStatement("app.orders", []string{"id", "order`name"})
 	if err != nil {
@@ -143,6 +165,37 @@ func TestReadCSVImportFile(t *testing.T) {
 	}
 	if records[1][0] != "2" || records[1][1] != "" {
 		t.Fatalf("records[1] = %v, want [2 \"\"]", records[1])
+	}
+}
+
+func TestCSVImportReaderStreamsRecords(t *testing.T) {
+	reader, err := newCSVImportReader(strings.NewReader("id,name\n1,Ada\n2,Lin\n"))
+	if err != nil {
+		t.Fatalf("newCSVImportReader() error = %v", err)
+	}
+	if strings.Join(reader.Columns(), ",") != "id,name" {
+		t.Fatalf("columns = %v, want [id name]", reader.Columns())
+	}
+
+	first, err := reader.ReadRecord()
+	if err != nil {
+		t.Fatalf("ReadRecord() first error = %v", err)
+	}
+	if strings.Join(first, ",") != "1,Ada" {
+		t.Fatalf("first record = %v, want [1 Ada]", first)
+	}
+
+	second, err := reader.ReadRecord()
+	if err != nil {
+		t.Fatalf("ReadRecord() second error = %v", err)
+	}
+	if strings.Join(second, ",") != "2,Lin" {
+		t.Fatalf("second record = %v, want [2 Lin]", second)
+	}
+
+	_, err = reader.ReadRecord()
+	if !errors.Is(err, io.EOF) {
+		t.Fatalf("ReadRecord() final error = %v, want io.EOF", err)
 	}
 }
 

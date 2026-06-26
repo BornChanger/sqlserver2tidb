@@ -48,7 +48,7 @@ This MVP provides:
 - JSON Schema files for core metadata.
 - Tests for repository initialization, validation, discovery planning and execution, compatibility analysis, schema draft generation, data movement and CDC plan generation, PR draft generation, GitHub PR create dry-runs, export/import/CDC/validation worker gates, external executor command dry-runs, executor binary dry-runs and local CSV export/import execution checks, worker reconcile dry-runs and execute-next state PR drafts, worker state PR create dry-runs, upstream SQL Server cluster creation, and migration project creation.
 
-This MVP connects to SQL Server for read-only catalog discovery and, when `sqlserver2tidb-executor export --execute` is explicitly used, for a minimal local CSV export path. It connects to TiDB only when `sqlserver2tidb-executor import --execute` is explicitly used with a local `file://` CSV source and a TiDB/MySQL connection string environment variable. It does **not** execute generated DDL, object storage export/import, TiDB Lightning or `IMPORT INTO`, CDC streaming/apply, cutover, cleanup, or source/target data validation. The included `sqlserver2tidb-executor cdc --execute` path intentionally returns an explicit not-implemented error.
+This MVP connects to SQL Server for read-only catalog discovery and, when `sqlserver2tidb-executor export --execute` is explicitly used, for a minimal local CSV export path. It connects to TiDB only when `sqlserver2tidb-executor import --execute` is explicitly used with a local `file://` CSV source and a TiDB/MySQL connection string environment variable; CSV rows are streamed and committed in batches. It does **not** execute generated DDL, object storage export/import, TiDB Lightning or `IMPORT INTO`, CDC streaming/apply, cutover, cleanup, or source/target data validation. The included `sqlserver2tidb-executor cdc --execute` path intentionally returns an explicit not-implemented error.
 
 ## Build
 
@@ -224,7 +224,7 @@ go run ./cmd/sqlserver2tidb worker-executor \
   --stage export
 ```
 
-This command reuses the same approval/hash gate and is dry-run by default. It prints `sqlserver2tidb-executor` commands for export chunks, import jobs, or CDC table apply work. The included executor binary can run SQL Server to local `file://` CSV export and local `file://` CSV to TiDB import after connection strings are supplied through environment variables. Object storage export/import, TiDB Lightning or `IMPORT INTO`, and CDC apply side effects are still not implemented.
+This command reuses the same approval/hash gate and is dry-run by default. It prints `sqlserver2tidb-executor` commands for export chunks, import jobs, or CDC table apply work. The included executor binary can run SQL Server to local `file://` CSV export and streaming local `file://` CSV to TiDB import after connection strings are supplied through environment variables. Object storage export/import, TiDB Lightning or `IMPORT INTO`, and CDC apply side effects are still not implemented.
 
 Preview ready and blocked worker actions across the repository:
 

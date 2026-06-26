@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/csv"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -272,6 +273,7 @@ func runImport(args []string, stdout, stderr io.Writer) int {
 	sourceURI := fs.String("source-uri", "", "import source URI")
 	dependsOnExportChunk := fs.String("depends-on-export-chunk", "", "upstream export chunk id")
 	targetConnectionStringEnv := fs.String("target-connection-string-env", defaultTargetConnectionStringEnv, "environment variable containing the TiDB/MySQL connection string")
+	importBatchSize := fs.Int("import-batch-size", 1000, "rows to commit per import transaction")
 	execute := fs.Bool("execute", false, "perform the import")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -286,11 +288,16 @@ func runImport(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
+	if *execute && *importBatchSize <= 0 {
+		fmt.Fprintln(stderr, "executor import: import batch size must be positive")
+		return 1
+	}
 	if *execute {
 		if err := executeTiDBImport(context.Background(), importExecuteSpec{
 			TargetObject:              *targetObject,
 			SourceURI:                 *sourceURI,
 			TargetConnectionStringEnv: *targetConnectionStringEnv,
+			ImportBatchSize:           *importBatchSize,
 		}); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
@@ -317,6 +324,7 @@ type importExecuteSpec struct {
 	TargetObject              string
 	SourceURI                 string
 	TargetConnectionStringEnv string
+	ImportBatchSize           int
 }
 
 func executeTiDBImport(ctx context.Context, spec importExecuteSpec) error {
@@ -340,11 +348,11 @@ func executeTiDBImport(ctx context.Context, spec importExecuteSpec) error {
 	}
 	defer file.Close()
 
-	columns, records, err := readCSVImportRecords(file)
+	reader, err := newCSVImportReader(file)
 	if err != nil {
 		return fmt.Errorf("executor import: read CSV source: %w", err)
 	}
-	insertSQL, err := buildTiDBInsertStatement(spec.TargetObject, columns)
+	insertSQL, err := buildTiDBInsertStatement(spec.TargetObject, reader.Columns())
 	if err != nil {
 		return fmt.Errorf("executor import: %w", err)
 	}
@@ -355,31 +363,7 @@ func executeTiDBImport(ctx context.Context, spec importExecuteSpec) error {
 	}
 	defer db.Close()
 
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("executor import: begin transaction: %w", err)
-	}
-	stmt, err := tx.PrepareContext(ctx, insertSQL)
-	if err != nil {
-		tx.Rollback()
-		return fmt.Errorf("executor import: prepare insert: %w", err)
-	}
-	defer stmt.Close()
-
-	for i, record := range records {
-		args := make([]any, len(record))
-		for j, value := range record {
-			args[j] = value
-		}
-		if _, err := stmt.ExecContext(ctx, args...); err != nil {
-			tx.Rollback()
-			return fmt.Errorf("executor import: insert row %d: %w", i+1, err)
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("executor import: commit transaction: %w", err)
-	}
-	return nil
+	return insertCSVImportRows(ctx, db, insertSQL, reader, spec.ImportBatchSize)
 }
 
 func openCSVImportFile(sourceURI string) (*os.File, error) {
@@ -411,22 +395,49 @@ func resolveImportSourceFile(sourceURI string) (string, error) {
 	return filepath.Clean(parsed.Path), nil
 }
 
-func readCSVImportRecords(r io.Reader) ([]string, [][]string, error) {
+type csvImportReader struct {
+	reader  *csv.Reader
+	columns []string
+}
+
+func newCSVImportReader(r io.Reader) (*csvImportReader, error) {
 	reader := csv.NewReader(r)
 	columns, err := reader.Read()
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	for _, column := range columns {
 		if strings.TrimSpace(column) == "" {
-			return nil, nil, fmt.Errorf("CSV header contains an empty column name")
+			return nil, fmt.Errorf("CSV header contains an empty column name")
 		}
 	}
-	records, err := reader.ReadAll()
+	return &csvImportReader{reader: reader, columns: columns}, nil
+}
+
+func (reader *csvImportReader) Columns() []string {
+	return append([]string(nil), reader.columns...)
+}
+
+func (reader *csvImportReader) ReadRecord() ([]string, error) {
+	return reader.reader.Read()
+}
+
+func readCSVImportRecords(r io.Reader) ([]string, [][]string, error) {
+	reader, err := newCSVImportReader(r)
 	if err != nil {
 		return nil, nil, err
 	}
-	return columns, records, nil
+	var records [][]string
+	for {
+		record, err := reader.ReadRecord()
+		if errors.Is(err, io.EOF) {
+			return reader.Columns(), records, nil
+		}
+		if err != nil {
+			return nil, nil, err
+		}
+		records = append(records, record)
+	}
 }
 
 func buildTiDBInsertStatement(targetObject string, columns []string) (string, error) {
@@ -465,6 +476,65 @@ func buildTiDBInsertStatement(targetObject string, columns []string) (string, er
 
 func quoteTiDBIdentifier(identifier string) string {
 	return "`" + strings.ReplaceAll(identifier, "`", "``") + "`"
+}
+
+func insertCSVImportRows(ctx context.Context, db *sql.DB, insertSQL string, reader *csvImportReader, batchSize int) error {
+	if batchSize <= 0 {
+		return fmt.Errorf("executor import: import batch size must be positive")
+	}
+
+	rowNumber := 0
+	for {
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("executor import: begin transaction: %w", err)
+		}
+		stmt, err := tx.PrepareContext(ctx, insertSQL)
+		if err != nil {
+			tx.Rollback()
+			return fmt.Errorf("executor import: prepare insert: %w", err)
+		}
+
+		rowsInBatch := 0
+		for rowsInBatch < batchSize {
+			record, err := reader.ReadRecord()
+			if errors.Is(err, io.EOF) {
+				stmt.Close()
+				if rowsInBatch == 0 {
+					tx.Rollback()
+					return nil
+				}
+				if err := tx.Commit(); err != nil {
+					return fmt.Errorf("executor import: commit transaction: %w", err)
+				}
+				return nil
+			}
+			if err != nil {
+				stmt.Close()
+				tx.Rollback()
+				return fmt.Errorf("executor import: read CSV row %d: %w", rowNumber+1, err)
+			}
+			args := make([]any, len(record))
+			for j, value := range record {
+				args[j] = value
+			}
+			if _, err := stmt.ExecContext(ctx, args...); err != nil {
+				stmt.Close()
+				tx.Rollback()
+				return fmt.Errorf("executor import: insert row %d: %w", rowNumber+1, err)
+			}
+			rowNumber++
+			rowsInBatch++
+		}
+
+		if err := stmt.Close(); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("executor import: close insert statement: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("executor import: commit transaction: %w", err)
+		}
+	}
 }
 
 func runCDC(args []string, stdout, stderr io.Writer) int {
@@ -530,7 +600,7 @@ Usage:
   sqlserver2tidb-executor export --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --chunk-id dbo.orders.000001 --source-object sales.dbo.orders --target-object app.orders --output-uri s3://bucket/path.parquet
   sqlserver2tidb-executor export --execute --source-connection-string-env SQLSERVER2TIDB_SOURCE_CONNECTION_STRING --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --chunk-id dbo.orders.000001 --source-object sales.dbo.orders --target-object app.orders --output-uri file:///tmp/path.csv --predicate "id >= 1 AND id < 1000"
   sqlserver2tidb-executor import --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --job-id import-dbo.orders.000001 --target-object app.orders --source-uri s3://bucket/path.parquet
-  sqlserver2tidb-executor import --execute --target-connection-string-env SQLSERVER2TIDB_TARGET_CONNECTION_STRING --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --job-id import-dbo.orders.000001 --target-object app.orders --source-uri file:///tmp/path.csv
+  sqlserver2tidb-executor import --execute --target-connection-string-env SQLSERVER2TIDB_TARGET_CONNECTION_STRING --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --job-id import-dbo.orders.000001 --target-object app.orders --source-uri file:///tmp/path.csv --import-batch-size 1000
   sqlserver2tidb-executor cdc --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --source-object sales.dbo.orders --target-object app.orders --apply-batch-size 1000
 `)
 }

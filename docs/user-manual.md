@@ -1360,7 +1360,7 @@ clusters/<source_cluster_id>/cluster.yaml
 
 ### 15.4 当前能直接迁移数据吗？
 
-当前 MVP 可以只读连接 SQL Server catalog 生成 inventory，可以从 inventory 生成 TiDB DDL 草稿、全量导出/导入计划草稿和 CDC 计划草稿，并执行 metadata-only export/import/CDC/validation worker。`worker-executor` 可以在 approval/hash gate 后生成外部执行器命令；`sqlserver2tidb-executor` 当前已经可以解析这些 work item 并 dry-run 输出上下文。`export --execute` 支持 SQL Server 到本地 `file://` CSV 的最小真实导出路径，但还不支持对象存储或 Parquet。`import --execute` 支持本地 `file://` CSV 到 TiDB 的逐行 insert 路径，但还不支持 Lightning、`IMPORT INTO` 或对象存储。`cdc --execute` 仍显式返回 not implemented，不会回放 CDC。源/目标数据校验也仍是后续能力。
+当前 MVP 可以只读连接 SQL Server catalog 生成 inventory，可以从 inventory 生成 TiDB DDL 草稿、全量导出/导入计划草稿和 CDC 计划草稿，并执行 metadata-only export/import/CDC/validation worker。`worker-executor` 可以在 approval/hash gate 后生成外部执行器命令；`sqlserver2tidb-executor` 当前已经可以解析这些 work item 并 dry-run 输出上下文。`export --execute` 支持 SQL Server 到本地 `file://` CSV 的最小真实导出路径，但还不支持对象存储或 Parquet。`import --execute` 支持本地 `file://` CSV 到 TiDB 的流式逐行 insert 路径，并用 `--import-batch-size` 分批提交事务，但还不支持 Lightning、`IMPORT INTO` 或对象存储。`cdc --execute` 仍显式返回 not implemented，不会回放 CDC。源/目标数据校验也仍是后续能力。
 
 ### 15.5 可以把 LLM 接进来吗？
 
@@ -1613,7 +1613,7 @@ bin/sqlserver2tidb worker-executor \
   --execute
 ```
 
-该命令支持 `export`、`import` 和 `cdc`。它复用对应 stage 的 approval/hash gate，只有 approval 通过且 payload hash 匹配时才生成执行器命令。默认外部 binary 是 `sqlserver2tidb-executor`，可以通过 `--executor-binary` 覆盖。默认 dry-run 只打印命令；只有加 `--execute` 才会调用外部 binary。当前随仓库提供的 `sqlserver2tidb-executor export --execute` 仅支持 SQL Server 到本地 `file://` CSV；`import --execute` 仅支持本地 `file://` CSV 到 TiDB 的逐行 insert；`cdc --execute` 仍返回 not implemented。
+该命令支持 `export`、`import` 和 `cdc`。它复用对应 stage 的 approval/hash gate，只有 approval 通过且 payload hash 匹配时才生成执行器命令。默认外部 binary 是 `sqlserver2tidb-executor`，可以通过 `--executor-binary` 覆盖。默认 dry-run 只打印命令；只有加 `--execute` 才会调用外部 binary。当前随仓库提供的 `sqlserver2tidb-executor export --execute` 仅支持 SQL Server 到本地 `file://` CSV；`import --execute` 仅支持本地 `file://` CSV 到 TiDB 的流式逐行 insert；`cdc --execute` 仍返回 not implemented。
 
 ### 16.18 sqlserver2tidb-executor
 
@@ -1673,10 +1673,11 @@ bin/sqlserver2tidb-executor import \
   --project-id sales-db-to-tidb-prod-a \
   --job-id import-dbo.orders.000001 \
   --target-object app.orders \
-  --source-uri file:///tmp/sqlserver2tidb/dbo.orders.000001.csv
+  --source-uri file:///tmp/sqlserver2tidb/dbo.orders.000001.csv \
+  --import-batch-size 1000
 ```
 
-也可以用 `--target-connection-string-env <ENV_NAME>` 指定其他环境变量。当前实现读取 CSV header 作为目标列名，并在一个事务里逐行执行 `INSERT`。它不调用 TiDB Lightning 或 `IMPORT INTO`。
+也可以用 `--target-connection-string-env <ENV_NAME>` 指定其他环境变量。当前实现读取 CSV header 作为目标列名，随后流式读取 CSV 行，并按 `--import-batch-size` 分批事务提交 `INSERT`。它不调用 TiDB Lightning 或 `IMPORT INTO`。
 
 CDC dry-run：
 
@@ -1690,7 +1691,7 @@ bin/sqlserver2tidb-executor cdc \
   --apply-batch-size 1000
 ```
 
-当前 binary 默认只做参数解析和 dry-run 输出。`export --execute` 会连接 SQL Server 并写本地 CSV；它不会写 S3/GCS/Azure Blob，也不会生成 Parquet。`import --execute` 会连接 TiDB 并逐行插入本地 CSV；它不会调用 Lightning、`IMPORT INTO` 或对象存储。`cdc --execute` 会返回 not implemented，用来防止误执行尚未实现的 CDC 路径。
+当前 binary 默认只做参数解析和 dry-run 输出。`export --execute` 会连接 SQL Server 并写本地 CSV；它不会写 S3/GCS/Azure Blob，也不会生成 Parquet。`import --execute` 会连接 TiDB 并流式逐行插入本地 CSV，按 batch size 分批提交；它不会调用 Lightning、`IMPORT INTO` 或对象存储。`cdc --execute` 会返回 not implemented，用来防止误执行尚未实现的 CDC 路径。
 
 ### 16.19 worker-reconcile
 
