@@ -174,6 +174,26 @@ func TestValidateRepoReportsMissingRequiredGlobalFile(t *testing.T) {
 	assertContains(t, strings.Join(report.Errors, "\n"), "missing required file: global/schemas/project.schema.json")
 }
 
+func TestValidateRepoReportsMissingFileSchemaPolicyMapping(t *testing.T) {
+	root := t.TempDir()
+	must(t, InitRepo(root))
+	writeFileForTest(t, root, "global/policies/file-schema-policy.yaml", `version: 1
+schemas:
+  cluster: global/schemas/cluster.schema.json
+  project: global/schemas/project.schema.json
+  migration_plan: global/schemas/migration-plan.schema.json
+`)
+
+	report, err := ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("ValidateRepo() valid = true, want false")
+	}
+	assertContains(t, strings.Join(report.Errors, "\n"), "file schema policy missing mapping validation_plan: global/schemas/validation-plan.schema.json")
+}
+
 func TestValidateRepoChecksClusterAndProjectDirectories(t *testing.T) {
 	root := t.TempDir()
 	must(t, InitRepo(root))

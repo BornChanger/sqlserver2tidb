@@ -35,6 +35,16 @@ var requiredGlobalDirs = []string{
 	"global/templates",
 }
 
+var requiredFileSchemaPolicyMappings = []struct {
+	Key  string
+	Path string
+}{
+	{Key: "cluster", Path: "global/schemas/cluster.schema.json"},
+	{Key: "project", Path: "global/schemas/project.schema.json"},
+	{Key: "migration_plan", Path: "global/schemas/migration-plan.schema.json"},
+	{Key: "validation_plan", Path: "global/schemas/validation-plan.schema.json"},
+}
+
 var requiredClusterFiles = []string{
 	"cluster.yaml",
 	"source-profile.yaml",
@@ -99,6 +109,7 @@ func ValidateRepo(root string) (ValidationReport, error) {
 	for _, rel := range requiredGlobalFiles {
 		report.requireFile(root, rel)
 	}
+	validateFileSchemaPolicy(root, &report)
 
 	if err := validateClusters(root, &report); err != nil {
 		return report, err
@@ -106,6 +117,59 @@ func ValidateRepo(root string) (ValidationReport, error) {
 
 	report.Valid = len(report.Errors) == 0
 	return report, nil
+}
+
+func validateFileSchemaPolicy(root string, report *ValidationReport) {
+	path := filepath.Join(root, "global", "policies", "file-schema-policy.yaml")
+	mappings, err := readFileSchemaPolicyMappings(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			report.addError(fmt.Sprintf("cannot read file schema policy: %v", err))
+		}
+		return
+	}
+	for _, required := range requiredFileSchemaPolicyMappings {
+		actual := mappings[required.Key]
+		if actual == "" {
+			report.addError(fmt.Sprintf("file schema policy missing mapping %s: %s", required.Key, required.Path))
+			continue
+		}
+		if actual != required.Path {
+			report.addError(fmt.Sprintf("file schema policy mapping %s = %s, want %s", required.Key, actual, required.Path))
+		}
+	}
+}
+
+func readFileSchemaPolicyMappings(path string) (map[string]string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	mappings := make(map[string]string)
+	inSchemas := false
+	for _, raw := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if trimmed == "schemas:" {
+			inSchemas = true
+			continue
+		}
+		if !inSchemas {
+			continue
+		}
+		if raw[0] != ' ' && raw[0] != '\t' {
+			inSchemas = false
+			continue
+		}
+		key, value, ok := strings.Cut(trimmed, ":")
+		if !ok {
+			continue
+		}
+		mappings[strings.TrimSpace(key)] = trimYAMLScalar(value)
+	}
+	return mappings, nil
 }
 
 func validateClusters(root string, report *ValidationReport) error {
