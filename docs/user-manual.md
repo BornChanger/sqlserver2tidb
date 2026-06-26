@@ -242,7 +242,7 @@ bin/sqlserver2tidb validate-repo --root .
 repository is valid at . (5 dirs, 9 files checked)
 ```
 
-如果缺少必需文件或目录，命令会返回非零退出码，并列出缺失项。示例：
+如果缺少必需文件、必需目录，或者 `plan/validation-plan.yaml` 中的 `row_count` / `row-count` 检查项缺少 `id`、`source_object`、`target_object`，命令会返回非零退出码，并列出问题。示例：
 
 ```text
 repository validation failed at .:

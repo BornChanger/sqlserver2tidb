@@ -181,7 +181,42 @@ func validateProjects(root, projectsRel string, report *ValidationReport) {
 		for _, rel := range requiredProjectFiles {
 			report.requireFile(root, filepath.ToSlash(filepath.Join(projectRel, rel)))
 		}
+		validateProjectContent(root, projectRel, report)
 	}
+}
+
+func validateProjectContent(root, projectRel string, report *ValidationReport) {
+	validationPlanRel := filepath.ToSlash(filepath.Join(projectRel, "plan", "validation-plan.yaml"))
+	validationPlanPath := filepath.Join(root, filepath.FromSlash(validationPlanRel))
+	info, err := os.Stat(validationPlanPath)
+	if err != nil || info.IsDir() {
+		return
+	}
+	if err := validateValidationPlanContent(validationPlanPath); err != nil {
+		report.addError(fmt.Sprintf("invalid validation plan %s: %v", validationPlanRel, err))
+	}
+}
+
+func validateValidationPlanContent(path string) error {
+	checks, err := readValidationPlanChecks(path)
+	if err != nil {
+		return err
+	}
+	for _, check := range checks {
+		if check.Type != "row_count" && check.Type != "row-count" {
+			continue
+		}
+		if strings.TrimSpace(check.ID) == "" {
+			return fmt.Errorf("row_count check id is required")
+		}
+		if strings.TrimSpace(check.SourceObject) == "" {
+			return fmt.Errorf("row_count check %s source_object is required", check.ID)
+		}
+		if strings.TrimSpace(check.TargetObject) == "" {
+			return fmt.Errorf("row_count check %s target_object is required", check.ID)
+		}
+	}
+	return nil
 }
 
 func (report *ValidationReport) requireDir(root, rel string) {
