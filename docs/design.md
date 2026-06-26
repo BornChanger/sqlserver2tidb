@@ -62,6 +62,7 @@ This command creates a local branch, commits files, pushes the branch, and opens
 - require `evidence/executor-<stage>-run.json` to exist;
 - require the matching stage approval to be approved and payload-hash current;
 - reject executor evidence whose source cluster, project, stage, or payload hash does not match the requested/current approved metadata;
+- reject executor evidence without command records, and require every command record to include `id`, `shell_command`, and `exit_code`;
 - write or consume `clusters/<source_cluster_id>/projects/<project_id>/prs/executor-<stage>-evidence-pr.md`;
 - reconstruct deterministic `git switch`, `git add`, `git commit`, `git push`, and `gh pr create` commands.
 
