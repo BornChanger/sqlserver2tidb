@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -1209,6 +1210,65 @@ func TestExecuteNextWorkerReconcileWritesStatePRDraftWhenRequested(t *testing.T)
 	assertContains(t, body, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/precheck.json")
 	assertContains(t, body, "clusters/prod-sqlserver-a/state/worker-lease.yaml")
 	assertContains(t, body, "gh pr create --base main --head agent/sales-db-to-tidb-prod-a/reconcile-export-state")
+}
+
+func TestPrepareWorkerStatePRCreateBuildsGitAndGitHubCommands(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateDataPlansOnly(root))
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(export) error = %v", err)
+	}
+	writeStageApproval(t, root, "export", hash)
+	must(t, func() error {
+		_, err := ExecuteNextWorkerReconcile(root, WorkerReconcileExecuteSpec{
+			Holder:        "agent-a",
+			CreatePRDraft: true,
+		})
+		return err
+	}())
+
+	spec, err := PrepareWorkerStatePRCreate(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
+	if err != nil {
+		t.Fatalf("PrepareWorkerStatePRCreate() error = %v", err)
+	}
+	if spec.Title != "[worker-state:export] sales-db-to-tidb-prod-a" {
+		t.Fatalf("Title = %q, want worker state title", spec.Title)
+	}
+	if spec.BranchName != "agent/sales-db-to-tidb-prod-a/reconcile-export-state" {
+		t.Fatalf("BranchName = %q, want worker state branch", spec.BranchName)
+	}
+	if spec.BodyFile != "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/prs/reconcile-export-state-pr.md" {
+		t.Fatalf("BodyFile = %q, want worker state PR body", spec.BodyFile)
+	}
+	wantFiles := []string{
+		"clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/export-chunks.yaml",
+		"clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/precheck.json",
+		"clusters/prod-sqlserver-a/state/worker-lease.yaml",
+		"clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/prs/reconcile-export-state-pr.md",
+	}
+	if !reflect.DeepEqual(spec.Files, wantFiles) {
+		t.Fatalf("Files = %#v, want %#v", spec.Files, wantFiles)
+	}
+	assertContains(t, spec.ShellCommands[0], "git switch -c agent/sales-db-to-tidb-prod-a/reconcile-export-state")
+	assertContains(t, spec.ShellCommands[1], "git add clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/export-chunks.yaml")
+	assertContains(t, spec.ShellCommands[1], "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/prs/reconcile-export-state-pr.md")
+	assertContains(t, spec.ShellCommands[2], "git commit -m '[worker-state:export] sales-db-to-tidb-prod-a'")
+	assertContains(t, spec.ShellCommands[3], "git push -u origin agent/sales-db-to-tidb-prod-a/reconcile-export-state")
+	assertContains(t, spec.ShellCommands[4], "gh pr create --base main --head agent/sales-db-to-tidb-prod-a/reconcile-export-state")
+}
+
+func TestPrepareWorkerStatePRCreateRequiresGeneratedStateDraft(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+
+	_, err := PrepareWorkerStatePRCreate(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
+	if err == nil {
+		t.Fatal("PrepareWorkerStatePRCreate() expected missing draft error")
+	}
+	assertContains(t, err.Error(), "worker state PR draft clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/prs/reconcile-export-state-pr.md does not exist")
+	assertContains(t, err.Error(), "run worker-reconcile --execute-next --state-pr-draft first")
 }
 
 func TestExecuteNextWorkerReconcileBlocksWhenLeaseHeldByAnotherHolder(t *testing.T) {

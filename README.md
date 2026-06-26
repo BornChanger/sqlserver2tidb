@@ -22,6 +22,7 @@ This MVP provides:
 - Approved metadata-only export/import/CDC worker state write-back.
 - Approved validation-only worker execution.
 - Read-only worker reconcile dry-run planning across source clusters and projects.
+- Worker state PR draft generation and a dry-run-by-default branch/commit/push/GitHub PR wrapper.
 - Source-cluster-first metadata organization:
 
   ```text
@@ -43,7 +44,7 @@ This MVP provides:
   ```
 
 - JSON Schema files for core metadata.
-- Tests for repository initialization, validation, discovery planning and execution, compatibility analysis, schema draft generation, data movement and CDC plan generation, PR draft generation, GitHub PR create dry-runs, export/import/CDC/validation worker gates, worker reconcile dry-runs, upstream SQL Server cluster creation, and migration project creation.
+- Tests for repository initialization, validation, discovery planning and execution, compatibility analysis, schema draft generation, data movement and CDC plan generation, PR draft generation, GitHub PR create dry-runs, export/import/CDC/validation worker gates, worker reconcile dry-runs and execute-next state PR drafts, worker state PR create dry-runs, upstream SQL Server cluster creation, and migration project creation.
 
 This MVP connects to SQL Server only for read-only catalog discovery when a connection string is supplied through an environment variable. It does **not** connect to TiDB or execute generated DDL, real export, real import, CDC streaming/apply, cutover, cleanup, or source/target data validation yet.
 
@@ -232,6 +233,18 @@ go run ./cmd/sqlserver2tidb worker-reconcile \
 
 This acquires or renews `state/worker-lease.yaml` for the selected source cluster, runs exactly one ready metadata-only worker action, and writes the same state/evidence files that the explicit single-project worker would write. With `--state-pr-draft`, it also writes a deterministic Markdown PR body under the project `prs/` directory for reviewing the state/evidence/lease changes. It does not create a branch or call GitHub. A different holder is blocked until the lease expires.
 
+Prepare the git and GitHub commands for a worker state write-back PR:
+
+```bash
+go run ./cmd/sqlserver2tidb create-worker-state-pr \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --stage export
+```
+
+This is a dry-run by default. It requires the state PR draft and state/evidence/lease files to exist, then prints deterministic `git switch`, `git add`, `git commit`, `git push`, and `gh pr create` commands. Add `--execute` to run those commands locally.
+
 Generate a project-scoped PR draft for schema review:
 
 ```bash
@@ -294,6 +307,5 @@ This checks approved metadata, writes `state/validation-status.yaml`, and writes
 
 ## Next Milestones
 
-- Add a guarded bot wrapper that turns worker state PR drafts into branches and `gh pr create` calls.
 - Replace metadata-only export/import/CDC workers with real executors behind the same approval gates.
 - Add source/target data validation connectors after import support exists.

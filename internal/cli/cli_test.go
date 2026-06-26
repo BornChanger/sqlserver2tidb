@@ -1192,6 +1192,35 @@ func TestRunWorkerReconcileExecuteNextCommand(t *testing.T) {
 	if !strings.Contains(string(lease), "holder: agent-a") {
 		t.Fatalf("worker lease = %q, want holder agent-a", string(lease))
 	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = Run([]string{
+		"create-worker-state-pr",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "export",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("create-worker-state-pr code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "dry run: not changing git or calling GitHub") {
+		t.Fatalf("create-worker-state-pr stdout = %q, want dry-run message", output)
+	}
+	if !strings.Contains(output, "git switch -c agent/sales-db-to-tidb-prod-a/reconcile-export-state") {
+		t.Fatalf("create-worker-state-pr stdout = %q, want git switch command", output)
+	}
+	if !strings.Contains(output, "git commit -m '[worker-state:export] sales-db-to-tidb-prod-a'") {
+		t.Fatalf("create-worker-state-pr stdout = %q, want git commit command", output)
+	}
+	if !strings.Contains(output, "git push -u origin agent/sales-db-to-tidb-prod-a/reconcile-export-state") {
+		t.Fatalf("create-worker-state-pr stdout = %q, want git push command", output)
+	}
+	if !strings.Contains(output, "gh pr create --base main --head agent/sales-db-to-tidb-prod-a/reconcile-export-state") {
+		t.Fatalf("create-worker-state-pr stdout = %q, want gh pr command", output)
+	}
 }
 
 func TestRunUnknownCommandReturnsUsageError(t *testing.T) {

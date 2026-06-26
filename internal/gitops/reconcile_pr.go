@@ -14,6 +14,19 @@ type workerStatePRDraft struct {
 	Files      []string
 }
 
+type WorkerStatePRCreateSpec struct {
+	SourceClusterID string
+	ProjectID       string
+	Stage           string
+	Title           string
+	BranchName      string
+	BodyFile        string
+	Files           []string
+	GitArgs         [][]string
+	GitHubArgs      []string
+	ShellCommands   []string
+}
+
 func writeWorkerStatePRDraft(root string, result WorkerReconcileExecutionResult) (workerStatePRDraft, error) {
 	action := result.Action
 	title := fmt.Sprintf("[worker-state:%s] %s", action.Stage, action.ProjectID)
@@ -44,6 +57,73 @@ func writeWorkerStatePRDraft(root string, result WorkerReconcileExecutionResult)
 	return draft, nil
 }
 
+func PrepareWorkerStatePRCreate(root, sourceClusterID, projectID, stage string) (WorkerStatePRCreateSpec, error) {
+	sourceClusterID = strings.TrimSpace(sourceClusterID)
+	projectID = strings.TrimSpace(projectID)
+	stage = strings.ToLower(strings.TrimSpace(stage))
+
+	if !idPattern.MatchString(sourceClusterID) {
+		return WorkerStatePRCreateSpec{}, fmt.Errorf("invalid source cluster id %q", sourceClusterID)
+	}
+	if !idPattern.MatchString(projectID) {
+		return WorkerStatePRCreateSpec{}, fmt.Errorf("invalid project id %q", projectID)
+	}
+	if !isWorkerReconcileStage(stage) {
+		return WorkerStatePRCreateSpec{}, fmt.Errorf("unsupported worker state PR stage %q", stage)
+	}
+	if err := validateProjectAddress(root, sourceClusterID, projectID); err != nil {
+		return WorkerStatePRCreateSpec{}, err
+	}
+
+	title := fmt.Sprintf("[worker-state:%s] %s", stage, projectID)
+	branchName := fmt.Sprintf("agent/%s/reconcile-%s-state", projectID, stage)
+	bodyFile := workerStatePRBodyFile(sourceClusterID, projectID, stage)
+	bodyPath := filepath.Join(root, filepath.FromSlash(bodyFile))
+	if info, err := os.Stat(bodyPath); err != nil || info.IsDir() {
+		return WorkerStatePRCreateSpec{}, fmt.Errorf("worker state PR draft %s does not exist; run worker-reconcile --execute-next --state-pr-draft first", bodyFile)
+	}
+
+	files := workerStateCommitFiles(sourceClusterID, projectID, stage, bodyFile)
+	for _, file := range files {
+		path := filepath.Join(root, filepath.FromSlash(file))
+		if info, err := os.Stat(path); err != nil || info.IsDir() {
+			return WorkerStatePRCreateSpec{}, fmt.Errorf("worker state PR file %s does not exist", file)
+		}
+	}
+
+	gitArgs := [][]string{
+		{"switch", "-c", branchName},
+		append([]string{"add"}, files...),
+		{"commit", "-m", title},
+		{"push", "-u", "origin", branchName},
+	}
+	ghArgs := []string{
+		"pr", "create",
+		"--base", "main",
+		"--head", branchName,
+		"--title", title,
+		"--body-file", bodyFile,
+	}
+	shellCommands := make([]string, 0, len(gitArgs)+1)
+	for _, args := range gitArgs {
+		shellCommands = append(shellCommands, renderShellCommand(append([]string{"git"}, args...)))
+	}
+	shellCommands = append(shellCommands, renderShellCommand(append([]string{"gh"}, ghArgs...)))
+
+	return WorkerStatePRCreateSpec{
+		SourceClusterID: sourceClusterID,
+		ProjectID:       projectID,
+		Stage:           stage,
+		Title:           title,
+		BranchName:      branchName,
+		BodyFile:        bodyFile,
+		Files:           files,
+		GitArgs:         gitArgs,
+		GitHubArgs:      ghArgs,
+		ShellCommands:   shellCommands,
+	}, nil
+}
+
 func workerStatePRFiles(result WorkerReconcileExecutionResult) []string {
 	action := result.Action
 	projectPrefix := filepath.ToSlash(filepath.Join("clusters", action.SourceClusterID, "projects", action.ProjectID))
@@ -63,6 +143,74 @@ func workerStatePRFiles(result WorkerReconcileExecutionResult) []string {
 		files = append(files, filepath.ToSlash(filepath.Join(clusterPrefix, result.LeaseFile)))
 	}
 	return files
+}
+
+func workerStateCommitFiles(sourceClusterID, projectID, stage, bodyFile string) []string {
+	projectPrefix := filepath.ToSlash(filepath.Join("clusters", sourceClusterID, "projects", projectID))
+	clusterPrefix := filepath.ToSlash(filepath.Join("clusters", sourceClusterID))
+
+	files := []string{
+		filepath.ToSlash(filepath.Join(projectPrefix, workerStateFileForStage(stage))),
+		filepath.ToSlash(filepath.Join(projectPrefix, workerEvidenceFileForStage(stage))),
+	}
+	if stage == "cdc" {
+		files = append(files, filepath.ToSlash(filepath.Join(clusterPrefix, "state/cdc-checkpoint.yaml")))
+	}
+	files = append(files,
+		filepath.ToSlash(filepath.Join(clusterPrefix, "state/worker-lease.yaml")),
+		bodyFile,
+	)
+	return files
+}
+
+func workerStateFileForStage(stage string) string {
+	switch stage {
+	case "export":
+		return "state/export-chunks.yaml"
+	case "import":
+		return "state/import-jobs.yaml"
+	case "cdc":
+		return "state/migration-state.yaml"
+	case "validation":
+		return "state/validation-status.yaml"
+	default:
+		return ""
+	}
+}
+
+func workerEvidenceFileForStage(stage string) string {
+	switch stage {
+	case "export":
+		return "evidence/precheck.json"
+	case "import":
+		return "evidence/import-summary.json"
+	case "cdc":
+		return "evidence/cdc-catchup.json"
+	case "validation":
+		return "evidence/validation-report.md"
+	default:
+		return ""
+	}
+}
+
+func workerStatePRBodyFile(sourceClusterID, projectID, stage string) string {
+	return filepath.ToSlash(filepath.Join(
+		"clusters",
+		sourceClusterID,
+		"projects",
+		projectID,
+		"prs",
+		"reconcile-"+stage+"-state-pr.md",
+	))
+}
+
+func isWorkerReconcileStage(stage string) bool {
+	for _, candidate := range workerReconcileStages {
+		if stage == candidate {
+			return true
+		}
+	}
+	return false
 }
 
 func renderWorkerStatePRDraftMarkdown(result WorkerReconcileExecutionResult, draft workerStatePRDraft) string {

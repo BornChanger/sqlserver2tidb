@@ -41,13 +41,14 @@ LLM 只生成解释、候选方案和文档，不直接执行迁移
 - 执行只读 `worker-reconcile --dry-run`，扫描 ready/blocked worker actions。
 - 执行 `worker-reconcile --execute-next`，在源集群 lease 保护下执行第一个 ready metadata-only worker action。
 - 可选执行 `worker-reconcile --execute-next --state-pr-draft`，为 state/evidence/lease 写回生成项目级 PR draft。
+- 通过 `create-worker-state-pr` dry-run 准备 state/evidence/lease 写回 PR 的 git push 和 GitHub 命令。
 - 创建上游 SQL Server 集群目录。
 - 在上游 SQL Server 集群下创建迁移项目目录。
 - 生成基础 YAML/JSON/Markdown 状态文件。
 - 生成核心 JSON Schema 文件。
 - 单元测试和 CLI smoke test。
 
-当前 CLI 只有在执行 `discover-sqlserver --connection-string-env ...` 时会连接 SQL Server，并且只读取 catalog metadata。它不会连接 TiDB，也不会执行生成的 DDL、真实导出、导入、CDC 或切流。`discover-sqlserver --dry-run` 只输出计划，不打开数据库连接，也不写 inventory 文件。`analyze-compatibility`、`generate-schema-draft`、`generate-data-plans`、`generate-cdc-plan`、`generate-pr-draft`、`create-pr` 的默认 dry-run、`compute-payload-hash`、`worker-export`、`worker-import`、`worker-cdc`、`worker-validate`、`worker-reconcile --dry-run` 和 `worker-reconcile --execute-next` 只读取并写回或汇报 GitHub metadata 文件。`worker-reconcile --state-pr-draft` 只生成 Markdown PR body，不调用 GitHub。`create-pr --execute` 会调用本地 `gh pr create`。
+当前 CLI 只有在执行 `discover-sqlserver --connection-string-env ...` 时会连接 SQL Server，并且只读取 catalog metadata。它不会连接 TiDB，也不会执行生成的 DDL、真实导出、导入、CDC 或切流。`discover-sqlserver --dry-run` 只输出计划，不打开数据库连接，也不写 inventory 文件。`analyze-compatibility`、`generate-schema-draft`、`generate-data-plans`、`generate-cdc-plan`、`generate-pr-draft`、`create-pr` 的默认 dry-run、`create-worker-state-pr` 的默认 dry-run、`compute-payload-hash`、`worker-export`、`worker-import`、`worker-cdc`、`worker-validate`、`worker-reconcile --dry-run` 和 `worker-reconcile --execute-next` 只读取并写回或汇报 GitHub metadata 文件。`worker-reconcile --state-pr-draft` 只生成 Markdown PR body，不调用 GitHub。`create-pr --execute` 会调用本地 `gh pr create`；`create-worker-state-pr --execute` 会调用本地 `git` 和 `gh`。
 
 ### 2.2 终极目标
 
@@ -125,7 +126,7 @@ clusters/<source_cluster_id>/projects/<project_id>/prs/<stage>-pr.md
 
 Worker 是终极形态中的执行器。它从 GitHub repo 拉取已批准 instruction，执行确定性操作，并把状态和证据写回 repo。
 
-当前 MVP 实现了显式指定 project 的 `worker-export`、`worker-import`、`worker-cdc` 和 `worker-validate`。它们都需要 approval 和 payload hash 匹配。当前还实现了 `worker-reconcile --dry-run` 和 `worker-reconcile --execute-next`；后者会获取源集群级 lease，并执行第一个 ready metadata-only action。加上 `--state-pr-draft` 后，reconcile 单步执行可以生成 state/evidence/lease 写回的 PR body 草稿。完整的 bot branch 创建、commit、push 和 GitHub PR 创建仍未实现。
+当前 MVP 实现了显式指定 project 的 `worker-export`、`worker-import`、`worker-cdc` 和 `worker-validate`。它们都需要 approval 和 payload hash 匹配。当前还实现了 `worker-reconcile --dry-run` 和 `worker-reconcile --execute-next`；后者会获取源集群级 lease，并执行第一个 ready metadata-only action。加上 `--state-pr-draft` 后，reconcile 单步执行可以生成 state/evidence/lease 写回的 PR body 草稿。`create-worker-state-pr` 可以默认 dry-run 地准备 bot branch、commit、push 和 GitHub PR 命令；只有显式 `--execute` 时才会调用本地 `git` 和 `gh`。
 
 ### 3.5 LLM
 
@@ -1585,6 +1586,31 @@ clusters/<source_cluster_id>/projects/<project_id>/prs/reconcile-<stage>-state-p
 
 该 PR body 会列出 payload hash、lease id、建议 branch、项目 state/evidence 文件、源集群 `state/worker-lease.yaml`；如果 stage 是 `cdc`，还会列出源集群 `state/cdc-checkpoint.yaml`。它只是 PR 草稿，不会创建 branch、commit、push 或 GitHub PR。
 
+### 16.18 create-worker-state-pr
+
+dry-run：
+
+```bash
+bin/sqlserver2tidb create-worker-state-pr \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --stage export
+```
+
+真实创建本地 branch、commit、push 并调用 `gh pr create`：
+
+```bash
+bin/sqlserver2tidb create-worker-state-pr \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --stage export \
+  --execute
+```
+
+该命令要求 `worker-reconcile --execute-next --state-pr-draft` 已经生成对应的 `reconcile-<stage>-state-pr.md`，并要求被提交的 state/evidence/lease 文件已经存在。默认 dry-run 只打印 `git switch`、`git add`、`git commit`、`git push` 和 `gh pr create` 命令。只有加 `--execute` 才会修改本地 git checkout、推送分支并调用 GitHub CLI。它不会 merge PR、approve PR、绕过 branch protection，也不会判断 worker 结果是否业务正确。
+
 ## 17. 推荐落地顺序
 
 1. 使用当前 CLI 初始化 repo。
@@ -1605,7 +1631,8 @@ clusters/<source_cluster_id>/projects/<project_id>/prs/reconcile-<stage>-state-p
 16. 执行 `compute-payload-hash --stage cdc`，把 hash 写入 cdc approval，approval 通过后运行 `worker-cdc` 写 planned CDC state/evidence。
 17. 执行 `compute-payload-hash --stage validation`，把 hash 写入 validation approval。
 18. 执行 `worker-reconcile --dry-run`，确认 ready/blocked action 与预期一致。
-19. 执行 `worker-reconcile --execute-next --holder <agent-id>`，用 lease-backed 单步 reconcile 执行第一个 ready metadata-only action。
-20. approval 通过后执行 `worker-validate`，生成 validation state 和 evidence。
-21. 再接入 bot branch / PR 写回和真实 export/import/CDC worker。
-22. 最后接入 cutover orchestration。
+19. 执行 `worker-reconcile --execute-next --holder <agent-id> --state-pr-draft`，用 lease-backed 单步 reconcile 执行第一个 ready metadata-only action，并生成 state PR body。
+20. 执行 `create-worker-state-pr` dry-run 检查 git/gh 命令，再按需执行 `create-worker-state-pr --execute` 创建 state/evidence 写回 PR。
+21. approval 通过后执行 `worker-validate`，生成 validation state 和 evidence。
+22. 再接入真实 export/import/CDC worker。
+23. 最后接入 cutover orchestration。
