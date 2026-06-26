@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Migration plan",
+  "type": "object",
+  "required": ["plan_version", "project_id", "source_cluster_id", "mode", "approval_required"],
+  "properties": {
+    "plan_version": {"type": "integer", "minimum": 1},
+    "project_id": {"type": "string"},
+    "source_cluster_id": {"type": "string"},
+    "mode": {"enum": ["offline", "short-downtime", "low-downtime"]},
+    "approval_required": {
+      "type": "array",
+      "items": {"enum": ["ddl", "export", "import", "cdc", "cutover"]}
+    }
+  }
+}

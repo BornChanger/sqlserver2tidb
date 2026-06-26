@@ -1,0 +1,4 @@
+project_id: example-project
+source_cluster_id: example-sqlserver-cluster
+mode: short-downtime
+status: planning

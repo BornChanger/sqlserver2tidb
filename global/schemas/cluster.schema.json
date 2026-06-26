@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SQL Server source cluster",
+  "type": "object",
+  "required": ["cluster_id", "source", "cdc", "owners"],
+  "properties": {
+    "cluster_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$"},
+    "display_name": {"type": "string"},
+    "source": {
+      "type": "object",
+      "required": ["type", "listener", "port", "secret_ref"],
+      "properties": {
+        "type": {"const": "sqlserver"},
+        "host_group": {"type": "string"},
+        "listener": {"type": "string"},
+        "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "secret_ref": {"type": "string"}
+      }
+    },
+    "cdc": {
+      "type": "object",
+      "required": ["mode", "retention_hours_required"],
+      "properties": {
+        "mode": {"type": "string"},
+        "retention_hours_required": {"type": "integer", "minimum": 1}
+      }
+    },
+    "owners": {"type": "array", "items": {"type": "string"}}
+  }
+}

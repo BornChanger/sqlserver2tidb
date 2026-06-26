@@ -1,0 +1,8 @@
+plan_version: 1
+mode: short-downtime
+approval_required:
+  - ddl
+  - export
+  - import
+  - cdc
+  - cutover

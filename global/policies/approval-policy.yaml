@@ -1,0 +1,7 @@
+version: 1
+required_reviews:
+  ddl: 2
+  export: 1
+  import: 1
+  cdc: 2
+  cutover: 2

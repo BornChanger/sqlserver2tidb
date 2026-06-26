@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SQL Server to TiDB migration project",
+  "type": "object",
+  "required": ["project_id", "source_cluster_id", "source", "target", "mode", "owners"],
+  "properties": {
+    "project_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$"},
+    "source_cluster_id": {"type": "string"},
+    "source": {
+      "type": "object",
+      "required": ["type", "database", "schemas"],
+      "properties": {
+        "type": {"const": "sqlserver"},
+        "database": {"type": "string"},
+        "schemas": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "target": {
+      "type": "object",
+      "required": ["type", "name", "database", "secret_ref"],
+      "properties": {
+        "type": {"const": "tidb"},
+        "name": {"type": "string"},
+        "database": {"type": "string"},
+        "secret_ref": {"type": "string"}
+      }
+    },
+    "mode": {"enum": ["offline", "short-downtime", "low-downtime"]},
+    "owners": {"type": "array", "items": {"type": "string"}}
+  }
+}
