@@ -36,6 +36,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runGenerateDataPlans(args[1:], stdout, stderr)
 	case "generate-cdc-plan":
 		return runGenerateCDCPlan(args[1:], stdout, stderr)
+	case "generate-validation-plan":
+		return runGenerateValidationPlan(args[1:], stdout, stderr)
 	case "generate-pr-draft":
 		return runGeneratePRDraft(args[1:], stdout, stderr)
 	case "create-pr":
@@ -280,6 +282,26 @@ func runGenerateCDCPlan(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "mode: %s\n", result.Mode)
 	fmt.Fprintf(stdout, "tracked tables: %d\n", result.Tables)
 	fmt.Fprintf(stdout, "wrote %s\n", "plan/cdc-plan.yaml")
+	return 0
+}
+
+func runGenerateValidationPlan(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("generate-validation-plan", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	root := fs.String("root", ".", "repository root")
+	sourceClusterID := fs.String("source-cluster-id", "", "upstream SQL Server cluster id")
+	projectID := fs.String("project-id", "", "migration project id")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	result, err := gitops.GenerateValidationPlan(*root, *sourceClusterID, *projectID)
+	if err != nil {
+		fmt.Fprintf(stderr, "generate validation plan: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "validation plan generated for %s under source cluster %s\n", result.ProjectID, result.SourceClusterID)
+	fmt.Fprintf(stdout, "checks: %d\n", result.Checks)
+	fmt.Fprintf(stdout, "wrote %s\n", "plan/validation-plan.yaml")
 	return 0
 }
 
@@ -751,6 +773,7 @@ Usage:
   sqlserver2tidb generate-schema-draft --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
   sqlserver2tidb generate-data-plans --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --object-uri-prefix s3://bucket/prefix
   sqlserver2tidb generate-cdc-plan --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
+  sqlserver2tidb generate-validation-plan --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
   sqlserver2tidb generate-pr-draft --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage schema
   sqlserver2tidb create-pr --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage schema
   sqlserver2tidb create-worker-state-pr --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage export

@@ -919,6 +919,66 @@ func TestGenerateCDCPlanWritesProjectCDCPlan(t *testing.T) {
 	assertContains(t, plan, "checkpoint_file: ../../../state/cdc-checkpoint.yaml")
 }
 
+func TestGenerateValidationPlanWritesRowCountChecks(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, `{
+  "status": "discovered",
+  "databases": [
+    {
+      "name": "sales",
+      "schemas": [
+        {
+          "name": "dbo",
+          "tables": [
+            {
+              "name": "orders",
+              "row_count": 2500000,
+              "columns": [
+                {"name": "id", "type": "int"}
+              ]
+            }
+          ]
+        },
+        {
+          "name": "audit",
+          "tables": [
+            {
+              "name": "events",
+              "row_count": 100,
+              "columns": [
+                {"name": "id", "type": "int"}
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+`)
+
+	result, err := GenerateValidationPlan(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a")
+	if err != nil {
+		t.Fatalf("GenerateValidationPlan() error = %v", err)
+	}
+	if result.Checks != 1 {
+		t.Fatalf("GenerateValidationPlan() result = %+v, want 1 check", result)
+	}
+
+	plan := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/validation-plan.yaml")
+	assertContains(t, plan, "status: draft")
+	assertContains(t, plan, "project_id: sales-db-to-tidb-prod-a")
+	assertContains(t, plan, "source_cluster_id: prod-sqlserver-a")
+	assertContains(t, plan, "checks:")
+	assertContains(t, plan, "id: dbo.orders.row-count")
+	assertContains(t, plan, "type: row_count")
+	assertContains(t, plan, "source_object: sales.dbo.orders")
+	assertContains(t, plan, "target_object: app.orders")
+	if strings.Contains(plan, "sales.audit.events") {
+		t.Fatalf("validation plan included table outside project schema:\n%s", plan)
+	}
+}
+
 func TestRunExportWorkerRequiresApprovedExportApproval(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())

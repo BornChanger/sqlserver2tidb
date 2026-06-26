@@ -17,6 +17,7 @@ This MVP provides:
 - Project-scoped TiDB schema draft generation from SQL Server inventory and project metadata.
 - Project-scoped full export/import plan draft generation from SQL Server inventory and project metadata.
 - Project-scoped CDC plan draft generation from SQL Server inventory and project metadata.
+- Project-scoped row-count validation plan draft generation from SQL Server inventory and project metadata.
 - PR draft generation and a dry-run-by-default GitHub PR creation wrapper.
 - Export, import, CDC, and validation payload hash calculation.
 - Approved metadata-only export/import/CDC worker state write-back.
@@ -46,7 +47,7 @@ This MVP provides:
   ```
 
 - JSON Schema files for core metadata.
-- Tests for repository initialization, validation, discovery planning and execution, compatibility analysis, schema draft generation, data movement and CDC plan generation, PR draft generation, GitHub PR create dry-runs, export/import/CDC/validation worker gates, external executor command dry-runs, executor binary dry-runs, local CSV export/import execution checks, row-count validation command checks, worker reconcile dry-runs and execute-next state PR drafts, worker state PR create dry-runs, upstream SQL Server cluster creation, and migration project creation.
+- Tests for repository initialization, validation, discovery planning and execution, compatibility analysis, schema draft generation, data movement, CDC, and validation plan generation, PR draft generation, GitHub PR create dry-runs, export/import/CDC/validation worker gates, external executor command dry-runs, executor binary dry-runs, local CSV export/import execution checks, row-count validation command checks, worker reconcile dry-runs and execute-next state PR drafts, worker state PR create dry-runs, upstream SQL Server cluster creation, and migration project creation.
 
 This MVP connects to SQL Server for read-only catalog discovery and, when `sqlserver2tidb-executor export --execute` is explicitly used, for a minimal local CSV export path. It connects to TiDB when `sqlserver2tidb-executor import --execute` is explicitly used with a local `file://` CSV source and a TiDB/MySQL connection string environment variable; CSV rows are streamed and committed in batches. It can also connect to both SQL Server and TiDB for an explicit `sqlserver2tidb-executor validate-count --execute` row-count comparison. It does **not** execute generated DDL, object storage export/import, TiDB Lightning or `IMPORT INTO`, CDC streaming/apply, cutover, cleanup, checksum validation, sampled hash validation, or business SQL validation. The included `sqlserver2tidb-executor cdc --execute` path intentionally returns an explicit not-implemented error.
 
@@ -174,6 +175,17 @@ go run ./cmd/sqlserver2tidb generate-cdc-plan \
 ```
 
 This writes `plan/cdc-plan.yaml` under the project. The command records tracked source/target table pairs and checkpoint policy; it does not start SQL Server CDC, Debezium, Kafka, or TiDB apply.
+
+Generate a project-scoped row-count validation draft plan from the current SQL Server inventory and project metadata:
+
+```bash
+go run ./cmd/sqlserver2tidb generate-validation-plan \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a
+```
+
+This writes `plan/validation-plan.yaml` under the project with one `row_count` check per table in scope. The command does not connect to SQL Server or TiDB and does not execute validation.
 
 Compute payload hashes and run metadata-only export/import/CDC workers after the matching approval files are marked approved:
 
