@@ -1539,6 +1539,64 @@ func TestValidateRepoReportsInvalidDataStateStatus(t *testing.T) {
 	}
 }
 
+func TestValidateRepoReportsInvalidStatePayloadHash(t *testing.T) {
+	tests := []struct {
+		name      string
+		rel       string
+		anchor    string
+		wantError string
+	}{
+		{
+			name:      "cdc_checkpoint",
+			rel:       "clusters/prod-sqlserver-a/state/cdc-checkpoint.yaml",
+			anchor:    "checkpoints: []",
+			wantError: `invalid cluster state clusters/prod-sqlserver-a/state/cdc-checkpoint.yaml: payload_hash "stale" must use sha256:<64 hex chars>`,
+		},
+		{
+			name:      "migration_state",
+			rel:       "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/migration-state.yaml",
+			anchor:    "updated_at:",
+			wantError: `invalid state file clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/migration-state.yaml: payload_hash "stale" must use sha256:<64 hex chars>`,
+		},
+		{
+			name:      "export_chunks",
+			rel:       "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/export-chunks.yaml",
+			anchor:    "chunks: []",
+			wantError: `invalid state file clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/export-chunks.yaml: payload_hash "stale" must use sha256:<64 hex chars>`,
+		},
+		{
+			name:      "import_jobs",
+			rel:       "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/import-jobs.yaml",
+			anchor:    "jobs: []",
+			wantError: `invalid state file clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/import-jobs.yaml: payload_hash "stale" must use sha256:<64 hex chars>`,
+		},
+		{
+			name:      "validation_status",
+			rel:       "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/validation-status.yaml",
+			anchor:    "checks: []",
+			wantError: `invalid state file clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/validation-status.yaml: payload_hash "stale" must use sha256:<64 hex chars>`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)
+			stateYAML := readFile(t, root, tt.rel)
+			stateYAML = strings.Replace(stateYAML, tt.anchor, "payload_hash: stale\n"+tt.anchor, 1)
+			writeFileForTest(t, root, tt.rel, stateYAML)
+
+			report, err := ValidateRepo(root)
+			if err != nil {
+				t.Fatalf("ValidateRepo() error = %v", err)
+			}
+			if report.Valid {
+				t.Fatal("ValidateRepo() valid = true, want invalid state payload_hash")
+			}
+			assertContains(t, strings.Join(report.Errors, "\n"), tt.wantError)
+		})
+	}
+}
+
 func TestValidateRepoReportsApprovalMetadataMismatch(t *testing.T) {
 	tests := []struct {
 		name      string

@@ -378,6 +378,9 @@ func validateCDCCheckpointMetadataContent(path string, cluster clusterMetadata) 
 	if !isSupportedCDCCheckpointStatus(status) {
 		return fmt.Errorf("unsupported CDC checkpoint status %q; supported statuses: not_started, planned, running, caught_up, failed", status)
 	}
+	if err := validateOptionalStatePayloadHash(path); err != nil {
+		return err
+	}
 	if err := validateCDCCheckpointUpdatedAt(path); err != nil {
 		return err
 	}
@@ -956,6 +959,9 @@ func validateMigrationStateContent(path string) error {
 	if err := validateMigrationStateStatus(path); err != nil {
 		return err
 	}
+	if err := validateOptionalStatePayloadHash(path); err != nil {
+		return err
+	}
 	if err := validateMigrationStateUpdatedAt(path); err != nil {
 		return err
 	}
@@ -967,6 +973,9 @@ func validateDataStateContent(path, label, expectedPhase string) error {
 		return err
 	}
 	if err := validateOptionalDataStateStatus(path, label); err != nil {
+		return err
+	}
+	if err := validateOptionalStatePayloadHash(path); err != nil {
 		return err
 	}
 	return validateOptionalDataStateUpdatedAt(path, label)
@@ -1022,8 +1031,25 @@ func validateValidationStatusStateContent(path string) error {
 	if !isSupportedValidationStatusState(status) {
 		return fmt.Errorf("unsupported validation status %q; supported statuses: pending, passed, failed", status)
 	}
+	if err := validateOptionalStatePayloadHash(path); err != nil {
+		return err
+	}
 	if err := validateOptionalValidationStatusUpdatedAt(path); err != nil {
 		return err
+	}
+	return nil
+}
+
+func validateOptionalStatePayloadHash(path string) error {
+	payloadHash, err := readPlanTopLevelScalar(path, "payload_hash")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(payloadHash) == "" {
+		return nil
+	}
+	if !isValidPayloadHash(payloadHash) {
+		return fmt.Errorf("payload_hash %q must use sha256:<64 hex chars>", payloadHash)
 	}
 	return nil
 }
