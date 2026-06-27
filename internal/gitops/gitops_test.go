@@ -1412,6 +1412,49 @@ func TestValidateRepoReportsInvalidDataStateUpdatedAt(t *testing.T) {
 	}
 }
 
+func TestValidateRepoReportsInvalidDataStateStatus(t *testing.T) {
+	tests := []struct {
+		name      string
+		rel       string
+		listLine  string
+		status    string
+		wantError string
+	}{
+		{
+			name:      "export_chunks",
+			rel:       "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/export-chunks.yaml",
+			listLine:  "chunks: []",
+			status:    "status: completed",
+			wantError: `invalid state file clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/export-chunks.yaml: unsupported export state status "completed"; supported statuses: planned`,
+		},
+		{
+			name:      "import_jobs",
+			rel:       "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/import-jobs.yaml",
+			listLine:  "jobs: []",
+			status:    "status: completed",
+			wantError: `invalid state file clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/import-jobs.yaml: unsupported import state status "completed"; supported statuses: planned`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)
+			stateYAML := readFile(t, root, tt.rel)
+			stateYAML = strings.Replace(stateYAML, tt.listLine, tt.status+"\n"+tt.listLine, 1)
+			writeFileForTest(t, root, tt.rel, stateYAML)
+
+			report, err := ValidateRepo(root)
+			if err != nil {
+				t.Fatalf("ValidateRepo() error = %v", err)
+			}
+			if report.Valid {
+				t.Fatal("ValidateRepo() valid = true, want invalid data state status")
+			}
+			assertContains(t, strings.Join(report.Errors, "\n"), tt.wantError)
+		})
+	}
+}
+
 func TestValidateRepoReportsApprovalMetadataMismatch(t *testing.T) {
 	tests := []struct {
 		name      string

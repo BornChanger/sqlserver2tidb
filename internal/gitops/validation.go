@@ -909,6 +909,9 @@ func validateDataStateContent(path, label, expectedPhase string) error {
 	if err := validateOptionalDataStatePhase(path, label, expectedPhase); err != nil {
 		return err
 	}
+	if err := validateOptionalDataStateStatus(path, label); err != nil {
+		return err
+	}
 	return validateOptionalDataStateUpdatedAt(path, label)
 }
 
@@ -933,6 +936,20 @@ func validateOptionalDataStateUpdatedAt(path, label string) error {
 	}
 	if _, err := time.Parse(time.RFC3339, updatedAt); err != nil {
 		return fmt.Errorf("%s updated_at must be RFC3339", label)
+	}
+	return nil
+}
+
+func validateOptionalDataStateStatus(path, label string) error {
+	status, err := readPlanTopLevelScalar(path, "status")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(status) == "" {
+		return nil
+	}
+	if status != "planned" {
+		return fmt.Errorf("unsupported %s status %q; supported statuses: planned", label, status)
 	}
 	return nil
 }
