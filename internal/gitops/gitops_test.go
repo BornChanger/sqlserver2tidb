@@ -678,6 +678,12 @@ func TestValidateRepoReportsIncompleteActiveWorkerLease(t *testing.T) {
 			wantError: "active worker lease requires lease_id",
 		},
 		{
+			name:      "project_id",
+			oldValue:  "project_id: sales-db-to-tidb-prod-a",
+			newValue:  `project_id: ""`,
+			wantError: "active worker lease requires project_id",
+		},
+		{
 			name:      "expires_at",
 			oldValue:  `expires_at: "2026-06-26T00:15:00Z"`,
 			newValue:  `expires_at: ""`,

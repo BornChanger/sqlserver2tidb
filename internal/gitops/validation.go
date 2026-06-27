@@ -452,6 +452,9 @@ func validateWorkerLeaseMetadataContent(path string, cluster clusterMetadata) er
 	if err := requireWorkerLeaseScalar(path, "lease_id"); err != nil {
 		return err
 	}
+	if err := requireWorkerLeaseScalar(path, "project_id"); err != nil {
+		return err
+	}
 	expiresAt, err := requireWorkerLeaseTime(path, "expires_at")
 	if err != nil {
 		return err
