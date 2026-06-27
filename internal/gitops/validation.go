@@ -881,9 +881,9 @@ func validateProjectStateContent(path, stateRel string, project projectMetadata)
 	case "state/migration-state.yaml":
 		return validateMigrationStateContent(path)
 	case "state/export-chunks.yaml":
-		return validateOptionalDataStatePhase(path, "export state", "export")
+		return validateDataStateContent(path, "export state", "export")
 	case "state/import-jobs.yaml":
-		return validateOptionalDataStatePhase(path, "import state", "import")
+		return validateDataStateContent(path, "import state", "import")
 	case "state/validation-status.yaml":
 		return validateValidationStatusStateContent(path)
 	default:
@@ -905,6 +905,13 @@ func validateMigrationStateContent(path string) error {
 	return nil
 }
 
+func validateDataStateContent(path, label, expectedPhase string) error {
+	if err := validateOptionalDataStatePhase(path, label, expectedPhase); err != nil {
+		return err
+	}
+	return validateOptionalDataStateUpdatedAt(path, label)
+}
+
 func validateOptionalDataStatePhase(path, label, expectedPhase string) error {
 	phase, err := readPlanTopLevelScalar(path, "phase")
 	if err != nil {
@@ -912,6 +919,20 @@ func validateOptionalDataStatePhase(path, label, expectedPhase string) error {
 	}
 	if strings.TrimSpace(phase) != "" && phase != expectedPhase {
 		return fmt.Errorf("%s phase %q does not match expected phase %q", label, phase, expectedPhase)
+	}
+	return nil
+}
+
+func validateOptionalDataStateUpdatedAt(path, label string) error {
+	updatedAt, err := readPlanTopLevelScalar(path, "updated_at")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(updatedAt) == "" {
+		return nil
+	}
+	if _, err := time.Parse(time.RFC3339, updatedAt); err != nil {
+		return fmt.Errorf("%s updated_at must be RFC3339", label)
 	}
 	return nil
 }

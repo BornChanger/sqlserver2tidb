@@ -1372,6 +1372,46 @@ func TestValidateRepoReportsInvalidDataStatePhase(t *testing.T) {
 	}
 }
 
+func TestValidateRepoReportsInvalidDataStateUpdatedAt(t *testing.T) {
+	tests := []struct {
+		name      string
+		rel       string
+		listLine  string
+		wantError string
+	}{
+		{
+			name:      "export_chunks",
+			rel:       "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/export-chunks.yaml",
+			listLine:  "chunks: []",
+			wantError: `invalid state file clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/export-chunks.yaml: export state updated_at must be RFC3339`,
+		},
+		{
+			name:      "import_jobs",
+			rel:       "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/import-jobs.yaml",
+			listLine:  "jobs: []",
+			wantError: `invalid state file clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/import-jobs.yaml: import state updated_at must be RFC3339`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)
+			stateYAML := readFile(t, root, tt.rel)
+			stateYAML = strings.Replace(stateYAML, tt.listLine, "updated_at: \"not-a-time\"\n"+tt.listLine, 1)
+			writeFileForTest(t, root, tt.rel, stateYAML)
+
+			report, err := ValidateRepo(root)
+			if err != nil {
+				t.Fatalf("ValidateRepo() error = %v", err)
+			}
+			if report.Valid {
+				t.Fatal("ValidateRepo() valid = true, want invalid data state updated_at")
+			}
+			assertContains(t, strings.Join(report.Errors, "\n"), tt.wantError)
+		})
+	}
+}
+
 func TestValidateRepoReportsApprovalMetadataMismatch(t *testing.T) {
 	tests := []struct {
 		name      string
