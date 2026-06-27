@@ -1255,6 +1255,44 @@ func TestValidateRepoReportsInvalidMigrationStatePhase(t *testing.T) {
 	assertContains(t, strings.Join(report.Errors, "\n"), `invalid state file clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/migration-state.yaml: unsupported migration state phase "unknown"; supported phases: planning, ddl, export, import, cdc, validation, cutover, completed`)
 }
 
+func TestValidateRepoReportsInvalidMigrationStateUpdatedAt(t *testing.T) {
+	tests := []struct {
+		name      string
+		newValue  string
+		wantError string
+	}{
+		{
+			name:      "missing",
+			newValue:  `updated_at: ""`,
+			wantError: "migration state updated_at is required",
+		},
+		{
+			name:      "invalid",
+			newValue:  `updated_at: "not-a-time"`,
+			wantError: "migration state updated_at must be RFC3339",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)
+			rel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/migration-state.yaml"
+			stateYAML := readFile(t, root, rel)
+			stateYAML = replaceTopLevelLineForTest(t, stateYAML, "updated_at", tt.newValue)
+			writeFileForTest(t, root, rel, stateYAML)
+
+			report, err := ValidateRepo(root)
+			if err != nil {
+				t.Fatalf("ValidateRepo() error = %v", err)
+			}
+			if report.Valid {
+				t.Fatal("ValidateRepo() valid = true, want invalid migration state updated_at")
+			}
+			assertContains(t, strings.Join(report.Errors, "\n"), "invalid state file "+rel+": "+tt.wantError)
+		})
+	}
+}
+
 func TestValidateRepoReportsApprovalMetadataMismatch(t *testing.T) {
 	tests := []struct {
 		name      string

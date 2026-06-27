@@ -887,6 +887,9 @@ func validateProjectStateContent(path, stateRel string, project projectMetadata)
 	if !isSupportedMigrationStatePhase(phase) {
 		return fmt.Errorf("unsupported migration state phase %q; supported phases: planning, ddl, export, import, cdc, validation, cutover, completed", phase)
 	}
+	if err := validateMigrationStateUpdatedAt(path); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -897,6 +900,20 @@ func isSupportedMigrationStatePhase(phase string) bool {
 	default:
 		return false
 	}
+}
+
+func validateMigrationStateUpdatedAt(path string) error {
+	updatedAt, err := readPlanTopLevelScalar(path, "updated_at")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(updatedAt) == "" {
+		return errors.New("migration state updated_at is required")
+	}
+	if _, err := time.Parse(time.RFC3339, updatedAt); err != nil {
+		return errors.New("migration state updated_at must be RFC3339")
+	}
+	return nil
 }
 
 func validateOptionalProjectOwnedYAMLContent(path string, project projectMetadata) error {
