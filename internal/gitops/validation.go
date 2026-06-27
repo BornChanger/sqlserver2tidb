@@ -802,6 +802,7 @@ func validateEvidenceJSONContent(path string, project *projectMetadata) error {
 	}
 	var doc struct {
 		Status          string `json:"status"`
+		GeneratedAt     string `json:"generated_at"`
 		ProjectID       string `json:"project_id"`
 		SourceClusterID string `json:"source_cluster_id"`
 	}
@@ -810,6 +811,11 @@ func validateEvidenceJSONContent(path string, project *projectMetadata) error {
 	}
 	if strings.TrimSpace(doc.Status) != "" && !isSupportedEvidenceStatus(doc.Status) {
 		return fmt.Errorf("unsupported evidence status %q; supported statuses: pending, planned, succeeded, failed", doc.Status)
+	}
+	if strings.TrimSpace(doc.GeneratedAt) != "" {
+		if _, err := time.Parse(time.RFC3339, doc.GeneratedAt); err != nil {
+			return errors.New("evidence generated_at must be RFC3339")
+		}
 	}
 	if project == nil {
 		return nil

@@ -1151,6 +1151,25 @@ func TestValidateRepoReportsInvalidEvidenceStatus(t *testing.T) {
 	assertContains(t, strings.Join(report.Errors, "\n"), `invalid evidence clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/import-summary.json: unsupported evidence status "ready"; supported statuses: pending, planned, succeeded, failed`)
 }
 
+func TestValidateRepoReportsInvalidEvidenceGeneratedAt(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)
+	evidenceRel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/import-summary.json"
+	writeFileForTest(t, root, evidenceRel, `{
+  "status": "planned",
+  "generated_at": "not-a-time"
+}`)
+
+	report, err := ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
+	if report.Valid {
+		t.Fatal("ValidateRepo() valid = true, want invalid evidence generated_at")
+	}
+	assertContains(t, strings.Join(report.Errors, "\n"), `invalid evidence clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/import-summary.json: evidence generated_at must be RFC3339`)
+}
+
 func TestValidateRepoReportsExecutorEvidenceMetadataMismatch(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)
