@@ -894,6 +894,49 @@ func TestBuildSQLServerCDCChangesQueryRejectsInvalidSourceObject(t *testing.T) {
 	assertOutputContains(t, err.Error(), "source object must be schema.table or database.schema.table")
 }
 
+func TestReadSQLServerCDCChangeRows(t *testing.T) {
+	rows := &fakeExportRows{
+		columns: []string{"__$operation", "__$start_lsn", "__$seqval", "id", "customer_name"},
+		values: [][]any{
+			{int64(2), []byte{0x01}, []byte{0x01}, int64(1), "Ada"},
+			{int64(1), []byte{0x02}, []byte{0x01}, int64(2), "Lin"},
+		},
+	}
+
+	changes, err := readSQLServerCDCChangeRows(rows, []string{"id", "customer_name"})
+	if err != nil {
+		t.Fatalf("readSQLServerCDCChangeRows() error = %v", err)
+	}
+	if !rows.closed {
+		t.Fatalf("rows closed = false, want true")
+	}
+	if len(changes) != 2 {
+		t.Fatalf("changes len = %d, want 2", len(changes))
+	}
+	if changes[0].Operation != cdcApplyUpsert || changes[1].Operation != cdcApplyDelete {
+		t.Fatalf("operations = %q, %q", changes[0].Operation, changes[1].Operation)
+	}
+	if !reflect.DeepEqual(changes[0].Columns, []string{"id", "customer_name"}) {
+		t.Fatalf("columns = %#v", changes[0].Columns)
+	}
+	if !reflect.DeepEqual(changes[0].Values, []any{int64(1), "Ada"}) {
+		t.Fatalf("values = %#v", changes[0].Values)
+	}
+}
+
+func TestReadSQLServerCDCChangeRowsRejectsUnexpectedColumns(t *testing.T) {
+	rows := &fakeExportRows{
+		columns: []string{"__$operation", "__$start_lsn", "id"},
+		values:  [][]any{{int64(2), []byte{0x01}, int64(1)}},
+	}
+
+	_, err := readSQLServerCDCChangeRows(rows, []string{"id"})
+	if err == nil {
+		t.Fatal("readSQLServerCDCChangeRows() error = nil, want column mismatch")
+	}
+	assertOutputContains(t, err.Error(), "CDC query returned 3 columns, want 4")
+}
+
 func TestRunExportRequiresChunkID(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 

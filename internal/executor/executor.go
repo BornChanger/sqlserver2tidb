@@ -1950,6 +1950,82 @@ func buildSQLServerCDCChangesQuery(sourceObject string, columns []string) (strin
 	), nil
 }
 
+func readSQLServerCDCChangeRows(rows exportRows, capturedColumns []string) ([]cdcChangeRow, error) {
+	defer rows.Close()
+	columns, err := rows.Columns()
+	if err != nil {
+		return nil, err
+	}
+	expectedColumns := append([]string{"__$operation", "__$start_lsn", "__$seqval"}, capturedColumns...)
+	if len(columns) != len(expectedColumns) {
+		return nil, fmt.Errorf("CDC query returned %d columns, want %d", len(columns), len(expectedColumns))
+	}
+	for i, expected := range expectedColumns {
+		if !strings.EqualFold(columns[i], expected) {
+			return nil, fmt.Errorf("CDC query column %d = %q, want %q", i+1, columns[i], expected)
+		}
+	}
+
+	values := make([]any, len(columns))
+	dest := make([]any, len(columns))
+	for i := range values {
+		dest[i] = &values[i]
+	}
+	var changes []cdcChangeRow
+	for rows.Next() {
+		if err := rows.Scan(dest...); err != nil {
+			return nil, err
+		}
+		operationCode, err := cdcOperationCode(values[0])
+		if err != nil {
+			return nil, err
+		}
+		operation, err := normalizeSQLServerCDCOperation(operationCode)
+		if err != nil {
+			return nil, err
+		}
+		changeValues := append([]any(nil), values[3:]...)
+		changes = append(changes, cdcChangeRow{
+			Operation: operation,
+			Columns:   append([]string(nil), capturedColumns...),
+			Values:    changeValues,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return changes, nil
+}
+
+func cdcOperationCode(value any) (int, error) {
+	switch v := value.(type) {
+	case int:
+		return v, nil
+	case int8:
+		return int(v), nil
+	case int16:
+		return int(v), nil
+	case int32:
+		return int(v), nil
+	case int64:
+		return int(v), nil
+	case []byte:
+		code, err := strconv.Atoi(string(v))
+		if err != nil {
+			return 0, fmt.Errorf("parse SQL Server CDC operation %q: %w", string(v), err)
+		}
+		return code, nil
+	case string:
+		code, err := strconv.Atoi(v)
+		if err != nil {
+			return 0, fmt.Errorf("parse SQL Server CDC operation %q: %w", v, err)
+		}
+		return code, nil
+	default:
+		return 0, fmt.Errorf("unsupported SQL Server CDC operation type %T", value)
+	}
+}
+
 func parseCDCKeyColumns(raw string) ([]string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
