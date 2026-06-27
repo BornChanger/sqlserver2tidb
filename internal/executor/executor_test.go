@@ -300,6 +300,28 @@ func TestRenderValidateQueryMatchedIncludesCheckID(t *testing.T) {
 	assertOutputContains(t, output, "target=42")
 }
 
+func TestRunValidateQueryExecuteFailureIncludesCheckID(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"validate-query",
+		"--execute",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--check-id", "orders-total",
+		"--source-sql", "TODO: choose source SQL",
+		"--target-sql", "SELECT SUM(total) FROM app.orders",
+		"--source-connection-string-env", "MISSING_SQLSERVER_DSN",
+		"--target-connection-string-env", "MISSING_TIDB_DSN",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("validate-query execute code = 0, want non-zero")
+	}
+	assertOutputContains(t, stderr.String(), "check-id=orders-total")
+	assertOutputContains(t, stderr.String(), "source_sql still contains TODO")
+}
+
 func TestRunValidateCountExecuteRejectsTODOPredicate(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 

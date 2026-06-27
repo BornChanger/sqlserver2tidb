@@ -754,7 +754,7 @@ func runValidateQuery(args []string, stdout, stderr io.Writer) int {
 			TargetConnectionStringEnv: *targetConnectionStringEnv,
 		})
 		if err != nil {
-			fmt.Fprintln(stderr, err)
+			fmt.Fprintf(stderr, "executor validate-query failed: check-id=%s error=%v\n", *checkID, err)
 			return 1
 		}
 		fmt.Fprint(stdout, renderValidateQueryMatched(*checkID, result))
