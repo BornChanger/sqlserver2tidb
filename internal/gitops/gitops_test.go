@@ -3059,6 +3059,7 @@ func TestGenerateExecutorEvidencePRDraftWritesDDLBody(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
 	must(t, GenerateSchemaDraftOnly(root))
+	setSchemaDiffStatus(t, root, "reviewed")
 	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "ddl")
 	if err != nil {
 		t.Fatalf("ComputePayloadHashForStage(ddl) error = %v", err)
@@ -4424,6 +4425,7 @@ func TestPlanWorkerReconcileReportsReadyAndBlockedProjectStages(t *testing.T) {
 	must(t, GenerateDataPlansOnly(root))
 	reviewExportPlanPredicates(t, root)
 	setReviewPlanStatus(t, root, "export", "reviewed")
+	setSchemaDiffStatus(t, root, "reviewed")
 	must(t, GenerateCDCPlanOnly(root))
 	setReviewPlanStatus(t, root, "cdc", "reviewed")
 	exportHash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
@@ -4565,10 +4567,32 @@ func TestPlanWorkerReconcileBlocksDraftValidationPlan(t *testing.T) {
 	assertContains(t, validation.Reason, `validation plan status is "draft", want reviewed or approved`)
 }
 
+func TestPlanWorkerReconcileBlocksUnreviewedSchemaDiff(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateSchemaDraftOnly(root))
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "ddl")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(ddl) error = %v", err)
+	}
+	writeStageApproval(t, root, "ddl", hash)
+
+	report, err := PlanWorkerReconcile(root)
+	if err != nil {
+		t.Fatalf("PlanWorkerReconcile() error = %v", err)
+	}
+	ddl := findReconcileAction(t, report.Actions, "ddl")
+	if ddl.Status != "blocked" {
+		t.Fatalf("ddl action = %+v, want blocked", ddl)
+	}
+	assertContains(t, ddl.Reason, `schema diff status is "draft-generated", want reviewed`)
+}
+
 func TestExecuteNextWorkerReconcileSkipsDDLExecutorActions(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
 	must(t, GenerateSchemaDraftOnly(root))
+	setSchemaDiffStatus(t, root, "reviewed")
 	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "ddl")
 	if err != nil {
 		t.Fatalf("ComputePayloadHashForStage(ddl) error = %v", err)

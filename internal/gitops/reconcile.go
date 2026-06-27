@@ -165,6 +165,12 @@ func planWorkerReconcileAction(root, sourceClusterID, projectID, stage string) W
 		return action
 	}
 	switch stage {
+	case "ddl":
+		schemaDiffPath := filepath.Join(root, "clusters", sourceClusterID, "projects", projectID, "schema", "schema-diff.json")
+		if err := requireReviewedSchemaDiff(schemaDiffPath); err != nil {
+			action.Reason = err.Error()
+			return action
+		}
 	case "export", "import", "cdc", "validation":
 		planPath := filepath.Join(root, "clusters", sourceClusterID, "projects", projectID, "plan", stage+"-plan.yaml")
 		if err := requireExecutablePlanStatus(planPath, stage+" plan"); err != nil {
