@@ -171,6 +171,13 @@ func planWorkerReconcileAction(root, sourceClusterID, projectID, stage string) W
 			return action
 		}
 	}
+	if stage == "cdc" {
+		planPath := filepath.Join(root, "clusters", sourceClusterID, "projects", projectID, "plan", "cdc-plan.yaml")
+		if err := requireExecutablePlanStatus(planPath, "cdc plan"); err != nil {
+			action.Reason = err.Error()
+			return action
+		}
+	}
 	action.Status = "ready"
 	action.PayloadHash = payloadHash
 	return action

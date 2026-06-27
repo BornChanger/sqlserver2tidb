@@ -4381,6 +4381,7 @@ func TestPlanWorkerReconcileReportsReadyAndBlockedProjectStages(t *testing.T) {
 	reviewExportPlanPredicates(t, root)
 	setReviewPlanStatus(t, root, "export", "reviewed")
 	must(t, GenerateCDCPlanOnly(root))
+	setReviewPlanStatus(t, root, "cdc", "reviewed")
 	exportHash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
 	if err != nil {
 		t.Fatalf("ComputePayloadHashForStage(export) error = %v", err)
@@ -4455,6 +4456,27 @@ func TestPlanWorkerReconcileBlocksDraftExportPlan(t *testing.T) {
 		t.Fatalf("export action = %+v, want blocked", export)
 	}
 	assertContains(t, export.Reason, `export plan status is "draft", want reviewed or approved`)
+}
+
+func TestPlanWorkerReconcileBlocksDraftCDCPlan(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateCDCPlanOnly(root))
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "cdc")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(cdc) error = %v", err)
+	}
+	writeStageApproval(t, root, "cdc", hash)
+
+	report, err := PlanWorkerReconcile(root)
+	if err != nil {
+		t.Fatalf("PlanWorkerReconcile() error = %v", err)
+	}
+	cdc := findReconcileAction(t, report.Actions, "cdc")
+	if cdc.Status != "blocked" {
+		t.Fatalf("cdc action = %+v, want blocked", cdc)
+	}
+	assertContains(t, cdc.Reason, `cdc plan status is "draft", want reviewed or approved`)
 }
 
 func TestExecuteNextWorkerReconcileSkipsDDLExecutorActions(t *testing.T) {

@@ -1537,6 +1537,7 @@ func TestRunWorkerReconcileDryRunCommand(t *testing.T) {
 	}, &stdout, &stderr); code != 0 {
 		t.Fatalf("generate-cdc-plan code = %d, stderr = %s", code, stderr.String())
 	}
+	setCLIReviewPlanStatus(t, root, "cdc", "reviewed")
 
 	stdout.Reset()
 	stderr.Reset()
