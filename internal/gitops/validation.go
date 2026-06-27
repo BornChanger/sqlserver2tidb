@@ -1,6 +1,7 @@
 package gitops
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -602,6 +603,9 @@ func validateApprovalMetadataContent(path string, project projectMetadata, expec
 	if !isSupportedApprovalStatus(approval.Status) {
 		return fmt.Errorf("unsupported approval status %q; supported statuses: pending, approved, rejected", approval.Status)
 	}
+	if strings.TrimSpace(approval.PayloadHash) != "" && !isValidPayloadHash(approval.PayloadHash) {
+		return fmt.Errorf("payload_hash %q must use sha256:<64 hex chars>", approval.PayloadHash)
+	}
 	if approval.Status == "approved" {
 		if strings.TrimSpace(approval.PayloadHash) == "" {
 			return errors.New("approved approval requires payload_hash")
@@ -620,6 +624,19 @@ func isSupportedApprovalStatus(status string) bool {
 	default:
 		return false
 	}
+}
+
+func isValidPayloadHash(value string) bool {
+	const prefix = "sha256:"
+	if !strings.HasPrefix(value, prefix) {
+		return false
+	}
+	digest := strings.TrimPrefix(value, prefix)
+	if len(digest) != 64 {
+		return false
+	}
+	_, err := hex.DecodeString(digest)
+	return err == nil
 }
 
 func validateExportPlanContent(path string) error {

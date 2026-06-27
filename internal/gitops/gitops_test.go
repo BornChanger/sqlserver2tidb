@@ -771,6 +771,24 @@ func TestValidateRepoReportsApprovedApprovalWithoutReviewer(t *testing.T) {
 	assertContains(t, strings.Join(report.Errors, "\n"), `invalid approval clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/approvals/export-approval.yaml: approved approval requires at least one approved_by reviewer`)
 }
 
+func TestValidateRepoReportsInvalidApprovalPayloadHash(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)
+	approvalRel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/approvals/export-approval.yaml"
+	approvalYAML := readFile(t, root, approvalRel)
+	approvalYAML = strings.Replace(approvalYAML, `payload_hash: ""`, "payload_hash: stale", 1)
+	writeFileForTest(t, root, approvalRel, approvalYAML)
+
+	report, err := ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
+	if report.Valid {
+		t.Fatal("ValidateRepo() valid = true, want invalid approval payload hash")
+	}
+	assertContains(t, strings.Join(report.Errors, "\n"), `invalid approval clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/approvals/export-approval.yaml: payload_hash "stale" must use sha256:<64 hex chars>`)
+}
+
 func TestValidateRepoReportsMissingRequiredGlobalFile(t *testing.T) {
 	root := t.TempDir()
 	must(t, InitRepo(root))
