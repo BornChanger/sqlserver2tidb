@@ -525,6 +525,22 @@ func TestValidateRepoReportsClusterStateMetadataMismatch(t *testing.T) {
 	}
 }
 
+func TestValidateRepoReportsInvalidInventoryJSON(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)
+	inventoryRel := "clusters/prod-sqlserver-a/inventory/inventory.json"
+	writeFileForTest(t, root, inventoryRel, "{")
+
+	report, err := ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
+	if report.Valid {
+		t.Fatal("ValidateRepo() valid = true, want invalid inventory JSON")
+	}
+	assertContains(t, strings.Join(report.Errors, "\n"), `invalid inventory clusters/prod-sqlserver-a/inventory/inventory.json: parse inventory`)
+}
+
 func TestValidateRepoReportsProjectIDMismatch(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)

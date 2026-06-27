@@ -252,6 +252,13 @@ func validateClusterDir(root, clusterRel string, report *ValidationReport) {
 	for _, rel := range requiredClusterFiles {
 		report.requireFile(root, filepath.ToSlash(filepath.Join(clusterRel, rel)))
 	}
+	inventoryRel := filepath.ToSlash(filepath.Join(clusterRel, "inventory", "inventory.json"))
+	inventoryPath := filepath.Join(root, filepath.FromSlash(inventoryRel))
+	if info, err := os.Stat(inventoryPath); err == nil && !info.IsDir() {
+		if _, err := readSQLServerInventory(inventoryPath); err != nil {
+			report.addError(fmt.Sprintf("invalid inventory %s: %v", inventoryRel, err))
+		}
+	}
 	clusterMetadataRel := filepath.ToSlash(filepath.Join(clusterRel, "cluster.yaml"))
 	clusterMetadataPath := filepath.Join(root, filepath.FromSlash(clusterMetadataRel))
 	var clusterMeta *clusterMetadata
