@@ -28,6 +28,37 @@ func (exec *recordingCDCExecutor) ExecContext(_ context.Context, query string, a
 	return nil, nil
 }
 
+type recordingCDCSource struct {
+	query   string
+	fromLSN []byte
+	toLSN   []byte
+	rows    exportRows
+}
+
+func (source *recordingCDCSource) QueryCDCChanges(_ context.Context, query string, fromLSN, toLSN []byte) (exportRows, error) {
+	source.query = query
+	source.fromLSN = append([]byte(nil), fromLSN...)
+	source.toLSN = append([]byte(nil), toLSN...)
+	return source.rows, nil
+}
+
+type recordingMultiCDCExecutor struct {
+	calls []recordedCDCCall
+}
+
+type recordedCDCCall struct {
+	query string
+	args  []any
+}
+
+func (exec *recordingMultiCDCExecutor) ExecContext(_ context.Context, query string, args ...any) (sql.Result, error) {
+	exec.calls = append(exec.calls, recordedCDCCall{
+		query: query,
+		args:  append([]any(nil), args...),
+	})
+	return nil, nil
+}
+
 func TestRunVersionCommand(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 
@@ -712,6 +743,8 @@ func TestRunCDCDryRunCommand(t *testing.T) {
 		"--target-object", "app.orders",
 		"--columns", "id,customer_name",
 		"--key-columns", "id",
+		"--from-lsn", "0x00000027000001f40001",
+		"--to-lsn", "0x00000027000001f40002",
 		"--apply-batch-size", "1000",
 	}, &stdout, &stderr)
 	if code != 0 {
@@ -723,8 +756,31 @@ func TestRunCDCDryRunCommand(t *testing.T) {
 	assertOutputContains(t, output, "target object: app.orders")
 	assertOutputContains(t, output, "columns: id,customer_name")
 	assertOutputContains(t, output, "key columns: id")
+	assertOutputContains(t, output, "from LSN: 0x00000027000001f40001")
+	assertOutputContains(t, output, "to LSN: 0x00000027000001f40002")
 	assertOutputContains(t, output, "apply batch size: 1000")
 	assertOutputContains(t, output, "No CDC reader or TiDB apply worker will be started.")
+}
+
+func TestRunCDCExecuteRequiresLSNRange(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"cdc",
+		"--execute",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--source-object", "sales.dbo.orders",
+		"--target-object", "app.orders",
+		"--columns", "id,customer_name",
+		"--key-columns", "id",
+		"--apply-batch-size", "1000",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatal("cdc execute code = 0, want missing LSN error")
+	}
+	assertOutputContains(t, stderr.String(), "executor cdc: from LSN is required")
 }
 
 func TestRunCDCExecuteRequiresSourceConnectionStringEnv(t *testing.T) {
@@ -740,6 +796,8 @@ func TestRunCDCExecuteRequiresSourceConnectionStringEnv(t *testing.T) {
 		"--target-object", "app.orders",
 		"--columns", "id,customer_name",
 		"--key-columns", "id",
+		"--from-lsn", "0x00000027000001f40001",
+		"--to-lsn", "0x00000027000001f40002",
 		"--apply-batch-size", "1000",
 		"--source-connection-string-env", "MISSING_SQLSERVER_CDC_DSN",
 		"--target-connection-string-env", "MISSING_TIDB_APPLY_DSN",
@@ -764,6 +822,8 @@ func TestRunCDCExecuteRequiresTargetConnectionStringEnv(t *testing.T) {
 		"--target-object", "app.orders",
 		"--columns", "id,customer_name",
 		"--key-columns", "id",
+		"--from-lsn", "0x00000027000001f40001",
+		"--to-lsn", "0x00000027000001f40002",
 		"--apply-batch-size", "1000",
 		"--source-connection-string-env", "SQLSERVER_CDC_TEST_DSN",
 		"--target-connection-string-env", "MISSING_TIDB_APPLY_DSN",
@@ -806,6 +866,8 @@ func TestRunCDCExecuteRejectsKeyColumnOutsideColumns(t *testing.T) {
 		"--target-object", "app.orders",
 		"--columns", "id,customer_name",
 		"--key-columns", "tenant_id",
+		"--from-lsn", "0x00000027000001f40001",
+		"--to-lsn", "0x00000027000001f40002",
 		"--apply-batch-size", "1000",
 	}, &stdout, &stderr)
 	if code == 0 {
@@ -844,6 +906,69 @@ func TestBuildTiDBCDCUpsertStatementRequiresKeyColumnsInCapturedColumns(t *testi
 		t.Fatal("buildTiDBCDCUpsertStatement() error = nil, want missing key column error")
 	}
 	assertOutputContains(t, err.Error(), "CDC key column missing_id is not present in captured columns")
+}
+
+func TestParseSQLServerCDCLSN(t *testing.T) {
+	got, err := parseSQLServerCDCLSN("0x00000027000001f40001", "from LSN")
+	if err != nil {
+		t.Fatalf("parseSQLServerCDCLSN() error = %v", err)
+	}
+	want := []byte{0x00, 0x00, 0x00, 0x27, 0x00, 0x00, 0x01, 0xf4, 0x00, 0x01}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("LSN bytes = %#v, want %#v", got, want)
+	}
+
+	_, err = parseSQLServerCDCLSN("0x1234", "from LSN")
+	if err == nil {
+		t.Fatal("parseSQLServerCDCLSN() error = nil, want length error")
+	}
+	assertOutputContains(t, err.Error(), "executor cdc: from LSN must be a 10-byte hex value")
+}
+
+func TestApplySQLServerCDCChangesQueriesRangeAndAppliesRows(t *testing.T) {
+	source := &recordingCDCSource{
+		rows: &fakeExportRows{
+			columns: []string{"__$operation", "__$start_lsn", "__$seqval", "id", "customer_name"},
+			values: [][]any{
+				{int64(2), []byte{0x01}, []byte{0x01}, int64(1), "Ada"},
+				{int64(1), []byte{0x02}, []byte{0x01}, int64(2), "Lin"},
+			},
+		},
+	}
+	target := &recordingMultiCDCExecutor{}
+	fromLSN := []byte{0x00, 0x00, 0x00, 0x27, 0x00, 0x00, 0x01, 0xf4, 0x00, 0x01}
+	toLSN := []byte{0x00, 0x00, 0x00, 0x27, 0x00, 0x00, 0x01, 0xf4, 0x00, 0x02}
+
+	applied, err := applySQLServerCDCChanges(context.Background(), source, target, cdcApplySpec{
+		SourceObject: "sales.dbo.orders",
+		TargetObject: "app.orders",
+		Columns:      []string{"id", "customer_name"},
+		KeyColumns:   []string{"id"},
+		FromLSN:      fromLSN,
+		ToLSN:        toLSN,
+	})
+	if err != nil {
+		t.Fatalf("applySQLServerCDCChanges() error = %v", err)
+	}
+	if applied != 2 {
+		t.Fatalf("applied = %d, want 2", applied)
+	}
+	wantQuery := "SELECT [__$operation], [__$start_lsn], [__$seqval], [id], [customer_name] FROM [sales].[cdc].[fn_cdc_get_all_changes_dbo_orders](@from_lsn, @to_lsn, 'all update old') ORDER BY [__$start_lsn], [__$seqval]"
+	if source.query != wantQuery {
+		t.Fatalf("query = %q, want %q", source.query, wantQuery)
+	}
+	if !reflect.DeepEqual(source.fromLSN, fromLSN) || !reflect.DeepEqual(source.toLSN, toLSN) {
+		t.Fatalf("LSN range = %#v..%#v", source.fromLSN, source.toLSN)
+	}
+	if len(target.calls) != 2 {
+		t.Fatalf("target calls = %d, want 2", len(target.calls))
+	}
+	if target.calls[0].query != "INSERT INTO `app`.`orders` (`id`, `customer_name`) VALUES (?, ?) ON DUPLICATE KEY UPDATE `customer_name` = VALUES(`customer_name`)" {
+		t.Fatalf("first query = %q", target.calls[0].query)
+	}
+	if target.calls[1].query != "DELETE FROM `app`.`orders` WHERE `id` = ?" {
+		t.Fatalf("second query = %q", target.calls[1].query)
+	}
 }
 
 func TestNormalizeSQLServerCDCOperation(t *testing.T) {

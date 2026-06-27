@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/csv"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -1626,10 +1627,12 @@ func runCDC(args []string, stdout, stderr io.Writer) int {
 	targetObject := fs.String("target-object", "", "target object")
 	columnsRaw := fs.String("columns", "", "comma-separated SQL Server CDC captured columns")
 	keyColumnsRaw := fs.String("key-columns", "", "comma-separated target key columns for CDC upsert/delete apply")
+	fromLSNRaw := fs.String("from-lsn", "", "inclusive SQL Server CDC from LSN as a 10-byte hex value")
+	toLSNRaw := fs.String("to-lsn", "", "inclusive SQL Server CDC to LSN as a 10-byte hex value")
 	applyBatchSize := fs.Int("apply-batch-size", 0, "apply batch size")
 	sourceConnectionStringEnv := fs.String("source-connection-string-env", defaultSourceConnectionStringEnv, "environment variable containing the SQL Server CDC connection string")
 	targetConnectionStringEnv := fs.String("target-connection-string-env", defaultTargetConnectionStringEnv, "environment variable containing the TiDB/MySQL connection string")
-	execute := fs.Bool("execute", false, "perform CDC apply; not implemented in this adapter")
+	execute := fs.Bool("execute", false, "perform CDC apply for the provided LSN range")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -1657,11 +1660,25 @@ func runCDC(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	if *execute {
+		fromLSN, err := parseSQLServerCDCLSN(*fromLSNRaw, "from LSN")
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		toLSN, err := parseSQLServerCDCLSN(*toLSNRaw, "to LSN")
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
 		if err := executeCDCApply(context.Background(), cdcExecuteSpec{
+			SourceObject:              *sourceObject,
+			TargetObject:              *targetObject,
 			SourceConnectionStringEnv: *sourceConnectionStringEnv,
 			TargetConnectionStringEnv: *targetConnectionStringEnv,
 			Columns:                   columns,
 			KeyColumns:                keyColumns,
+			FromLSN:                   fromLSN,
+			ToLSN:                     toLSN,
 		}); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
@@ -1678,16 +1695,26 @@ func runCDC(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "target object: %s\n", *targetObject)
 	fmt.Fprintf(stdout, "columns: %s\n", strings.Join(columns, ","))
 	fmt.Fprintf(stdout, "key columns: %s\n", strings.Join(keyColumns, ","))
+	if strings.TrimSpace(*fromLSNRaw) != "" {
+		fmt.Fprintf(stdout, "from LSN: %s\n", strings.TrimSpace(*fromLSNRaw))
+	}
+	if strings.TrimSpace(*toLSNRaw) != "" {
+		fmt.Fprintf(stdout, "to LSN: %s\n", strings.TrimSpace(*toLSNRaw))
+	}
 	fmt.Fprintf(stdout, "apply batch size: %s\n", strconv.Itoa(*applyBatchSize))
 	fmt.Fprintln(stdout, "No CDC reader or TiDB apply worker will be started.")
 	return 0
 }
 
 type cdcExecuteSpec struct {
+	SourceObject              string
+	TargetObject              string
 	SourceConnectionStringEnv string
 	TargetConnectionStringEnv string
 	Columns                   []string
 	KeyColumns                []string
+	FromLSN                   []byte
+	ToLSN                     []byte
 }
 
 func executeCDCApply(ctx context.Context, spec cdcExecuteSpec) error {
@@ -1713,6 +1740,12 @@ func executeCDCApply(ctx context.Context, spec cdcExecuteSpec) error {
 	if _, err := normalizeCDCKeyColumnSet(spec.KeyColumns, columnSet); err != nil {
 		return fmt.Errorf("executor cdc: %w", err)
 	}
+	if len(spec.FromLSN) == 0 {
+		return fmt.Errorf("executor cdc: from LSN is required")
+	}
+	if len(spec.ToLSN) == 0 {
+		return fmt.Errorf("executor cdc: to LSN is required")
+	}
 	sourceEnvName := strings.TrimSpace(spec.SourceConnectionStringEnv)
 	if sourceEnvName == "" {
 		sourceEnvName = defaultSourceConnectionStringEnv
@@ -1731,7 +1764,75 @@ func executeCDCApply(ctx context.Context, spec cdcExecuteSpec) error {
 		return fmt.Errorf("executor cdc: target connection string env %s is not set", targetEnvName)
 	}
 
-	return fmt.Errorf("executor cdc: apply loop is not implemented yet")
+	sourceDB, err := sql.Open("sqlserver", sourceConnectionString)
+	if err != nil {
+		return fmt.Errorf("executor cdc: open SQL Server connection: %w", err)
+	}
+	defer sourceDB.Close()
+
+	targetDB, err := sql.Open("mysql", targetConnectionString)
+	if err != nil {
+		return fmt.Errorf("executor cdc: open TiDB connection: %w", err)
+	}
+	defer targetDB.Close()
+
+	if _, err := applySQLServerCDCChanges(ctx, sqlServerCDCQuerier{db: sourceDB}, targetDB, cdcApplySpec{
+		SourceObject: spec.SourceObject,
+		TargetObject: spec.TargetObject,
+		Columns:      spec.Columns,
+		KeyColumns:   spec.KeyColumns,
+		FromLSN:      spec.FromLSN,
+		ToLSN:        spec.ToLSN,
+	}); err != nil {
+		return fmt.Errorf("executor cdc: %w", err)
+	}
+	return nil
+}
+
+type cdcApplySpec struct {
+	SourceObject string
+	TargetObject string
+	Columns      []string
+	KeyColumns   []string
+	FromLSN      []byte
+	ToLSN        []byte
+}
+
+type cdcChangeQuerier interface {
+	QueryCDCChanges(ctx context.Context, query string, fromLSN, toLSN []byte) (exportRows, error)
+}
+
+type sqlServerCDCQuerier struct {
+	db *sql.DB
+}
+
+func (querier sqlServerCDCQuerier) QueryCDCChanges(ctx context.Context, query string, fromLSN, toLSN []byte) (exportRows, error) {
+	return querier.db.QueryContext(ctx, query, sql.Named("from_lsn", fromLSN), sql.Named("to_lsn", toLSN))
+}
+
+func applySQLServerCDCChanges(ctx context.Context, source cdcChangeQuerier, target cdcStatementExecutor, spec cdcApplySpec) (int, error) {
+	query, err := buildSQLServerCDCChangesQuery(spec.SourceObject, spec.Columns)
+	if err != nil {
+		return 0, err
+	}
+	rows, err := source.QueryCDCChanges(ctx, query, spec.FromLSN, spec.ToLSN)
+	if err != nil {
+		return 0, fmt.Errorf("query SQL Server CDC changes: %w", err)
+	}
+	changes, err := readSQLServerCDCChangeRows(rows, spec.Columns)
+	if err != nil {
+		return 0, fmt.Errorf("read SQL Server CDC changes: %w", err)
+	}
+	applied := 0
+	for i, change := range changes {
+		if err := applyTiDBCDCChange(ctx, target, spec.TargetObject, spec.KeyColumns, change); err != nil {
+			return applied, fmt.Errorf("apply CDC change %d: %w", i+1, err)
+		}
+		if change.Operation != cdcApplySkip {
+			applied++
+		}
+	}
+	return applied, nil
 }
 
 func buildTiDBCDCUpsertStatement(targetObject string, columns, keyColumns []string) (string, error) {
@@ -2099,6 +2200,19 @@ func parseCDCColumns(raw string) ([]string, error) {
 	return columns, nil
 }
 
+func parseSQLServerCDCLSN(raw, label string) ([]byte, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return nil, fmt.Errorf("executor cdc: %s is required", label)
+	}
+	value = strings.TrimPrefix(strings.TrimPrefix(value, "0x"), "0X")
+	decoded, err := hex.DecodeString(value)
+	if err != nil || len(decoded) != 10 {
+		return nil, fmt.Errorf("executor cdc: %s must be a 10-byte hex value", label)
+	}
+	return decoded, nil
+}
+
 type field struct {
 	name  string
 	value string
@@ -2128,6 +2242,6 @@ Usage:
   sqlserver2tidb-executor validate-count --execute --source-connection-string-env SQLSERVER2TIDB_SOURCE_CONNECTION_STRING --target-connection-string-env SQLSERVER2TIDB_TARGET_CONNECTION_STRING --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --source-object sales.dbo.orders --target-object app.orders
   sqlserver2tidb-executor validate-query --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --check-id orders-total --source-sql "SELECT SUM(total) FROM sales.dbo.orders" --target-sql "SELECT SUM(total) FROM app.orders"
   sqlserver2tidb-executor validate-query --execute --source-connection-string-env SQLSERVER2TIDB_SOURCE_CONNECTION_STRING --target-connection-string-env SQLSERVER2TIDB_TARGET_CONNECTION_STRING --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --check-id orders-total --source-sql "SELECT SUM(total) FROM sales.dbo.orders" --target-sql "SELECT SUM(total) FROM app.orders"
-  sqlserver2tidb-executor cdc --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --source-object sales.dbo.orders --target-object app.orders --columns id,customer_name --key-columns id --apply-batch-size 1000
+  sqlserver2tidb-executor cdc --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --source-object sales.dbo.orders --target-object app.orders --columns id,customer_name --key-columns id --from-lsn 0x00000027000001f40001 --to-lsn 0x00000027000001f40002 --apply-batch-size 1000
 `)
 }
