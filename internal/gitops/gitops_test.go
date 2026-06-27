@@ -4469,6 +4469,54 @@ checks:
 	assertContains(t, first.ShellCommand, "--target-sql 'SELECT BIT_XOR(CRC32(CONCAT(id, total))) FROM app.orders'")
 }
 
+func TestPrepareWorkerExecutorAcceptsGeneratedChecksumValidationPlan(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	if _, err := GenerateValidationPlanWithSpec(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", ValidationPlanSpec{
+		IncludeChecksum:    true,
+		IncludeSampledHash: true,
+		SampleModulo:       100,
+	}); err != nil {
+		t.Fatalf("GenerateValidationPlanWithSpec() error = %v", err)
+	}
+	setReviewPlanStatus(t, root, "validation", "reviewed")
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "validation")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(validation) error = %v", err)
+	}
+	writeStageApproval(t, root, "validation", hash)
+
+	spec, err := PrepareWorkerExecutor(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "validation", WorkerExecutorPrepareSpec{
+		SourceConnectionStringEnv: "SQLSERVER_VALIDATE_DSN",
+		TargetConnectionStringEnv: "TIDB_VALIDATE_DSN",
+	})
+	if err != nil {
+		t.Fatalf("PrepareWorkerExecutor() error = %v", err)
+	}
+	if len(spec.Commands) != 3 {
+		t.Fatalf("executor commands = %+v, want row-count, checksum, and sampled-hash commands", spec.Commands)
+	}
+	var checksumCommand, sampledHashCommand string
+	for _, command := range spec.Commands {
+		switch command.ID {
+		case "dbo.orders.checksum":
+			checksumCommand = command.ShellCommand
+		case "dbo.orders.sampled-hash":
+			sampledHashCommand = command.ShellCommand
+		}
+	}
+	assertContains(t, checksumCommand, "sqlserver2tidb-executor validate-query")
+	assertContains(t, checksumCommand, "--check-id dbo.orders.checksum")
+	assertContains(t, checksumCommand, "CAST([id] AS DECIMAL(38, 6))")
+	assertContains(t, checksumCommand, "CAST(`id` AS DECIMAL(38, 6))")
+	assertContains(t, checksumCommand, "--source-connection-string-env SQLSERVER_VALIDATE_DSN")
+	assertContains(t, sampledHashCommand, "sqlserver2tidb-executor validate-query")
+	assertContains(t, sampledHashCommand, "--check-id dbo.orders.sampled-hash")
+	assertContains(t, sampledHashCommand, "WHERE CAST([id] AS BIGINT) % 100 = 0")
+	assertContains(t, sampledHashCommand, "WHERE CAST(`id` AS SIGNED) % 100 = 0")
+	assertContains(t, sampledHashCommand, "--target-connection-string-env TIDB_VALIDATE_DSN")
+}
+
 func TestPrepareWorkerExecutorValidationRequiresSupportedChecks(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
