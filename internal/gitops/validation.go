@@ -777,11 +777,15 @@ func validateSchemaDiffContent(path string, project *projectMetadata) error {
 		return fmt.Errorf("read schema diff: %w", err)
 	}
 	var doc struct {
+		Status          string `json:"status"`
 		ProjectID       string `json:"project_id"`
 		SourceClusterID string `json:"source_cluster_id"`
 	}
 	if err := json.Unmarshal(data, &doc); err != nil {
 		return fmt.Errorf("parse schema diff JSON: %w", err)
+	}
+	if strings.TrimSpace(doc.Status) != "" && !isSupportedSchemaDiffStatus(doc.Status) {
+		return fmt.Errorf("unsupported schema diff status %q; supported statuses: pending, draft-generated, reviewed", doc.Status)
 	}
 	if project == nil {
 		return nil
@@ -793,6 +797,15 @@ func validateSchemaDiffContent(path string, project *projectMetadata) error {
 		return fmt.Errorf("source_cluster_id %q does not match project metadata %q", doc.SourceClusterID, project.SourceClusterID)
 	}
 	return nil
+}
+
+func isSupportedSchemaDiffStatus(status string) bool {
+	switch status {
+	case "pending", "draft-generated", "reviewed":
+		return true
+	default:
+		return false
+	}
 }
 
 func validateEvidenceJSONContent(path string, project *projectMetadata) error {
