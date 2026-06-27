@@ -603,6 +603,60 @@ renewed_at: "2026-06-26T00:00:00Z"
 	}
 }
 
+func TestValidateRepoReportsInvalidActiveWorkerLeaseTimes(t *testing.T) {
+	tests := []struct {
+		name      string
+		oldValue  string
+		newValue  string
+		wantError string
+	}{
+		{
+			name:      "invalid_expires_at",
+			oldValue:  `expires_at: "2026-06-26T00:15:00Z"`,
+			newValue:  `expires_at: "not-a-time"`,
+			wantError: "active worker lease expires_at must be RFC3339",
+		},
+		{
+			name:      "invalid_renewed_at",
+			oldValue:  `renewed_at: "2026-06-26T00:00:00Z"`,
+			newValue:  `renewed_at: "not-a-time"`,
+			wantError: "active worker lease renewed_at must be RFC3339",
+		},
+		{
+			name:      "expires_before_renewed",
+			oldValue:  `expires_at: "2026-06-26T00:15:00Z"`,
+			newValue:  `expires_at: "2026-06-25T23:59:59Z"`,
+			wantError: "active worker lease expires_at must not be before renewed_at",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)
+			leaseRel := "clusters/prod-sqlserver-a/state/worker-lease.yaml"
+			leaseYAML := `source_cluster_id: prod-sqlserver-a
+holder: agent-a
+lease_id: lease-1
+phase: export
+project_id: sales-db-to-tidb-prod-a
+expires_at: "2026-06-26T00:15:00Z"
+renewed_at: "2026-06-26T00:00:00Z"
+`
+			leaseYAML = strings.Replace(leaseYAML, tt.oldValue, tt.newValue, 1)
+			writeFileForTest(t, root, leaseRel, leaseYAML)
+
+			report, err := ValidateRepo(root)
+			if err != nil {
+				t.Fatalf("ValidateRepo() error = %v", err)
+			}
+			if report.Valid {
+				t.Fatal("ValidateRepo() valid = true, want invalid active worker lease times")
+			}
+			assertContains(t, strings.Join(report.Errors, "\n"), "invalid cluster state "+leaseRel+": "+tt.wantError)
+		})
+	}
+}
+
 func TestValidateRepoReportsInvalidInventoryJSON(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)

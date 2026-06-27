@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type ValidationReport struct {
@@ -374,11 +375,16 @@ func validateWorkerLeaseMetadataContent(path string, cluster clusterMetadata) er
 	if err := requireWorkerLeaseScalar(path, "lease_id"); err != nil {
 		return err
 	}
-	if err := requireWorkerLeaseScalar(path, "expires_at"); err != nil {
+	expiresAt, err := requireWorkerLeaseTime(path, "expires_at")
+	if err != nil {
 		return err
 	}
-	if err := requireWorkerLeaseScalar(path, "renewed_at"); err != nil {
+	renewedAt, err := requireWorkerLeaseTime(path, "renewed_at")
+	if err != nil {
 		return err
+	}
+	if expiresAt.Before(renewedAt) {
+		return errors.New("active worker lease expires_at must not be before renewed_at")
 	}
 	return nil
 }
@@ -392,6 +398,21 @@ func requireWorkerLeaseScalar(path, key string) error {
 		return fmt.Errorf("active worker lease requires %s", key)
 	}
 	return nil
+}
+
+func requireWorkerLeaseTime(path, key string) (time.Time, error) {
+	value, err := readPlanTopLevelScalar(path, key)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if strings.TrimSpace(value) == "" {
+		return time.Time{}, fmt.Errorf("active worker lease requires %s", key)
+	}
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("active worker lease %s must be RFC3339", key)
+	}
+	return parsed, nil
 }
 
 func isSupportedWorkerLeasePhase(phase string) bool {
