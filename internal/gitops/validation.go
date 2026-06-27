@@ -595,7 +595,7 @@ func validateProjectContent(root, projectRel string, cluster *clusterMetadata, r
 			rel := filepath.ToSlash(filepath.Join(projectRel, stateRel))
 			path := filepath.Join(root, filepath.FromSlash(rel))
 			if info, err := os.Stat(path); err == nil && !info.IsDir() {
-				if err := validateProjectOwnedYAMLContent(path, projectMeta); err != nil {
+				if err := validateProjectStateContent(path, stateRel, projectMeta); err != nil {
 					report.addError(fmt.Sprintf("invalid state file %s: %v", rel, err))
 				}
 			}
@@ -871,6 +871,32 @@ func validateProjectOwnedYAMLContent(path string, project projectMetadata) error
 	}
 
 	return nil
+}
+
+func validateProjectStateContent(path, stateRel string, project projectMetadata) error {
+	if err := validateProjectOwnedYAMLContent(path, project); err != nil {
+		return err
+	}
+	if stateRel != "state/migration-state.yaml" {
+		return nil
+	}
+	phase, err := readPlanTopLevelScalar(path, "phase")
+	if err != nil {
+		return err
+	}
+	if !isSupportedMigrationStatePhase(phase) {
+		return fmt.Errorf("unsupported migration state phase %q; supported phases: planning, ddl, export, import, cdc, validation, cutover, completed", phase)
+	}
+	return nil
+}
+
+func isSupportedMigrationStatePhase(phase string) bool {
+	switch phase {
+	case "planning", "ddl", "export", "import", "cdc", "validation", "cutover", "completed":
+		return true
+	default:
+		return false
+	}
 }
 
 func validateOptionalProjectOwnedYAMLContent(path string, project projectMetadata) error {
