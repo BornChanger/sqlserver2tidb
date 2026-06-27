@@ -899,6 +899,9 @@ func validateMigrationStateContent(path string) error {
 	if !isSupportedMigrationStatePhase(phase) {
 		return fmt.Errorf("unsupported migration state phase %q; supported phases: planning, ddl, export, import, cdc, validation, cutover, completed", phase)
 	}
+	if err := validateMigrationStateStatus(path); err != nil {
+		return err
+	}
 	if err := validateMigrationStateUpdatedAt(path); err != nil {
 		return err
 	}
@@ -971,6 +974,26 @@ func validateValidationStatusStateContent(path string) error {
 func isSupportedMigrationStatePhase(phase string) bool {
 	switch phase {
 	case "planning", "ddl", "export", "import", "cdc", "validation", "cutover", "completed":
+		return true
+	default:
+		return false
+	}
+}
+
+func validateMigrationStateStatus(path string) error {
+	status, err := readPlanTopLevelScalar(path, "status")
+	if err != nil {
+		return err
+	}
+	if !isSupportedMigrationStateStatus(status) {
+		return fmt.Errorf("unsupported migration state status %q; supported statuses: not_started, planned, running, completed, failed", status)
+	}
+	return nil
+}
+
+func isSupportedMigrationStateStatus(status string) bool {
+	switch status {
+	case "not_started", "planned", "running", "completed", "failed":
 		return true
 	default:
 		return false
