@@ -1868,6 +1868,24 @@ func TestValidateRepoReportsInvalidApprovalApprovedAt(t *testing.T) {
 	assertContains(t, strings.Join(report.Errors, "\n"), `invalid approval clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/approvals/export-approval.yaml: approval approved_at must be RFC3339`)
 }
 
+func TestValidateRepoReportsInvalidPendingApprovalApprovedAt(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)
+	approvalRel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/approvals/export-approval.yaml"
+	approvalYAML := readFile(t, root, approvalRel)
+	approvalYAML = strings.Replace(approvalYAML, `approved_at: ""`, `approved_at: "not-a-time"`, 1)
+	writeFileForTest(t, root, approvalRel, approvalYAML)
+
+	report, err := ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
+	if report.Valid {
+		t.Fatal("ValidateRepo() valid = true, want invalid pending approval approved_at")
+	}
+	assertContains(t, strings.Join(report.Errors, "\n"), `invalid approval clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/approvals/export-approval.yaml: approval approved_at must be RFC3339`)
+}
+
 func TestValidateRepoReportsInvalidApprovalPayloadHash(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)

@@ -1236,6 +1236,11 @@ func validateApprovalMetadataContent(path string, project projectMetadata, expec
 	if strings.TrimSpace(approval.PayloadHash) != "" && !isValidPayloadHash(approval.PayloadHash) {
 		return fmt.Errorf("payload_hash %q must use sha256:<64 hex chars>", approval.PayloadHash)
 	}
+	if strings.TrimSpace(approval.ApprovedAt) != "" {
+		if _, err := time.Parse(time.RFC3339, approval.ApprovedAt); err != nil {
+			return errors.New("approval approved_at must be RFC3339")
+		}
+	}
 	if approval.Status == "approved" {
 		if strings.TrimSpace(approval.PayloadHash) == "" {
 			return errors.New("approved approval requires payload_hash")
@@ -1245,9 +1250,6 @@ func validateApprovalMetadataContent(path string, project projectMetadata, expec
 		}
 		if strings.TrimSpace(approval.ApprovedAt) == "" {
 			return errors.New("approved approval requires approved_at")
-		}
-		if _, err := time.Parse(time.RFC3339, approval.ApprovedAt); err != nil {
-			return errors.New("approval approved_at must be RFC3339")
 		}
 	}
 	return nil
