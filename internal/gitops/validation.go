@@ -424,6 +424,11 @@ func validateProjectContent(root, projectRel string, cluster *clusterMetadata, r
 	exportPlanExists := false
 	if info, err := os.Stat(exportPlanPath); err == nil && !info.IsDir() {
 		exportPlanExists = true
+		if projectMetaLoaded {
+			if err := validateOptionalProjectOwnedYAMLContent(exportPlanPath, projectMeta); err != nil {
+				report.addError(fmt.Sprintf("invalid export plan %s: %v", exportPlanRel, err))
+			}
+		}
 		if err := validateExportPlanContent(exportPlanPath); err != nil {
 			report.addError(fmt.Sprintf("invalid export plan %s: %v", exportPlanRel, err))
 		}
@@ -432,6 +437,11 @@ func validateProjectContent(root, projectRel string, cluster *clusterMetadata, r
 	importPlanRel := filepath.ToSlash(filepath.Join(projectRel, "plan", "import-plan.yaml"))
 	importPlanPath := filepath.Join(root, filepath.FromSlash(importPlanRel))
 	if info, err := os.Stat(importPlanPath); err == nil && !info.IsDir() {
+		if projectMetaLoaded {
+			if err := validateOptionalProjectOwnedYAMLContent(importPlanPath, projectMeta); err != nil {
+				report.addError(fmt.Sprintf("invalid import plan %s: %v", importPlanRel, err))
+			}
+		}
 		if err := validateImportPlanContent(importPlanPath); err != nil {
 			report.addError(fmt.Sprintf("invalid import plan %s: %v", importPlanRel, err))
 		}

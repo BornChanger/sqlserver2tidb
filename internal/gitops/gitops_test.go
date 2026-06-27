@@ -718,6 +718,51 @@ func TestValidateRepoReportsValidationPlanMetadataMismatch(t *testing.T) {
 	}
 }
 
+func TestValidateRepoReportsDataPlanMetadataMismatch(t *testing.T) {
+	tests := []struct {
+		name      string
+		rel       string
+		oldValue  string
+		newValue  string
+		wantError string
+	}{
+		{
+			name:      "export_project_id",
+			rel:       "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/export-plan.yaml",
+			oldValue:  "project_id: sales-db-to-tidb-prod-a",
+			newValue:  "project_id: inventory-db-to-tidb-prod-a",
+			wantError: `invalid export plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/export-plan.yaml: project_id "inventory-db-to-tidb-prod-a" does not match project metadata "sales-db-to-tidb-prod-a"`,
+		},
+		{
+			name:      "import_source_cluster_id",
+			rel:       "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml",
+			oldValue:  "source_cluster_id: prod-sqlserver-a",
+			newValue:  "source_cluster_id: prod-sqlserver-b",
+			wantError: `invalid import plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml: source_cluster_id "prod-sqlserver-b" does not match project metadata "prod-sqlserver-a"`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			createValidationWorkerProject(t, root, dataWorkerInventory())
+			must(t, GenerateDataPlansOnly(root))
+			reviewExportPlanPredicates(t, root)
+			planYAML := readFile(t, root, tt.rel)
+			planYAML = strings.Replace(planYAML, tt.oldValue, tt.newValue, 1)
+			writeFileForTest(t, root, tt.rel, planYAML)
+
+			report, err := ValidateRepo(root)
+			if err != nil {
+				t.Fatalf("ValidateRepo() error = %v", err)
+			}
+			if report.Valid {
+				t.Fatal("ValidateRepo() valid = true, want data plan metadata mismatch")
+			}
+			assertContains(t, strings.Join(report.Errors, "\n"), tt.wantError)
+		})
+	}
+}
+
 func TestValidateRepoReportsProjectStateMetadataMismatch(t *testing.T) {
 	tests := []struct {
 		name      string
