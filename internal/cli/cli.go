@@ -301,10 +301,17 @@ func runGenerateValidationPlan(args []string, stdout, stderr io.Writer) int {
 	root := fs.String("root", ".", "repository root")
 	sourceClusterID := fs.String("source-cluster-id", "", "upstream SQL Server cluster id")
 	projectID := fs.String("project-id", "", "migration project id")
+	includeChecksum := fs.Bool("include-checksum", false, "include reviewed scalar-query checksum checks for tables with exact numeric columns")
+	includeSampledHash := fs.Bool("include-sampled-hash", false, "include reviewed scalar-query sampled_hash checks for tables with an integer sample column")
+	sampleModulo := fs.Int("sample-modulo", 100, "modulo used by sampled_hash checks")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	result, err := gitops.GenerateValidationPlan(*root, *sourceClusterID, *projectID)
+	result, err := gitops.GenerateValidationPlanWithSpec(*root, *sourceClusterID, *projectID, gitops.ValidationPlanSpec{
+		IncludeChecksum:    *includeChecksum,
+		IncludeSampledHash: *includeSampledHash,
+		SampleModulo:       *sampleModulo,
+	})
 	if err != nil {
 		fmt.Fprintf(stderr, "generate validation plan: %v\n", err)
 		return 1

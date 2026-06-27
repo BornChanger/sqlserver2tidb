@@ -3810,6 +3810,103 @@ func TestGenerateValidationPlanWritesRowCountChecks(t *testing.T) {
 	}
 }
 
+func TestGenerateValidationPlanWithSpecWritesChecksumAndSampledHashChecks(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, `{
+  "status": "discovered",
+  "databases": [
+    {
+      "name": "sales",
+      "schemas": [
+        {
+          "name": "dbo",
+          "tables": [
+            {
+              "name": "orders",
+              "row_count": 2500000,
+              "columns": [
+                {"name": "id", "type": "int"},
+                {"name": "total", "type": "decimal(18,2)"},
+                {"name": "customer_name", "type": "nvarchar"}
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+`)
+
+	result, err := GenerateValidationPlanWithSpec(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", ValidationPlanSpec{
+		IncludeChecksum:    true,
+		IncludeSampledHash: true,
+		SampleModulo:       100,
+	})
+	if err != nil {
+		t.Fatalf("GenerateValidationPlanWithSpec() error = %v", err)
+	}
+	if result.Checks != 3 {
+		t.Fatalf("GenerateValidationPlanWithSpec() result = %+v, want 3 checks", result)
+	}
+
+	plan := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/validation-plan.yaml")
+	assertContains(t, plan, "id: dbo.orders.row-count")
+	assertContains(t, plan, "id: dbo.orders.checksum")
+	assertContains(t, plan, "type: checksum")
+	assertContains(t, plan, "id: dbo.orders.sampled-hash")
+	assertContains(t, plan, "type: sampled_hash")
+	assertContains(t, plan, "FROM [sales].[dbo].[orders]")
+	assertContains(t, plan, "FROM `app`.`orders`")
+	assertContains(t, plan, "CAST([id] AS DECIMAL(38, 6))")
+	assertContains(t, plan, "CAST(`total` AS DECIMAL(38, 6))")
+	assertContains(t, plan, "WHERE CAST([id] AS BIGINT) % 100 = 0")
+	assertContains(t, plan, "WHERE CAST(`id` AS SIGNED) % 100 = 0")
+}
+
+func TestGenerateValidationPlanWithSpecSkipsChecksumWhenNoExactNumericColumns(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, `{
+  "status": "discovered",
+  "databases": [
+    {
+      "name": "sales",
+      "schemas": [
+        {
+          "name": "dbo",
+          "tables": [
+            {
+              "name": "orders",
+              "columns": [
+                {"name": "id", "type": "uniqueidentifier"},
+                {"name": "customer_name", "type": "nvarchar"}
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+`)
+
+	result, err := GenerateValidationPlanWithSpec(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", ValidationPlanSpec{
+		IncludeChecksum:    true,
+		IncludeSampledHash: true,
+	})
+	if err != nil {
+		t.Fatalf("GenerateValidationPlanWithSpec() error = %v", err)
+	}
+	if result.Checks != 1 {
+		t.Fatalf("GenerateValidationPlanWithSpec() result = %+v, want only row-count check", result)
+	}
+
+	plan := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/validation-plan.yaml")
+	if strings.Contains(plan, "type: checksum") || strings.Contains(plan, "type: sampled_hash") {
+		t.Fatalf("validation plan included checksum checks without exact numeric columns:\n%s", plan)
+	}
+}
+
 func TestRunExportWorkerRequiresApprovedExportApproval(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())

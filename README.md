@@ -19,7 +19,7 @@ This MVP provides:
 - Project-scoped TiDB schema draft generation from SQL Server inventory and project metadata.
 - Project-scoped full export/import plan draft generation from SQL Server inventory and project metadata.
 - Project-scoped CDC plan draft generation from SQL Server inventory and project metadata.
-- Project-scoped row-count validation plan draft generation from SQL Server inventory and project metadata.
+- Project-scoped row-count validation plan draft generation from SQL Server inventory and project metadata, with optional exact-numeric scalar-query checksum and sampled-hash draft checks.
 - PR draft generation and a dry-run-by-default GitHub PR creation wrapper.
 - DDL, export, import, CDC, and validation payload hash calculation.
 - Approved metadata-only export/import/CDC/validation worker state write-back.
@@ -219,16 +219,19 @@ go run ./cmd/sqlserver2tidb generate-cdc-plan \
 
 This writes `plan/cdc-plan.yaml` under the project. The command records tracked source/target table pairs and checkpoint policy; it does not start SQL Server CDC, Debezium, Kafka, or TiDB apply.
 
-Generate a project-scoped row-count validation draft plan from the current SQL Server inventory and project metadata:
+Generate a project-scoped validation draft plan from the current SQL Server inventory and project metadata:
 
 ```bash
 go run ./cmd/sqlserver2tidb generate-validation-plan \
   --root . \
   --source-cluster-id prod-sqlserver-a \
-  --project-id sales-db-to-tidb-prod-a
+  --project-id sales-db-to-tidb-prod-a \
+  --include-checksum \
+  --include-sampled-hash \
+  --sample-modulo 100
 ```
 
-This writes `plan/validation-plan.yaml` under the project with one `row_count` check per table in scope. The command does not connect to SQL Server or TiDB and does not execute validation.
+This writes `plan/validation-plan.yaml` under the project with one `row_count` check per table in scope. When requested, it also adds `checksum` and `sampled_hash` scalar-query checks for tables that have exact numeric columns; sampled-hash checks require an integer sample column and use `--sample-modulo` to build the deterministic sample predicate. The command does not connect to SQL Server or TiDB and does not execute validation.
 
 Compute payload hashes and run reviewed DDL/export/import/CDC actions after the matching approval files are marked approved. `worker-export`, `worker-import`, `worker-cdc`, and `worker-validate` also require their plan files to be `reviewed` or `approved`; draft export/import/CDC/validation plans are not executable even with approved approval files:
 
@@ -416,4 +419,4 @@ This checks approved metadata, writes `state/validation-status.yaml`, and writes
 
 - Extend `sqlserver2tidb-executor export` beyond CSV over local file/HTTP(S) to native object storage clients and reviewed production formats.
 - Extend `sqlserver2tidb-executor import` beyond row-by-row CSV inserts to reviewed production import engines.
-- Extend validation beyond reviewed scalar-query checksum/sample-hash checks to native checksum generators and bucketed sampled-hash strategies.
+- Extend validation beyond exact-numeric scalar-query checksum/sample-hash checks to broader row digest generators and production-grade bucketed sampled-hash strategies.

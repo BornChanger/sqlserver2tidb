@@ -34,7 +34,7 @@ LLM 只生成解释、候选方案和文档，不直接执行迁移
 - 基于 SQL Server inventory 和 project metadata 生成项目级 TiDB DDL 草稿。
 - 基于 SQL Server inventory 和 project metadata 生成项目级全量导出/导入计划草稿。
 - 基于 SQL Server inventory 和 project metadata 生成项目级 CDC 计划草稿。
-- 基于 SQL Server inventory 和 project metadata 生成项目级 row-count validation plan 草稿。
+- 基于 SQL Server inventory 和 project metadata 生成项目级 validation plan 草稿，默认包含 row-count，也可显式生成 exact-numeric checksum / sampled-hash scalar-query 草稿。
 - 基于 stage 生成本地 PR draft 文件，并通过 dry-run-by-default wrapper 准备 `gh pr create`。
 - 计算 ddl、export、import、cdc、validation payload hash。
 - 在 approval 通过后执行 metadata-only export/import/CDC/validation worker，把 plan 写成 planned state/evidence 或 validation 结果。
@@ -855,20 +855,23 @@ tracked_tables:
     status: draft
 ```
 
-当前 MVP 也支持从 inventory 和 project metadata 生成项目级 row-count validation plan 草稿：
+当前 MVP 也支持从 inventory 和 project metadata 生成项目级 validation plan 草稿：
 
 ```bash
 bin/sqlserver2tidb generate-validation-plan \
   --root . \
   --source-cluster-id prod-sqlserver-a \
-  --project-id sales-db-to-tidb-prod-a
+  --project-id sales-db-to-tidb-prod-a \
+  --include-checksum \
+  --include-sampled-hash \
+  --sample-modulo 100
 ```
 
 输出：
 
 - `clusters/<source_cluster_id>/projects/<project_id>/plan/validation-plan.yaml`
 
-当前 `generate-validation-plan` 会为 project 范围内每张表生成一个 `row_count` 检查项。它不连接 SQL Server 或 TiDB，不执行行数校验，只把源/目标对象映射写成可 review 的 GitHub 文件。
+当前 `generate-validation-plan` 会为 project 范围内每张表生成一个 `row_count` 检查项。加 `--include-checksum` 后，会对存在非 computed 精确数值列的表生成 `checksum` scalar-query 草稿；加 `--include-sampled-hash` 后，会对同时具备整数采样列的表生成 `sampled_hash` scalar-query 草稿，采样谓词由 `--sample-modulo` 控制。它不连接 SQL Server 或 TiDB，不执行校验，只把源/目标对象映射和 reviewed SQL 草稿写成可 review 的 GitHub 文件。
 
 示例 `plan/validation-plan.yaml`：
 
@@ -881,6 +884,10 @@ checks:
     type: row_count
     source_object: sales.dbo.orders
     target_object: app.orders
+  - id: dbo.orders.checksum
+    type: checksum
+    source_sql: "SELECT COALESCE(SUM(COALESCE(CAST([id] AS DECIMAL(38, 6)), 0)), 0) FROM [sales].[dbo].[orders]"
+    target_sql: "SELECT COALESCE(SUM(COALESCE(CAST(`id` AS DECIMAL(38, 6)), 0)), 0) FROM `app`.`orders`"
 ```
 
 ### 10.6 阶段 5：全量导出
@@ -1139,7 +1146,7 @@ evidence/validation-report.md
 
 LLM 可以解释 mismatch，但 pass/fail 必须由确定性校验结果决定。
 
-当前 MVP 已支持 metadata-only validation worker。它不会连接 SQL Server 或 TiDB，只校验当前仓库里的迁移元数据是否满足进入后续执行的最低条件，包括 schema diff 可解析、DDL 已生成、manual review 已清空、conversion report 存在、validation plan 存在，row-count 检查项的 `id`、`source_object`、`target_object` 已填写，并且 predicate / target predicate 不再包含 `TODO`；`checksum`、`sampled_hash` 和 `business_sql` 检查项的 `id`、`source_sql`、`target_sql` 已填写，并且 source_sql / target_sql 不再包含 `TODO`。真实数据校验目前提供行数校验和 reviewed scalar-query 校验路径：先用 `generate-validation-plan` 生成 `plan/validation-plan.yaml`，再通过 PR review 补充或确认检查项，并把 validation plan 标成 `reviewed` 或 `approved`。validation approval/hash 通过后，`worker-executor --stage validation` 会为 `type: row_count` 或 `type: row-count` 的检查项生成 `sqlserver2tidb-executor validate-count` 命令，也会为 `type: checksum`、`type: sampled_hash` 或 `type: business_sql` 的检查项生成 `sqlserver2tidb-executor validate-query` 命令。
+当前 MVP 已支持 metadata-only validation worker。它不会连接 SQL Server 或 TiDB，只校验当前仓库里的迁移元数据是否满足进入后续执行的最低条件，包括 schema diff 可解析、DDL 已生成、manual review 已清空、conversion report 存在、validation plan 存在，row-count 检查项的 `id`、`source_object`、`target_object` 已填写，并且 predicate / target predicate 不再包含 `TODO`；`checksum`、`sampled_hash` 和 `business_sql` 检查项的 `id`、`source_sql`、`target_sql` 已填写，并且 source_sql / target_sql 不再包含 `TODO`。真实数据校验目前提供行数校验和 reviewed scalar-query 校验路径：先用 `generate-validation-plan` 生成 `plan/validation-plan.yaml`，可选打开 `--include-checksum` / `--include-sampled-hash`，再通过 PR review 补充或确认检查项，并把 validation plan 标成 `reviewed` 或 `approved`。validation approval/hash 通过后，`worker-executor --stage validation` 会为 `type: row_count` 或 `type: row-count` 的检查项生成 `sqlserver2tidb-executor validate-count` 命令，也会为 `type: checksum`、`type: sampled_hash` 或 `type: business_sql` 的检查项生成 `sqlserver2tidb-executor validate-query` 命令。
 
 先生成 validation plan 草稿：
 
@@ -1274,7 +1281,7 @@ SELECT COUNT(*) FROM [sales].[dbo].[orders] WHERE id >= 1;
 SELECT COUNT(*) FROM `app`.`orders` WHERE id >= 1;
 ```
 
-如果行数不同，命令返回非零退出码并输出 mismatch。当前也支持通过 `checksum`、`sampled_hash` 和 `business_sql` 检查项配置源端和目标端各一条返回单行单列的 SQL，并由 `sqlserver2tidb-executor validate-query --execute` 比较标量结果。当前实现不自动生成 checksum SQL、不做分桶 sampled-hash 策略，也不提供生产级聚合校验引擎。
+如果行数不同，命令返回非零退出码并输出 mismatch。当前也支持通过 `checksum`、`sampled_hash` 和 `business_sql` 检查项配置源端和目标端各一条返回单行单列的 SQL，并由 `sqlserver2tidb-executor validate-query --execute` 比较标量结果。`generate-validation-plan --include-checksum --include-sampled-hash` 可以自动生成 exact-numeric scalar-query 草稿；当前仍不提供通用行级 digest、生产级分桶策略或大规模聚合校验引擎。
 
 ### 10.10 阶段 9：Cutover
 
@@ -1515,7 +1522,7 @@ clusters/<source_cluster_id>/cluster.yaml
 
 ### 15.4 当前能直接迁移数据吗？
 
-当前 MVP 可以只读连接 SQL Server catalog 生成 inventory，可以从 inventory 生成 TiDB DDL 草稿、全量导出/导入计划草稿、CDC 计划草稿和 row-count validation plan 草稿，并执行 metadata-only export/import/CDC/validation worker。`worker-executor` 可以在 approval/hash gate 后生成外部执行器命令；当前 export 只接受 `format: csv`，import 只接受 `engine: sql-insert`，避免把 Parquet、Lightning 或 `IMPORT INTO` 这类未来路径误交给内置 executor。`sqlserver2tidb-executor` 当前已经可以解析这些 work item 并 dry-run 输出上下文。`apply-ddl --execute` 支持把已 review 且不含 `TODO` 的 DDL 文件执行到 TiDB。`export --execute` 支持 SQL Server 到本地 `file://` CSV 或 HTTP(S) CSV 的最小真实导出路径，并通过内部 null bitmap 尾列保留 SQL NULL，但还不支持原生 `s3://` 客户端或 Parquet。`import --execute` 支持本地 `file://` CSV 或 HTTP(S) CSV 到 TiDB 的流式逐行 insert 路径，会识别并排除内部 null bitmap 尾列，并用 `--import-batch-size` 分批提交事务，但还不支持 Lightning 或 `IMPORT INTO`。`worker-executor --stage validation` 可以在 validation approval/hash gate 后生成 `validate-count` 和 `validate-query` 命令，`validate-count --execute` 支持单对象 SQL Server/TiDB 行数对比，`validate-query --execute` 支持已 review 的 checksum、sampled-hash 和 business-SQL scalar-query 结果对比。`cdc --execute` 仍显式返回 not implemented，不会回放 CDC。自动 checksum SQL 生成、分桶 sampled-hash 策略和生产级校验引擎仍是后续能力。
+当前 MVP 可以只读连接 SQL Server catalog 生成 inventory，可以从 inventory 生成 TiDB DDL 草稿、全量导出/导入计划草稿、CDC 计划草稿和 validation plan 草稿，并执行 metadata-only export/import/CDC/validation worker。`worker-executor` 可以在 approval/hash gate 后生成外部执行器命令；当前 export 只接受 `format: csv`，import 只接受 `engine: sql-insert`，避免把 Parquet、Lightning 或 `IMPORT INTO` 这类未来路径误交给内置 executor。`sqlserver2tidb-executor` 当前已经可以解析这些 work item 并 dry-run 输出上下文。`apply-ddl --execute` 支持把已 review 且不含 `TODO` 的 DDL 文件执行到 TiDB。`export --execute` 支持 SQL Server 到本地 `file://` CSV 或 HTTP(S) CSV 的最小真实导出路径，并通过内部 null bitmap 尾列保留 SQL NULL，但还不支持原生 `s3://` 客户端或 Parquet。`import --execute` 支持本地 `file://` CSV 或 HTTP(S) CSV 到 TiDB 的流式逐行 insert 路径，会识别并排除内部 null bitmap 尾列，并用 `--import-batch-size` 分批提交事务，但还不支持 Lightning 或 `IMPORT INTO`。`worker-executor --stage validation` 可以在 validation approval/hash gate 后生成 `validate-count` 和 `validate-query` 命令，`validate-count --execute` 支持单对象 SQL Server/TiDB 行数对比，`validate-query --execute` 支持已 review 的 checksum、sampled-hash 和 business-SQL scalar-query 结果对比。`generate-validation-plan` 可以显式生成 exact-numeric checksum/sample-hash scalar-query 草稿。`cdc --execute` 仍显式返回 not implemented，不会回放 CDC。通用行级 digest、生产级分桶策略和大规模校验引擎仍是后续能力。
 
 ### 15.5 可以把 LLM 接进来吗？
 
@@ -1649,10 +1656,13 @@ bin/sqlserver2tidb generate-cdc-plan \
 bin/sqlserver2tidb generate-validation-plan \
   --root . \
   --source-cluster-id prod-sqlserver-a \
-  --project-id sales-db-to-tidb-prod-a
+  --project-id sales-db-to-tidb-prod-a \
+  --include-checksum \
+  --include-sampled-hash \
+  --sample-modulo 100
 ```
 
-该命令读取源集群 inventory 和项目 metadata，写回项目目录下的 `plan/validation-plan.yaml`。它为 project 范围内每张表生成一个 `row_count` 检查项，只生成草稿，不连接 SQL Server 或 TiDB，也不执行校验。
+该命令读取源集群 inventory 和项目 metadata，写回项目目录下的 `plan/validation-plan.yaml`。它为 project 范围内每张表生成一个 `row_count` 检查项；`--include-checksum` 会为有精确数值列的表生成 `checksum` scalar-query 草稿；`--include-sampled-hash` 会为有整数采样列的表生成 `sampled_hash` scalar-query 草稿；`--sample-modulo` 默认是 `100`。命令只生成草稿，不连接 SQL Server 或 TiDB，也不执行校验。
 
 ### 16.10 generate-pr-draft
 
@@ -2088,5 +2098,5 @@ bin/sqlserver2tidb create-executor-evidence-pr \
 23. 按需执行 `worker-executor --execute`，生成 `evidence/executor-<stage>-run.json`。
 24. 对 executor-only evidence 执行 `generate-executor-evidence-pr-draft` 和 `create-executor-evidence-pr` dry-run，再按需执行 `create-executor-evidence-pr --execute` 创建 evidence PR。
 25. approval 通过后执行 `worker-validate`，生成 validation state 和 evidence。
-26. 将 `sqlserver2tidb-executor export/import` 从本地 CSV 扩展到生产对象存储格式和导入引擎，把 validation 从 reviewed scalar-query 扩展到自动 checksum 生成和分桶 sampled-hash 策略，并实现/审查真实 CDC 行为。
+26. 将 `sqlserver2tidb-executor export/import` 从本地 CSV 扩展到生产对象存储格式和导入引擎，把 validation 从 exact-numeric scalar-query 草稿扩展到通用行级 digest 和生产级分桶 sampled-hash 策略，并实现/审查真实 CDC 行为。
 27. 最后接入 cutover orchestration。
