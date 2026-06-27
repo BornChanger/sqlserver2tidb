@@ -130,7 +130,7 @@ clusters/<source_cluster_id>/projects/<project_id>/prs/<stage>-pr.md
 
 Worker 是终极形态中的执行器。它从 GitHub repo 拉取已批准 instruction，执行确定性操作，并把状态和证据写回 repo。
 
-当前 MVP 实现了显式指定 project 的 `worker-export`、`worker-import`、`worker-cdc` 和 `worker-validate`。它们都需要 approval 和 payload hash 匹配；`worker-export` 和 `worker-import` 还要求对应 plan 已经是 `reviewed` 或 `approved`。当前还实现了 `worker-executor`，用于在同一 approval/hash gate 后生成外部执行器命令，默认 dry-run。当前还实现了 `worker-reconcile --dry-run` 和 `worker-reconcile --execute-next`；后者会获取源集群级 lease，并执行第一个 ready metadata-only action，且 export action 在 export plan 仍为 `draft` 时会被视为 blocked。加上 `--state-pr-draft` 后，reconcile 单步执行可以生成 state/evidence/lease 写回的 PR body 草稿。`create-worker-state-pr` 可以默认 dry-run 地准备 bot branch、commit、push 和 GitHub PR 命令；如果存在 `evidence/executor-<stage>-run.json`，会一并纳入提交文件列表；dry-run 会提示 PR body 文件列表是否需要刷新，只有显式 `--execute` 时才会刷新 body 并调用本地 `git` 和 `gh`。对于 DDL 这类 executor-only 阶段，`generate-executor-evidence-pr-draft` 可以把 `evidence/executor-ddl-run.json` 转成 PR body，`create-executor-evidence-pr` 可以默认 dry-run 地准备 evidence PR 的 bot branch、commit、push 和 GitHub PR 命令。
+当前 MVP 实现了显式指定 project 的 `worker-export`、`worker-import`、`worker-cdc` 和 `worker-validate`。它们都需要 approval 和 payload hash 匹配；`worker-export`、`worker-import` 和 `worker-cdc` 还要求对应 plan 已经是 `reviewed` 或 `approved`。当前还实现了 `worker-executor`，用于在同一 approval/hash gate 后生成外部执行器命令，默认 dry-run。当前还实现了 `worker-reconcile --dry-run` 和 `worker-reconcile --execute-next`；后者会获取源集群级 lease，并执行第一个 ready metadata-only action，且 export action 在 export plan 仍为 `draft` 时会被视为 blocked。加上 `--state-pr-draft` 后，reconcile 单步执行可以生成 state/evidence/lease 写回的 PR body 草稿。`create-worker-state-pr` 可以默认 dry-run 地准备 bot branch、commit、push 和 GitHub PR 命令；如果存在 `evidence/executor-<stage>-run.json`，会一并纳入提交文件列表；dry-run 会提示 PR body 文件列表是否需要刷新，只有显式 `--execute` 时才会刷新 body 并调用本地 `git` 和 `gh`。对于 DDL 这类 executor-only 阶段，`generate-executor-evidence-pr-draft` 可以把 `evidence/executor-ddl-run.json` 转成 PR body，`create-executor-evidence-pr` 可以默认 dry-run 地准备 evidence PR 的 bot branch、commit、push 和 GitHub PR 命令。
 
 ### 3.5 LLM
 
@@ -1050,7 +1050,7 @@ clusters/<source_cluster_id>/state/cdc-checkpoint.yaml
 
 LLM 不参与 LSN 判断，也不参与 offset 决策。
 
-当前 MVP 的 `worker-cdc` 只在 cdc approval 和 payload hash 匹配后，把 `plan/cdc-plan.yaml` 写成 planned 状态和 evidence。它会拒绝没有 tracked tables 或缺少必需字段的 CDC plan。它不启用 SQL Server CDC，不启动 Debezium，不读取 LSN，不判断 catch-up，也不向 TiDB 回放增量。
+当前 MVP 的 `worker-cdc` 只在 `plan/cdc-plan.yaml` 已经是 `reviewed` 或 `approved`、cdc approval 通过且 payload hash 匹配后，把 `plan/cdc-plan.yaml` 写成 planned 状态和 evidence。它会拒绝 draft CDC plan、没有 tracked tables 或缺少必需字段的 CDC plan。它不启用 SQL Server CDC，不启动 Debezium，不读取 LSN，不判断 catch-up，也不向 TiDB 回放增量。
 
 先计算 cdc payload hash：
 
@@ -1068,7 +1068,7 @@ bin/sqlserver2tidb compute-payload-hash \
 clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/approvals/cdc-approval.yaml
 ```
 
-并设置 `action: cdc`、`status: approved` 和非空 `approved_by` 后运行：
+并确认 `plan/cdc-plan.yaml` 已经由 PR review 改成 `status: reviewed` 或 `status: approved`，再设置 `action: cdc`、`status: approved` 和非空 `approved_by` 后运行：
 
 ```bash
 bin/sqlserver2tidb worker-cdc \
@@ -1745,7 +1745,7 @@ bin/sqlserver2tidb worker-cdc \
   --project-id sales-db-to-tidb-prod-a
 ```
 
-该命令先检查 `approvals/cdc-approval.yaml`，只有 approval 通过且 payload hash 匹配时才读取 `plan/cdc-plan.yaml`，并写回项目级 `state/migration-state.yaml`、源集群级 `state/cdc-checkpoint.yaml` 和项目级 `evidence/cdc-catchup.json`。它只写 planned 状态，不启用或执行真实 CDC。
+该命令先检查 `approvals/cdc-approval.yaml`，只有 approval 通过、payload hash 匹配，且 `plan/cdc-plan.yaml` 已经是 `reviewed` 或 `approved` 时才写回项目级 `state/migration-state.yaml`、源集群级 `state/cdc-checkpoint.yaml` 和项目级 `evidence/cdc-catchup.json`。它只写 planned 状态，不启用或执行真实 CDC。
 
 ### 16.16 worker-validate
 
@@ -2052,7 +2052,7 @@ bin/sqlserver2tidb create-executor-evidence-pr \
 14. 执行 `compute-payload-hash --stage ddl`，把 hash 写入 ddl approval，approval 通过后用 `worker-executor --stage ddl` dry-run 检查 DDL 执行命令。
 15. 执行 `compute-payload-hash --stage export`，把 hash 写入 export approval，approval 通过后运行 `worker-export` 写 planned export state/evidence。
 16. 执行 `compute-payload-hash --stage import`，把 hash 写入 import approval，approval 通过后运行 `worker-import` 写 planned import state/evidence。
-17. 执行 `compute-payload-hash --stage cdc`，把 hash 写入 cdc approval，approval 通过后运行 `worker-cdc` 写 planned CDC state/evidence。
+17. 将 `plan/cdc-plan.yaml` 通过 PR review 标成 `reviewed` 或 `approved`，执行 `compute-payload-hash --stage cdc`，把 hash 写入 cdc approval，approval 通过后运行 `worker-cdc` 写 planned CDC state/evidence。
 18. 执行 `compute-payload-hash --stage validation`，把 hash 写入 validation approval。
 19. 执行 `worker-reconcile --dry-run`，确认 ready/blocked action 与预期一致。
 20. 执行 `worker-reconcile --execute-next --holder <agent-id> --state-pr-draft`，用 lease-backed 单步 reconcile 执行第一个 ready metadata-only action，并生成 state PR body。

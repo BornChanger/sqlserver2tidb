@@ -1169,6 +1169,7 @@ func TestRunGenerateCDCPlanAndWorkerCDCCommands(t *testing.T) {
 		t.Fatalf("generate-cdc-plan stdout = %q, want tracked table count", stdout.String())
 	}
 	assertExists(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/cdc-plan.yaml")
+	setCLIReviewPlanStatus(t, root, "cdc", "reviewed")
 
 	stdout.Reset()
 	stderr.Reset()

@@ -188,6 +188,9 @@ func RunCDCWorker(root, sourceClusterID, projectID string) (DataWorkerResult, er
 
 	clusterDir := filepath.Join(root, "clusters", sourceClusterID)
 	projectDir := filepath.Join(clusterDir, "projects", projectID)
+	if err := requireExecutablePlanStatus(filepath.Join(projectDir, "plan", "cdc-plan.yaml"), "cdc plan"); err != nil {
+		return DataWorkerResult{}, err
+	}
 	plan, err := readCDCPlanSummary(filepath.Join(projectDir, "plan", "cdc-plan.yaml"))
 	if err != nil {
 		return DataWorkerResult{}, err

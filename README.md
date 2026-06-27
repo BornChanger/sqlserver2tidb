@@ -230,7 +230,7 @@ go run ./cmd/sqlserver2tidb generate-validation-plan \
 
 This writes `plan/validation-plan.yaml` under the project with one `row_count` check per table in scope. The command does not connect to SQL Server or TiDB and does not execute validation.
 
-Compute payload hashes and run reviewed DDL/export/import/CDC actions after the matching approval files are marked approved. `worker-export` and `worker-import` also require their plan files to be `reviewed` or `approved`; draft export/import plans are not executable even with approved approval files:
+Compute payload hashes and run reviewed DDL/export/import/CDC actions after the matching approval files are marked approved. `worker-export`, `worker-import`, and `worker-cdc` also require their plan files to be `reviewed` or `approved`; draft export/import/CDC plans are not executable even with approved approval files:
 
 ```bash
 go run ./cmd/sqlserver2tidb compute-payload-hash \

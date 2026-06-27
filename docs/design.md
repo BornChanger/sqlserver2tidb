@@ -167,6 +167,8 @@ The current `worker-cdc` implementation is metadata-only. It executes only after
 - at least one `approved_by` entry
 - `payload_hash` matching the current CDC payload
 
+It also requires `plan/cdc-plan.yaml` to have `status: reviewed` or `status: approved`; draft CDC plans are not executable even when the approval file is already approved.
+
 The CDC payload hash covers:
 
 - `project.yaml`

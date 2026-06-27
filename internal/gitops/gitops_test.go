@@ -4296,10 +4296,28 @@ func TestRunCDCWorkerRequiresApprovedCDCApproval(t *testing.T) {
 	}
 }
 
+func TestRunCDCWorkerRejectsDraftCDCPlan(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateCDCPlanOnly(root))
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "cdc")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(cdc) error = %v", err)
+	}
+	writeStageApproval(t, root, "cdc", hash)
+
+	_, err = RunCDCWorker(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a")
+	if err == nil {
+		t.Fatal("RunCDCWorker() expected draft plan error")
+	}
+	assertContains(t, err.Error(), `cdc plan status is "draft", want reviewed or approved`)
+}
+
 func TestRunCDCWorkerWritesPlannedStateWhenApprovedHashMatches(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
 	must(t, GenerateCDCPlanOnly(root))
+	setReviewPlanStatus(t, root, "cdc", "reviewed")
 	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "cdc")
 	if err != nil {
 		t.Fatalf("ComputePayloadHashForStage(cdc) error = %v", err)
@@ -4341,6 +4359,7 @@ func TestRunCDCWorkerWritesPlannedStateWhenApprovedHashMatches(t *testing.T) {
 func TestRunCDCWorkerRejectsEmptyCDCPlan(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
+	setReviewPlanStatus(t, root, "cdc", "reviewed")
 	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "cdc")
 	if err != nil {
 		t.Fatalf("ComputePayloadHashForStage(cdc) error = %v", err)
