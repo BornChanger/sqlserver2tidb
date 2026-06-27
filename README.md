@@ -303,7 +303,7 @@ go run ./cmd/sqlserver2tidb worker-reconcile \
   --dry-run
 ```
 
-This scans cluster/project metadata and reports which `worker-executor --stage ddl`, `worker-export`, `worker-import`, `worker-cdc`, and `worker-validate` actions are ready or blocked by approval/hash checks. Export, import, and CDC actions are blocked while their plan files are still `draft`. It does not execute workers, acquire leases, or write state.
+This scans cluster/project metadata and reports which `worker-executor --stage ddl`, `worker-export`, `worker-import`, `worker-cdc`, and `worker-validate` actions are ready or blocked by approval/hash checks. Export, import, CDC, and validation actions are blocked while their plan files are still `draft`. It does not execute workers, acquire leases, or write state.
 
 Execute the first ready metadata-only worker action with a source-cluster lease:
 

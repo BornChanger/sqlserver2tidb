@@ -204,7 +204,7 @@ The command does not connect to SQL Server or TiDB and does not execute validati
 
 For each project/stage pair, it reports:
 
-- `ready` when approval is approved, `approved_by` is non-empty, the payload hash matches, and export/import/CDC plan status gates pass
+- `ready` when approval is approved, `approved_by` is non-empty, the payload hash matches, and export/import/CDC/validation plan status gates pass
 - `blocked` with the deterministic reason returned by the approval/hash gate
 - the exact single-project worker command for ready metadata actions
 - `worker-executor --stage ddl` for ready DDL executor actions

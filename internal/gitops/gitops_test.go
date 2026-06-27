@@ -4500,6 +4500,27 @@ func TestPlanWorkerReconcileBlocksDraftCDCPlan(t *testing.T) {
 	assertContains(t, cdc.Reason, `cdc plan status is "draft", want reviewed or approved`)
 }
 
+func TestPlanWorkerReconcileBlocksDraftValidationPlan(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateSchemaDraftOnly(root))
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "validation")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(validation) error = %v", err)
+	}
+	writeValidationApproval(t, root, hash)
+
+	report, err := PlanWorkerReconcile(root)
+	if err != nil {
+		t.Fatalf("PlanWorkerReconcile() error = %v", err)
+	}
+	validation := findReconcileAction(t, report.Actions, "validation")
+	if validation.Status != "blocked" {
+		t.Fatalf("validation action = %+v, want blocked", validation)
+	}
+	assertContains(t, validation.Reason, `validation plan status is "draft", want reviewed or approved`)
+}
+
 func TestExecuteNextWorkerReconcileSkipsDDLExecutorActions(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
