@@ -69,6 +69,11 @@ var requiredClusterDirs = []string{
 	"projects",
 }
 
+var clusterStateFiles = []string{
+	"state/cdc-checkpoint.yaml",
+	"state/worker-lease.yaml",
+}
+
 var requiredProjectFiles = []string{
 	"project.yaml",
 	"schema/conversion-report.md",
@@ -243,6 +248,15 @@ func validateClusterDir(root, clusterRel string, report *ValidationReport) {
 					report.addError(fmt.Sprintf("invalid source profile %s: %v", sourceProfileRel, err))
 				}
 			}
+			for _, stateRel := range clusterStateFiles {
+				rel := filepath.ToSlash(filepath.Join(clusterRel, stateRel))
+				path := filepath.Join(root, filepath.FromSlash(rel))
+				if info, err := os.Stat(path); err == nil && !info.IsDir() {
+					if err := validateSourceClusterOwnedYAMLContent(path, meta); err != nil {
+						report.addError(fmt.Sprintf("invalid cluster state %s: %v", rel, err))
+					}
+				}
+			}
 		}
 	}
 	validateProjects(root, filepath.ToSlash(filepath.Join(clusterRel, "projects")), report)
@@ -288,6 +302,17 @@ func validateSourceProfileMetadataContent(path string, cluster clusterMetadata) 
 	}
 	if meta.SecretRef != cluster.SecretRef {
 		return fmt.Errorf("secret_ref %q does not match cluster secret_ref %q", meta.SecretRef, cluster.SecretRef)
+	}
+	return nil
+}
+
+func validateSourceClusterOwnedYAMLContent(path string, cluster clusterMetadata) error {
+	sourceClusterID, err := readPlanTopLevelScalar(path, "source_cluster_id")
+	if err != nil {
+		return err
+	}
+	if sourceClusterID != cluster.ClusterID {
+		return fmt.Errorf("source_cluster_id %q does not match cluster metadata %q", sourceClusterID, cluster.ClusterID)
 	}
 	return nil
 }

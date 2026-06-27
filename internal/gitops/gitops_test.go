@@ -482,6 +482,49 @@ func TestValidateRepoReportsSourceProfileMismatch(t *testing.T) {
 	}
 }
 
+func TestValidateRepoReportsClusterStateMetadataMismatch(t *testing.T) {
+	tests := []struct {
+		name      string
+		rel       string
+		oldValue  string
+		newValue  string
+		wantError string
+	}{
+		{
+			name:      "cdc_checkpoint",
+			rel:       "clusters/prod-sqlserver-a/state/cdc-checkpoint.yaml",
+			oldValue:  "source_cluster_id: prod-sqlserver-a",
+			newValue:  "source_cluster_id: prod-sqlserver-b",
+			wantError: `invalid cluster state clusters/prod-sqlserver-a/state/cdc-checkpoint.yaml: source_cluster_id "prod-sqlserver-b" does not match cluster metadata "prod-sqlserver-a"`,
+		},
+		{
+			name:      "worker_lease",
+			rel:       "clusters/prod-sqlserver-a/state/worker-lease.yaml",
+			oldValue:  "source_cluster_id: prod-sqlserver-a",
+			newValue:  "source_cluster_id: prod-sqlserver-b",
+			wantError: `invalid cluster state clusters/prod-sqlserver-a/state/worker-lease.yaml: source_cluster_id "prod-sqlserver-b" does not match cluster metadata "prod-sqlserver-a"`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)
+			stateYAML := readFile(t, root, tt.rel)
+			stateYAML = strings.Replace(stateYAML, tt.oldValue, tt.newValue, 1)
+			writeFileForTest(t, root, tt.rel, stateYAML)
+
+			report, err := ValidateRepo(root)
+			if err != nil {
+				t.Fatalf("ValidateRepo() error = %v", err)
+			}
+			if report.Valid {
+				t.Fatal("ValidateRepo() valid = true, want cluster state metadata mismatch")
+			}
+			assertContains(t, strings.Join(report.Errors, "\n"), tt.wantError)
+		})
+	}
+}
+
 func TestValidateRepoReportsProjectIDMismatch(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)
