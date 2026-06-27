@@ -365,7 +365,17 @@ func validateCDCCheckpointMetadataContent(path string, cluster clusterMetadata) 
 	if err := validateCDCCheckpointMode(path, "capture_mode", cluster); err != nil {
 		return err
 	}
-	return validateCDCCheckpointMode(path, "mode", cluster)
+	if err := validateCDCCheckpointMode(path, "mode", cluster); err != nil {
+		return err
+	}
+	status, err := readPlanTopLevelScalar(path, "status")
+	if err != nil {
+		return err
+	}
+	if !isSupportedCDCCheckpointStatus(status) {
+		return fmt.Errorf("unsupported CDC checkpoint status %q; supported statuses: not_started, planned, running, caught_up, failed", status)
+	}
+	return nil
 }
 
 func validateCDCCheckpointMode(path, key string, cluster clusterMetadata) error {
@@ -377,6 +387,15 @@ func validateCDCCheckpointMode(path, key string, cluster clusterMetadata) error 
 		return fmt.Errorf("%s %q does not match cluster cdc mode %q", key, mode, cluster.CDCMode)
 	}
 	return nil
+}
+
+func isSupportedCDCCheckpointStatus(status string) bool {
+	switch status {
+	case "not_started", "planned", "running", "caught_up", "failed":
+		return true
+	default:
+		return false
+	}
 }
 
 func validateWorkerLeaseMetadataContent(path string, cluster clusterMetadata) error {
