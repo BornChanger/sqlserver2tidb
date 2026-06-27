@@ -644,6 +644,67 @@ func TestValidateRepoReportsInvalidCDCCheckpointUpdatedAt(t *testing.T) {
 	}
 }
 
+func TestValidateRepoReportsInvalidCDCCheckpointEntry(t *testing.T) {
+	tests := []struct {
+		name       string
+		checkpoint string
+		wantError  string
+	}{
+		{
+			name: "invalid_from_lsn",
+			checkpoint: `checkpoints:
+  - source_object: sales.dbo.orders
+    target_object: app.orders
+    from_lsn: not-a-lsn
+    to_lsn: 0x00000027000001f40002
+    applied_changes: 2
+    completed_at: "2026-01-02T03:04:06Z"`,
+			wantError: "CDC checkpoint entry 1 from_lsn must be a 10-byte hex value",
+		},
+		{
+			name: "negative_applied_changes",
+			checkpoint: `checkpoints:
+  - source_object: sales.dbo.orders
+    target_object: app.orders
+    from_lsn: 0x00000027000001f40001
+    to_lsn: 0x00000027000001f40002
+    applied_changes: -1
+    completed_at: "2026-01-02T03:04:06Z"`,
+			wantError: "CDC checkpoint entry 1 applied_changes must be non-negative",
+		},
+		{
+			name: "invalid_completed_at",
+			checkpoint: `checkpoints:
+  - source_object: sales.dbo.orders
+    target_object: app.orders
+    from_lsn: 0x00000027000001f40001
+    to_lsn: 0x00000027000001f40002
+    applied_changes: 2
+    completed_at: "not-a-time"`,
+			wantError: "CDC checkpoint entry 1 completed_at must be RFC3339",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)
+			rel := "clusters/prod-sqlserver-a/state/cdc-checkpoint.yaml"
+			stateYAML := readFile(t, root, rel)
+			stateYAML = strings.Replace(stateYAML, "checkpoints: []", tt.checkpoint, 1)
+			writeFileForTest(t, root, rel, stateYAML)
+
+			report, err := ValidateRepo(root)
+			if err != nil {
+				t.Fatalf("ValidateRepo() error = %v", err)
+			}
+			if report.Valid {
+				t.Fatal("ValidateRepo() valid = true, want invalid CDC checkpoint entry")
+			}
+			assertContains(t, strings.Join(report.Errors, "\n"), "invalid cluster state "+rel+": "+tt.wantError)
+		})
+	}
+}
+
 func TestValidateRepoReportsInvalidWorkerLeasePhase(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)

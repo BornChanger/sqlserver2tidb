@@ -227,7 +227,7 @@ clusters/<source_cluster_id>/
 ```
 
 This is the right boundary for source inventory, SQL Server CDC, source permissions, and worker leases.
-The source-cluster `state/cdc-checkpoint.yaml` must stay aligned with `cluster.yaml`: initialization uses `capture_mode`, CDC worker write-back uses `mode`, and either field must match the cluster `cdc.mode` when present. Checkpoint phase is optional during initialization but must be `cdc` when present. Checkpoint status is restricted to `not_started`, `planned`, `running`, `caught_up`, or `failed`; `updated_at` must be non-empty RFC3339. After `advance-cdc-checkpoint`, checkpoint entries are source-cluster snapshots derived from reviewed executor evidence and should be committed in the same PR as the CDC executor evidence.
+The source-cluster `state/cdc-checkpoint.yaml` must stay aligned with `cluster.yaml`: initialization uses `capture_mode`, CDC worker write-back uses `mode`, and either field must match the cluster `cdc.mode` when present. Checkpoint phase is optional during initialization but must be `cdc` when present. Checkpoint status is restricted to `not_started`, `planned`, `running`, `caught_up`, or `failed`; `updated_at` must be non-empty RFC3339. After `advance-cdc-checkpoint`, checkpoint entries are source-cluster snapshots derived from reviewed executor evidence and should be committed in the same PR as the CDC executor evidence. `validate-repo` checks each checkpoint entry has source/target objects, 10-byte hex LSN boundaries, non-negative `applied_changes`, and RFC3339 `completed_at`.
 
 Migration projects live below the source cluster:
 

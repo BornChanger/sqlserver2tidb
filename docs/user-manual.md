@@ -1063,7 +1063,7 @@ CDC checkpoint 是源集群级：
 clusters/<source_cluster_id>/state/cdc-checkpoint.yaml
 ```
 
-`validate-repo` 会校验 checkpoint 归属的 `source_cluster_id`，并要求初始化状态里的 `capture_mode` 或 worker 写回状态里的 `mode` 与 `cluster.yaml` 的 `cdc.mode` 一致。checkpoint 顶层 `phase` 可在初始化时省略，出现时必须是 `cdc`；`status` 只接受 `not_started`、`planned`、`running`、`caught_up` 或 `failed`；`updated_at` 必须非空并使用 RFC3339。
+`validate-repo` 会校验 checkpoint 归属的 `source_cluster_id`，并要求初始化状态里的 `capture_mode` 或 worker 写回状态里的 `mode` 与 `cluster.yaml` 的 `cdc.mode` 一致。checkpoint 顶层 `phase` 可在初始化时省略，出现时必须是 `cdc`；`status` 只接受 `not_started`、`planned`、`running`、`caught_up` 或 `failed`；`updated_at` 必须非空并使用 RFC3339。表级 checkpoint entry 必须包含源/目标对象、10-byte hex `from_lsn` / `to_lsn`、非负 `applied_changes` 和 RFC3339 `completed_at`。
 
 原因：
 

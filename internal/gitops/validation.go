@@ -384,7 +384,87 @@ func validateCDCCheckpointMetadataContent(path string, cluster clusterMetadata) 
 	if err := validateCDCCheckpointUpdatedAt(path); err != nil {
 		return err
 	}
+	if err := validateCDCCheckpointEntries(path); err != nil {
+		return err
+	}
 	return nil
+}
+
+type cdcCheckpointEntry struct {
+	SourceObject   string
+	TargetObject   string
+	FromLSN        string
+	ToLSN          string
+	AppliedChanges *int
+	CompletedAt    string
+}
+
+func validateCDCCheckpointEntries(path string) error {
+	entries, err := readCDCCheckpointEntries(path)
+	if err != nil {
+		return err
+	}
+	for i, entry := range entries {
+		index := i + 1
+		if strings.TrimSpace(entry.SourceObject) == "" {
+			return fmt.Errorf("CDC checkpoint entry %d source_object is required", index)
+		}
+		if strings.TrimSpace(entry.TargetObject) == "" {
+			return fmt.Errorf("CDC checkpoint entry %d target_object is required", index)
+		}
+		if err := validateCDCPlanLSN(entry.FromLSN, "from_lsn"); err != nil {
+			return fmt.Errorf("CDC checkpoint entry %d %w", index, err)
+		}
+		if err := validateCDCPlanLSN(entry.ToLSN, "to_lsn"); err != nil {
+			return fmt.Errorf("CDC checkpoint entry %d %w", index, err)
+		}
+		if entry.AppliedChanges == nil {
+			return fmt.Errorf("CDC checkpoint entry %d applied_changes is required", index)
+		}
+		if *entry.AppliedChanges < 0 {
+			return fmt.Errorf("CDC checkpoint entry %d applied_changes must be non-negative", index)
+		}
+		if strings.TrimSpace(entry.CompletedAt) == "" {
+			return fmt.Errorf("CDC checkpoint entry %d completed_at is required", index)
+		}
+		if _, err := time.Parse(time.RFC3339Nano, entry.CompletedAt); err != nil {
+			return fmt.Errorf("CDC checkpoint entry %d completed_at must be RFC3339", index)
+		}
+	}
+	return nil
+}
+
+func readCDCCheckpointEntries(path string) ([]cdcCheckpointEntry, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read CDC checkpoint: %w", err)
+	}
+	entries := make([]cdcCheckpointEntry, 0)
+	for _, raw := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(raw)
+		switch {
+		case strings.HasPrefix(trimmed, "- source_object:"):
+			entries = append(entries, cdcCheckpointEntry{
+				SourceObject: trimYAMLScalar(strings.TrimPrefix(trimmed, "- source_object:")),
+			})
+		case strings.HasPrefix(trimmed, "target_object:") && len(entries) > 0:
+			entries[len(entries)-1].TargetObject = trimYAMLScalar(strings.TrimPrefix(trimmed, "target_object:"))
+		case strings.HasPrefix(trimmed, "from_lsn:") && len(entries) > 0:
+			entries[len(entries)-1].FromLSN = trimYAMLScalar(strings.TrimPrefix(trimmed, "from_lsn:"))
+		case strings.HasPrefix(trimmed, "to_lsn:") && len(entries) > 0:
+			entries[len(entries)-1].ToLSN = trimYAMLScalar(strings.TrimPrefix(trimmed, "to_lsn:"))
+		case strings.HasPrefix(trimmed, "applied_changes:") && len(entries) > 0:
+			value := trimYAMLScalar(strings.TrimPrefix(trimmed, "applied_changes:"))
+			appliedChanges, err := strconv.Atoi(value)
+			if err != nil {
+				return nil, fmt.Errorf("CDC checkpoint entry %d applied_changes must be an integer", len(entries))
+			}
+			entries[len(entries)-1].AppliedChanges = &appliedChanges
+		case strings.HasPrefix(trimmed, "completed_at:") && len(entries) > 0:
+			entries[len(entries)-1].CompletedAt = trimYAMLScalar(strings.TrimPrefix(trimmed, "completed_at:"))
+		}
+	}
+	return entries, nil
 }
 
 func validateOptionalCDCCheckpointPhase(path string) error {
