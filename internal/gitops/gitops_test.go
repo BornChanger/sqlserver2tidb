@@ -1087,6 +1087,25 @@ func TestValidateRepoReportsInvalidSchemaDiffStatus(t *testing.T) {
 	assertContains(t, strings.Join(report.Errors, "\n"), `invalid schema diff clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/schema/schema-diff.json: unsupported schema diff status "ready"; supported statuses: pending, draft-generated, reviewed`)
 }
 
+func TestValidateRepoReportsInvalidSchemaDiffGeneratedAt(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)
+	diffRel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/schema/schema-diff.json"
+	writeFileForTest(t, root, diffRel, `{
+  "status": "draft-generated",
+  "generated_at": "not-a-time"
+}`)
+
+	report, err := ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
+	if report.Valid {
+		t.Fatal("ValidateRepo() valid = true, want invalid schema diff generated_at")
+	}
+	assertContains(t, strings.Join(report.Errors, "\n"), `invalid schema diff clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/schema/schema-diff.json: schema diff generated_at must be RFC3339`)
+}
+
 func TestValidateRepoReportsEvidenceMetadataMismatch(t *testing.T) {
 	tests := []struct {
 		name      string

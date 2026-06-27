@@ -778,6 +778,7 @@ func validateSchemaDiffContent(path string, project *projectMetadata) error {
 	}
 	var doc struct {
 		Status          string `json:"status"`
+		GeneratedAt     string `json:"generated_at"`
 		ProjectID       string `json:"project_id"`
 		SourceClusterID string `json:"source_cluster_id"`
 	}
@@ -786,6 +787,11 @@ func validateSchemaDiffContent(path string, project *projectMetadata) error {
 	}
 	if strings.TrimSpace(doc.Status) != "" && !isSupportedSchemaDiffStatus(doc.Status) {
 		return fmt.Errorf("unsupported schema diff status %q; supported statuses: pending, draft-generated, reviewed", doc.Status)
+	}
+	if strings.TrimSpace(doc.GeneratedAt) != "" {
+		if _, err := time.Parse(time.RFC3339, doc.GeneratedAt); err != nil {
+			return errors.New("schema diff generated_at must be RFC3339")
+		}
 	}
 	if project == nil {
 		return nil
