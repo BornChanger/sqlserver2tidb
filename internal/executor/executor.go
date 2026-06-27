@@ -1807,6 +1807,95 @@ func normalizeCDCKeyColumnSet(keyColumns []string, columnSet map[string]string) 
 	return keySet, nil
 }
 
+type cdcApplyOperation string
+
+const (
+	cdcApplyDelete cdcApplyOperation = "delete"
+	cdcApplyUpsert cdcApplyOperation = "upsert"
+	cdcApplySkip   cdcApplyOperation = "skip"
+)
+
+type cdcChangeRow struct {
+	Operation cdcApplyOperation
+	Columns   []string
+	Values    []any
+}
+
+type cdcStatementExecutor interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+func normalizeSQLServerCDCOperation(operation int) (cdcApplyOperation, error) {
+	switch operation {
+	case 1:
+		return cdcApplyDelete, nil
+	case 2, 4:
+		return cdcApplyUpsert, nil
+	case 3:
+		return cdcApplySkip, nil
+	default:
+		return "", fmt.Errorf("unsupported SQL Server CDC operation %d", operation)
+	}
+}
+
+func applyTiDBCDCChange(ctx context.Context, exec cdcStatementExecutor, targetObject string, keyColumns []string, change cdcChangeRow) error {
+	if len(change.Columns) != len(change.Values) {
+		return fmt.Errorf("CDC change column count %d does not match value count %d", len(change.Columns), len(change.Values))
+	}
+	switch change.Operation {
+	case cdcApplySkip:
+		return nil
+	case cdcApplyUpsert:
+		statement, err := buildTiDBCDCUpsertStatement(targetObject, change.Columns, keyColumns)
+		if err != nil {
+			return err
+		}
+		if _, err := exec.ExecContext(ctx, statement, change.Values...); err != nil {
+			return fmt.Errorf("execute CDC upsert: %w", err)
+		}
+		return nil
+	case cdcApplyDelete:
+		statement, err := buildTiDBCDCDeleteStatement(targetObject, keyColumns)
+		if err != nil {
+			return err
+		}
+		args, err := cdcKeyValues(change.Columns, change.Values, keyColumns)
+		if err != nil {
+			return err
+		}
+		if _, err := exec.ExecContext(ctx, statement, args...); err != nil {
+			return fmt.Errorf("execute CDC delete: %w", err)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported CDC apply operation %q", change.Operation)
+	}
+}
+
+func cdcKeyValues(columns []string, values []any, keyColumns []string) ([]any, error) {
+	if len(columns) != len(values) {
+		return nil, fmt.Errorf("CDC change column count %d does not match value count %d", len(columns), len(values))
+	}
+	valueByColumn := make(map[string]any, len(columns))
+	for i, column := range columns {
+		column = strings.TrimSpace(column)
+		if column == "" {
+			return nil, fmt.Errorf("CDC captured columns contains an empty column")
+		}
+		valueByColumn[strings.ToLower(column)] = values[i]
+	}
+	args := make([]any, 0, len(keyColumns))
+	for _, column := range keyColumns {
+		column = strings.TrimSpace(column)
+		value, ok := valueByColumn[strings.ToLower(column)]
+		if !ok {
+			return nil, fmt.Errorf("CDC key column %s is not present in captured columns", column)
+		}
+		args = append(args, value)
+	}
+	return args, nil
+}
+
 func parseCDCKeyColumns(raw string) ([]string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {

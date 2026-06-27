@@ -3,6 +3,7 @@ package executor
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"errors"
 	"io"
 	"net/http"
@@ -13,6 +14,19 @@ import (
 	"strings"
 	"testing"
 )
+
+type recordingCDCExecutor struct {
+	called bool
+	query  string
+	args   []any
+}
+
+func (exec *recordingCDCExecutor) ExecContext(_ context.Context, query string, args ...any) (sql.Result, error) {
+	exec.called = true
+	exec.query = query
+	exec.args = append([]any(nil), args...)
+	return nil, nil
+}
 
 func TestRunVersionCommand(t *testing.T) {
 	var stdout, stderr bytes.Buffer
@@ -786,6 +800,78 @@ func TestBuildTiDBCDCUpsertStatementRequiresKeyColumnsInCapturedColumns(t *testi
 		t.Fatal("buildTiDBCDCUpsertStatement() error = nil, want missing key column error")
 	}
 	assertOutputContains(t, err.Error(), "CDC key column missing_id is not present in captured columns")
+}
+
+func TestNormalizeSQLServerCDCOperation(t *testing.T) {
+	tests := []struct {
+		code int
+		want cdcApplyOperation
+	}{
+		{code: 1, want: cdcApplyDelete},
+		{code: 2, want: cdcApplyUpsert},
+		{code: 3, want: cdcApplySkip},
+		{code: 4, want: cdcApplyUpsert},
+	}
+	for _, tt := range tests {
+		got, err := normalizeSQLServerCDCOperation(tt.code)
+		if err != nil {
+			t.Fatalf("normalizeSQLServerCDCOperation(%d) error = %v", tt.code, err)
+		}
+		if got != tt.want {
+			t.Fatalf("normalizeSQLServerCDCOperation(%d) = %q, want %q", tt.code, got, tt.want)
+		}
+	}
+}
+
+func TestApplyTiDBCDCChangeAppliesUpsert(t *testing.T) {
+	exec := &recordingCDCExecutor{}
+	err := applyTiDBCDCChange(context.Background(), exec, "app.orders", []string{"id"}, cdcChangeRow{
+		Operation: cdcApplyUpsert,
+		Columns:   []string{"id", "customer_name"},
+		Values:    []any{int64(1), "Ada"},
+	})
+	if err != nil {
+		t.Fatalf("applyTiDBCDCChange() error = %v", err)
+	}
+	if exec.query != "INSERT INTO `app`.`orders` (`id`, `customer_name`) VALUES (?, ?) ON DUPLICATE KEY UPDATE `customer_name` = VALUES(`customer_name`)" {
+		t.Fatalf("query = %q", exec.query)
+	}
+	if !reflect.DeepEqual(exec.args, []any{int64(1), "Ada"}) {
+		t.Fatalf("args = %#v", exec.args)
+	}
+}
+
+func TestApplyTiDBCDCChangeAppliesDeleteWithKeyValues(t *testing.T) {
+	exec := &recordingCDCExecutor{}
+	err := applyTiDBCDCChange(context.Background(), exec, "app.orders", []string{"tenant_id", "id"}, cdcChangeRow{
+		Operation: cdcApplyDelete,
+		Columns:   []string{"id", "tenant_id", "customer_name"},
+		Values:    []any{int64(7), int64(42), "Ada"},
+	})
+	if err != nil {
+		t.Fatalf("applyTiDBCDCChange() error = %v", err)
+	}
+	if exec.query != "DELETE FROM `app`.`orders` WHERE `tenant_id` = ? AND `id` = ?" {
+		t.Fatalf("query = %q", exec.query)
+	}
+	if !reflect.DeepEqual(exec.args, []any{int64(42), int64(7)}) {
+		t.Fatalf("args = %#v", exec.args)
+	}
+}
+
+func TestApplyTiDBCDCChangeSkipsBeforeUpdateRows(t *testing.T) {
+	exec := &recordingCDCExecutor{}
+	err := applyTiDBCDCChange(context.Background(), exec, "app.orders", []string{"id"}, cdcChangeRow{
+		Operation: cdcApplySkip,
+		Columns:   []string{"id", "customer_name"},
+		Values:    []any{int64(1), "Ada"},
+	})
+	if err != nil {
+		t.Fatalf("applyTiDBCDCChange() error = %v", err)
+	}
+	if exec.called {
+		t.Fatalf("ExecContext was called for skip operation")
+	}
 }
 
 func TestRunExportRequiresChunkID(t *testing.T) {
