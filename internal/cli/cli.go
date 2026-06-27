@@ -63,6 +63,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runWorkerValidate(args[1:], stdout, stderr)
 	case "worker-executor":
 		return runWorkerExecutor(args[1:], stdout, stderr)
+	case "advance-cdc-checkpoint":
+		return runAdvanceCDCCheckpoint(args[1:], stdout, stderr)
 	case "worker-reconcile":
 		return runWorkerReconcile(args[1:], stdout, stderr)
 	case "create-cluster":
@@ -822,6 +824,31 @@ func withExternalExecutorExecuteFlag(args []string) []string {
 	return append(out, "--execute")
 }
 
+func runAdvanceCDCCheckpoint(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("advance-cdc-checkpoint", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	root := fs.String("root", ".", "repository root")
+	sourceClusterID := fs.String("source-cluster-id", "", "upstream SQL Server cluster id")
+	projectID := fs.String("project-id", "", "migration project id")
+	status := fs.String("status", "running", "checkpoint status to write: running or caught_up")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	result, err := gitops.AdvanceCDCCheckpointFromExecutorEvidence(*root, *sourceClusterID, *projectID, gitops.CDCCheckpointAdvanceSpec{
+		Status: *status,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "advance cdc checkpoint: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "cdc checkpoint advanced for %s\n", result.ProjectID)
+	fmt.Fprintf(stdout, "status: %s\n", result.Status)
+	fmt.Fprintf(stdout, "updated tables: %d\n", result.UpdatedTables)
+	fmt.Fprintf(stdout, "applied changes: %d\n", result.AppliedChanges)
+	fmt.Fprintf(stdout, "wrote %s\n", result.CheckpointFile)
+	return 0
+}
+
 func runWorkerReconcile(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("worker-reconcile", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -999,6 +1026,7 @@ Usage:
   sqlserver2tidb worker-executor --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage export
   sqlserver2tidb worker-executor --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage import --target-connection-string-env SQLSERVER2TIDB_TARGET_CONNECTION_STRING --import-batch-size 1000
   sqlserver2tidb worker-executor --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage validation --source-connection-string-env SQLSERVER2TIDB_SOURCE_CONNECTION_STRING --target-connection-string-env SQLSERVER2TIDB_TARGET_CONNECTION_STRING
+  sqlserver2tidb advance-cdc-checkpoint --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --status running
   sqlserver2tidb worker-reconcile --root . --dry-run
   sqlserver2tidb worker-reconcile --root . --execute-next --holder agent-a --state-pr-draft
   sqlserver2tidb create-cluster --cluster-id prod-sqlserver-a --display-name "prod SQL Server A" --listener sqlserver-a.internal --secret-ref vault://...

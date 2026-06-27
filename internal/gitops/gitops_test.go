@@ -3244,7 +3244,9 @@ func TestGenerateExecutorEvidencePRDraftIncludesCDCAppliedChanges(t *testing.T) 
 	if err != nil {
 		t.Fatalf("GenerateExecutorEvidencePRDraft() error = %v", err)
 	}
+	assertStringSliceContains(t, draft.Files, "clusters/prod-sqlserver-a/state/cdc-checkpoint.yaml")
 	body := readFile(t, root, draft.BodyFile)
+	assertContains(t, body, "clusters/prod-sqlserver-a/state/cdc-checkpoint.yaml")
 	assertContains(t, body, "| Command ID | Exit code | Started at | Completed at | Duration ms | CDC applied changes |")
 	assertContains(t, body, "| sales.dbo.orders | 0 | 2026-01-02T03:04:05Z | 2026-01-02T03:04:06Z | 1000 | 2 |")
 }
@@ -5047,6 +5049,86 @@ func TestRunCDCWorkerWritesPlannedStateWhenApprovedHashMatches(t *testing.T) {
 	assertContains(t, evidence, `"status": "planned"`)
 	assertContains(t, evidence, `"items": 1`)
 	assertContains(t, evidence, `"payload_hash": "`+hash+`"`)
+}
+
+func TestAdvanceCDCCheckpointFromExecutorEvidenceWritesCheckpointSnapshot(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateCDCPlanOnly(root))
+	setCDCPlanLSNRange(t, root, "0x00000027000001f40001", "0x00000027000001f40002")
+	setReviewPlanStatus(t, root, "cdc", "reviewed")
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "cdc")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(cdc) error = %v", err)
+	}
+	writeStageApproval(t, root, "cdc", hash)
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-cdc-run.json", `{
+  "stage": "cdc",
+  "status": "succeeded",
+  "project_id": "sales-db-to-tidb-prod-a",
+  "source_cluster_id": "prod-sqlserver-a",
+  "payload_hash": "`+hash+`",
+  "commands": [
+    {
+      "id": "sales.dbo.orders",
+      "args": [
+        "sqlserver2tidb-executor",
+        "cdc",
+        "--execute",
+        "--root",
+        ".",
+        "--source-cluster-id",
+        "prod-sqlserver-a",
+        "--project-id",
+        "sales-db-to-tidb-prod-a",
+        "--source-object",
+        "sales.dbo.orders",
+        "--target-object",
+        "app.orders",
+        "--from-lsn",
+        "0x00000027000001f40001",
+        "--to-lsn",
+        "0x00000027000001f40002"
+      ],
+      "shell_command": "sqlserver2tidb-executor cdc --execute --source-object sales.dbo.orders --target-object app.orders --from-lsn 0x00000027000001f40001 --to-lsn 0x00000027000001f40002",
+      "exit_code": 0,
+      "output": "applied changes: 2\n",
+      "started_at": "2026-01-02T03:04:05Z",
+      "completed_at": "2026-01-02T03:04:06Z",
+      "duration_ms": 1000,
+      "cdc_applied_changes": 2
+    }
+  ]
+}
+`)
+
+	result, err := AdvanceCDCCheckpointFromExecutorEvidence(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", CDCCheckpointAdvanceSpec{
+		Status: "running",
+	})
+	if err != nil {
+		t.Fatalf("AdvanceCDCCheckpointFromExecutorEvidence() error = %v", err)
+	}
+	if result.UpdatedTables != 1 || result.AppliedChanges != 2 {
+		t.Fatalf("checkpoint advance result = %+v, want 1 table and 2 applied changes", result)
+	}
+	if result.CheckpointFile != "clusters/prod-sqlserver-a/state/cdc-checkpoint.yaml" {
+		t.Fatalf("CheckpointFile = %q, want source cluster checkpoint", result.CheckpointFile)
+	}
+
+	checkpoint := readFile(t, root, result.CheckpointFile)
+	assertContains(t, checkpoint, "phase: cdc")
+	assertContains(t, checkpoint, "status: running")
+	assertContains(t, checkpoint, "project_id: sales-db-to-tidb-prod-a")
+	assertContains(t, checkpoint, "payload_hash: "+hash)
+	assertContains(t, checkpoint, "mode: sqlserver-cdc")
+	assertContains(t, checkpoint, "checkpoint_scope: source-cluster")
+	assertContains(t, checkpoint, "checkpoints:")
+	assertContains(t, checkpoint, "- source_object: sales.dbo.orders")
+	assertContains(t, checkpoint, "target_object: app.orders")
+	assertContains(t, checkpoint, "from_lsn: 0x00000027000001f40001")
+	assertContains(t, checkpoint, "to_lsn: 0x00000027000001f40002")
+	assertContains(t, checkpoint, "applied_changes: 2")
+	assertContains(t, checkpoint, `completed_at: "2026-01-02T03:04:06Z"`)
 }
 
 func TestRunCDCWorkerRejectsEmptyCDCPlan(t *testing.T) {

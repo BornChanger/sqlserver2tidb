@@ -1210,6 +1210,35 @@ func TestRunWorkerExecutorCDCExecuteRecordsAppliedChangesInEvidence(t *testing.T
 	if !strings.Contains(stdout.String(), "wrote evidence/executor-cdc-run.json") {
 		t.Fatalf("worker-executor stdout = %q, want evidence path", stdout.String())
 	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = Run([]string{
+		"advance-cdc-checkpoint",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--status", "running",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("advance-cdc-checkpoint code = %d, stderr = %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "cdc checkpoint advanced for sales-db-to-tidb-prod-a") {
+		t.Fatalf("advance-cdc-checkpoint stdout = %q, want completed message", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "applied changes: 2") {
+		t.Fatalf("advance-cdc-checkpoint stdout = %q, want applied changes", stdout.String())
+	}
+	checkpoint := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/state/cdc-checkpoint.yaml")
+	if !strings.Contains(checkpoint, "status: running") {
+		t.Fatalf("cdc checkpoint = %q, want running status", checkpoint)
+	}
+	if !strings.Contains(checkpoint, "to_lsn: 0x00000000000000000002") {
+		t.Fatalf("cdc checkpoint = %q, want advanced to_lsn", checkpoint)
+	}
+	if !strings.Contains(checkpoint, "applied_changes: 2") {
+		t.Fatalf("cdc checkpoint = %q, want applied changes", checkpoint)
+	}
 }
 
 func TestRunGenerateCDCPlanAndWorkerCDCCommands(t *testing.T) {

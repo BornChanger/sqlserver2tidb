@@ -64,10 +64,7 @@ func GenerateExecutorEvidencePRDraft(root, sourceClusterID, projectID, stage str
 		Title:           executorEvidencePRTitle(ctx.stage, ctx.projectID),
 		BranchName:      executorEvidencePRBranch(ctx.stage, ctx.projectID),
 		BodyFile:        executorEvidencePRBodyFile(ctx.sourceClusterID, ctx.projectID, ctx.stage),
-		Files: []string{
-			ctx.evidenceFile,
-			ctx.approvalFile,
-		},
+		Files:           executorEvidenceDraftFiles(ctx),
 	}
 
 	body := renderExecutorEvidencePRDraftMarkdown(ctx, draft)
@@ -94,10 +91,7 @@ func PrepareExecutorEvidencePRCreate(root, sourceClusterID, projectID, stage str
 		return ExecutorEvidencePRCreateSpec{}, fmt.Errorf("executor evidence PR draft %s does not exist; run generate-executor-evidence-pr-draft first", bodyFile)
 	}
 
-	files := []string{
-		ctx.evidenceFile,
-		bodyFile,
-	}
+	files := executorEvidenceCreateFiles(ctx, bodyFile)
 	for _, file := range files {
 		path := filepath.Join(root, filepath.FromSlash(file))
 		if info, err := os.Stat(path); err != nil || info.IsDir() {
@@ -328,8 +322,34 @@ func executorEvidenceApprovalFile(sourceClusterID, projectID, stage string) stri
 	return filepath.ToSlash(filepath.Join("clusters", sourceClusterID, "projects", projectID, "approvals", stage+"-approval.yaml"))
 }
 
+func executorEvidenceCheckpointFile(sourceClusterID string) string {
+	return filepath.ToSlash(filepath.Join("clusters", sourceClusterID, "state", "cdc-checkpoint.yaml"))
+}
+
 func executorEvidencePRBodyFile(sourceClusterID, projectID, stage string) string {
 	return filepath.ToSlash(filepath.Join("clusters", sourceClusterID, "projects", projectID, "prs", "executor-"+stage+"-evidence-pr.md"))
+}
+
+func executorEvidenceDraftFiles(ctx executorEvidencePRContext) []string {
+	files := []string{
+		ctx.evidenceFile,
+		ctx.approvalFile,
+	}
+	if ctx.stage == "cdc" {
+		files = append(files, executorEvidenceCheckpointFile(ctx.sourceClusterID))
+	}
+	return files
+}
+
+func executorEvidenceCreateFiles(ctx executorEvidencePRContext, bodyFile string) []string {
+	files := []string{
+		ctx.evidenceFile,
+		bodyFile,
+	}
+	if ctx.stage == "cdc" {
+		files = append(files, executorEvidenceCheckpointFile(ctx.sourceClusterID))
+	}
+	return files
 }
 
 func renderExecutorEvidencePRDraftMarkdown(ctx executorEvidencePRContext, draft ExecutorEvidencePRDraft) string {
