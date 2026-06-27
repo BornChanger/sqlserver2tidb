@@ -756,6 +756,38 @@ func TestRunCDCExecuteRequiresTargetConnectionStringEnv(t *testing.T) {
 	assertOutputContains(t, stderr.String(), "executor cdc: target connection string env MISSING_TIDB_APPLY_DSN is not set")
 }
 
+func TestBuildTiDBCDCUpsertStatementQuotesTargetAndSkipsKeyUpdates(t *testing.T) {
+	stmt, err := buildTiDBCDCUpsertStatement("app.orders", []string{"id", "customer`name", "total"}, []string{"id"})
+	if err != nil {
+		t.Fatalf("buildTiDBCDCUpsertStatement() error = %v", err)
+	}
+
+	want := "INSERT INTO `app`.`orders` (`id`, `customer``name`, `total`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `customer``name` = VALUES(`customer``name`), `total` = VALUES(`total`)"
+	if stmt != want {
+		t.Fatalf("buildTiDBCDCUpsertStatement() = %q, want %q", stmt, want)
+	}
+}
+
+func TestBuildTiDBCDCDeleteStatementUsesKeyColumns(t *testing.T) {
+	stmt, err := buildTiDBCDCDeleteStatement("app.orders", []string{"tenant_id", "id"})
+	if err != nil {
+		t.Fatalf("buildTiDBCDCDeleteStatement() error = %v", err)
+	}
+
+	want := "DELETE FROM `app`.`orders` WHERE `tenant_id` = ? AND `id` = ?"
+	if stmt != want {
+		t.Fatalf("buildTiDBCDCDeleteStatement() = %q, want %q", stmt, want)
+	}
+}
+
+func TestBuildTiDBCDCUpsertStatementRequiresKeyColumnsInCapturedColumns(t *testing.T) {
+	_, err := buildTiDBCDCUpsertStatement("app.orders", []string{"id", "customer_name"}, []string{"missing_id"})
+	if err == nil {
+		t.Fatal("buildTiDBCDCUpsertStatement() error = nil, want missing key column error")
+	}
+	assertOutputContains(t, err.Error(), "CDC key column missing_id is not present in captured columns")
+}
+
 func TestRunExportRequiresChunkID(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 

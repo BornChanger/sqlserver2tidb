@@ -1707,6 +1707,106 @@ func executeCDCApply(ctx context.Context, spec cdcExecuteSpec) error {
 	return fmt.Errorf("executor cdc: apply loop is not implemented yet")
 }
 
+func buildTiDBCDCUpsertStatement(targetObject string, columns, keyColumns []string) (string, error) {
+	quotedTargetObject, err := quoteTiDBObjectName(targetObject)
+	if err != nil {
+		return "", err
+	}
+	if len(columns) == 0 {
+		return "", fmt.Errorf("CDC captured columns must contain at least one column")
+	}
+	if len(keyColumns) == 0 {
+		return "", fmt.Errorf("CDC key columns is required")
+	}
+
+	quotedColumns := make([]string, 0, len(columns))
+	placeholders := make([]string, 0, len(columns))
+	columnSet := make(map[string]string, len(columns))
+	for _, column := range columns {
+		column = strings.TrimSpace(column)
+		if column == "" {
+			return "", fmt.Errorf("CDC captured columns contains an empty column")
+		}
+		normalized := strings.ToLower(column)
+		if _, ok := columnSet[normalized]; ok {
+			return "", fmt.Errorf("CDC captured columns contains duplicate column %s", column)
+		}
+		columnSet[normalized] = column
+		quotedColumns = append(quotedColumns, quoteTiDBIdentifier(column))
+		placeholders = append(placeholders, "?")
+	}
+
+	keySet, err := normalizeCDCKeyColumnSet(keyColumns, columnSet)
+	if err != nil {
+		return "", err
+	}
+
+	assignments := make([]string, 0, len(columns))
+	for _, column := range columns {
+		if _, ok := keySet[strings.ToLower(column)]; ok {
+			continue
+		}
+		quotedColumn := quoteTiDBIdentifier(column)
+		assignments = append(assignments, fmt.Sprintf("%s = VALUES(%s)", quotedColumn, quotedColumn))
+	}
+	if len(assignments) == 0 {
+		keyColumn := strings.TrimSpace(keyColumns[0])
+		quotedKeyColumn := quoteTiDBIdentifier(keyColumn)
+		assignments = append(assignments, fmt.Sprintf("%s = VALUES(%s)", quotedKeyColumn, quotedKeyColumn))
+	}
+
+	return fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON DUPLICATE KEY UPDATE %s",
+		quotedTargetObject,
+		strings.Join(quotedColumns, ", "),
+		strings.Join(placeholders, ", "),
+		strings.Join(assignments, ", "),
+	), nil
+}
+
+func buildTiDBCDCDeleteStatement(targetObject string, keyColumns []string) (string, error) {
+	quotedTargetObject, err := quoteTiDBObjectName(targetObject)
+	if err != nil {
+		return "", err
+	}
+	if len(keyColumns) == 0 {
+		return "", fmt.Errorf("CDC key columns is required")
+	}
+	seenColumns := map[string]struct{}{}
+	predicates := make([]string, 0, len(keyColumns))
+	for _, column := range keyColumns {
+		column = strings.TrimSpace(column)
+		if column == "" {
+			return "", fmt.Errorf("CDC key columns contains an empty column")
+		}
+		normalized := strings.ToLower(column)
+		if _, ok := seenColumns[normalized]; ok {
+			return "", fmt.Errorf("CDC key columns contains duplicate column %s", column)
+		}
+		seenColumns[normalized] = struct{}{}
+		predicates = append(predicates, fmt.Sprintf("%s = ?", quoteTiDBIdentifier(column)))
+	}
+	return fmt.Sprintf("DELETE FROM %s WHERE %s", quotedTargetObject, strings.Join(predicates, " AND ")), nil
+}
+
+func normalizeCDCKeyColumnSet(keyColumns []string, columnSet map[string]string) (map[string]struct{}, error) {
+	keySet := make(map[string]struct{}, len(keyColumns))
+	for _, column := range keyColumns {
+		column = strings.TrimSpace(column)
+		if column == "" {
+			return nil, fmt.Errorf("CDC key columns contains an empty column")
+		}
+		normalized := strings.ToLower(column)
+		if _, ok := keySet[normalized]; ok {
+			return nil, fmt.Errorf("CDC key columns contains duplicate column %s", column)
+		}
+		if _, ok := columnSet[normalized]; !ok {
+			return nil, fmt.Errorf("CDC key column %s is not present in captured columns", column)
+		}
+		keySet[normalized] = struct{}{}
+	}
+	return keySet, nil
+}
+
 func parseCDCKeyColumns(raw string) ([]string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
