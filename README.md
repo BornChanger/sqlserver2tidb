@@ -408,7 +408,7 @@ This checks approved metadata, writes `state/validation-status.yaml`, and writes
 - Export/import state phase and status fields are optional during initialization, but phase must match `export`/`import` and status must be `planned` when present; their optional `updated_at` fields must be RFC3339.
 - Validation status state is restricted to `pending`, `passed`, or `failed`; its optional phase must be `validation`, and when present `updated_at` must be RFC3339.
 - High-frequency logs and per-event CDC offsets do not belong in GitHub. Periodic checkpoint snapshots do.
-- CDC checkpoint snapshots stay source-cluster scoped; their mode must match the source cluster `cdc.mode`, status must be one of `not_started`, `planned`, `running`, `caught_up`, or `failed`, and `updated_at` must be RFC3339.
+- CDC checkpoint snapshots stay source-cluster scoped; their mode must match the source cluster `cdc.mode`, optional phase must be `cdc`, status must be one of `not_started`, `planned`, `running`, `caught_up`, or `failed`, and `updated_at` must be RFC3339.
 - Plaintext credentials must never be committed. Use secret references only.
 
 ## Next Milestones
