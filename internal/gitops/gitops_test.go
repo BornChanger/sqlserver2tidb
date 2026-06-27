@@ -4458,6 +4458,27 @@ func TestPlanWorkerReconcileBlocksDraftExportPlan(t *testing.T) {
 	assertContains(t, export.Reason, `export plan status is "draft", want reviewed or approved`)
 }
 
+func TestPlanWorkerReconcileBlocksDraftImportPlan(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateDataPlansOnly(root))
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(import) error = %v", err)
+	}
+	writeStageApproval(t, root, "import", hash)
+
+	report, err := PlanWorkerReconcile(root)
+	if err != nil {
+		t.Fatalf("PlanWorkerReconcile() error = %v", err)
+	}
+	importAction := findReconcileAction(t, report.Actions, "import")
+	if importAction.Status != "blocked" {
+		t.Fatalf("import action = %+v, want blocked", importAction)
+	}
+	assertContains(t, importAction.Reason, `import plan status is "draft", want reviewed or approved`)
+}
+
 func TestPlanWorkerReconcileBlocksDraftCDCPlan(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())

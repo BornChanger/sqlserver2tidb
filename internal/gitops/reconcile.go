@@ -164,16 +164,10 @@ func planWorkerReconcileAction(root, sourceClusterID, projectID, stage string) W
 		action.Reason = err.Error()
 		return action
 	}
-	if stage == "export" {
-		planPath := filepath.Join(root, "clusters", sourceClusterID, "projects", projectID, "plan", "export-plan.yaml")
-		if err := requireExecutablePlanStatus(planPath, "export plan"); err != nil {
-			action.Reason = err.Error()
-			return action
-		}
-	}
-	if stage == "cdc" {
-		planPath := filepath.Join(root, "clusters", sourceClusterID, "projects", projectID, "plan", "cdc-plan.yaml")
-		if err := requireExecutablePlanStatus(planPath, "cdc plan"); err != nil {
+	switch stage {
+	case "export", "import", "cdc":
+		planPath := filepath.Join(root, "clusters", sourceClusterID, "projects", projectID, "plan", stage+"-plan.yaml")
+		if err := requireExecutablePlanStatus(planPath, stage+" plan"); err != nil {
 			action.Reason = err.Error()
 			return action
 		}
