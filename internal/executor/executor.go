@@ -732,7 +732,7 @@ func runValidateQuery(args []string, stdout, stderr io.Writer) int {
 	targetSQL := fs.String("target-sql", "", "SQL query to run on TiDB/MySQL; must return one row and one column")
 	sourceConnectionStringEnv := fs.String("source-connection-string-env", defaultSourceConnectionStringEnv, "environment variable containing the SQL Server connection string")
 	targetConnectionStringEnv := fs.String("target-connection-string-env", defaultTargetConnectionStringEnv, "environment variable containing the TiDB/MySQL connection string")
-	execute := fs.Bool("execute", false, "perform the business SQL validation")
+	execute := fs.Bool("execute", false, "perform the scalar query validation")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -757,7 +757,7 @@ func runValidateQuery(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
-		fmt.Fprintf(stdout, "executor validate-query matched: source=%s target=%s\n", result.SourceValue, result.TargetValue)
+		fmt.Fprint(stdout, renderValidateQueryMatched(*checkID, result))
 		return 0
 	}
 
@@ -771,6 +771,10 @@ func runValidateQuery(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintln(stdout, "No SQL Server connection will be opened.")
 	fmt.Fprintln(stdout, "No TiDB connection will be opened.")
 	return 0
+}
+
+func renderValidateQueryMatched(checkID string, result validateQueryResult) string {
+	return fmt.Sprintf("executor validate-query matched: check-id=%s source=%s target=%s\n", checkID, result.SourceValue, result.TargetValue)
 }
 
 type validateCountExecuteSpec struct {

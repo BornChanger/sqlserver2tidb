@@ -289,6 +289,17 @@ func TestRunValidateQueryDryRunCommand(t *testing.T) {
 	assertOutputContains(t, output, "No TiDB connection will be opened.")
 }
 
+func TestRenderValidateQueryMatchedIncludesCheckID(t *testing.T) {
+	output := renderValidateQueryMatched("orders-total", validateQueryResult{
+		SourceValue: "42",
+		TargetValue: "42",
+	})
+	assertOutputContains(t, output, "executor validate-query matched")
+	assertOutputContains(t, output, "check-id=orders-total")
+	assertOutputContains(t, output, "source=42")
+	assertOutputContains(t, output, "target=42")
+}
+
 func TestRunValidateCountExecuteRejectsTODOPredicate(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 
