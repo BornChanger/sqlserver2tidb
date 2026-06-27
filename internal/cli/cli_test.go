@@ -1804,6 +1804,7 @@ func TestRunExecutorEvidencePRDraftAndCreateDryRunCommands(t *testing.T) {
 	}, &stdout, &stderr); code != 0 {
 		t.Fatalf("generate-schema-draft code = %d, stderr = %s", code, stderr.String())
 	}
+	setCLISchemaDiffStatus(t, root, "reviewed")
 	hash, err := gitops.ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "ddl")
 	if err != nil {
 		t.Fatalf("ComputePayloadHashForStage(ddl) error = %v", err)

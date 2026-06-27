@@ -193,6 +193,9 @@ func loadExecutorEvidencePRContext(root, sourceClusterID, projectID, stage strin
 	if err := validateExecutorEvidenceCommands(status, evidence.Commands); err != nil {
 		return executorEvidencePRContext{}, err
 	}
+	if err := requireExecutorInstructionReviewed(root, sourceClusterID, projectID, stage); err != nil {
+		return executorEvidencePRContext{}, err
+	}
 
 	return executorEvidencePRContext{
 		sourceClusterID: sourceClusterID,
@@ -203,6 +206,18 @@ func loadExecutorEvidencePRContext(root, sourceClusterID, projectID, stage strin
 		approvalFile:    executorEvidenceApprovalFile(sourceClusterID, projectID, stage),
 		evidence:        evidence,
 	}, nil
+}
+
+func requireExecutorInstructionReviewed(root, sourceClusterID, projectID, stage string) error {
+	projectDir := filepath.Join(root, "clusters", sourceClusterID, "projects", projectID)
+	switch stage {
+	case "ddl":
+		return requireReviewedSchemaDiff(filepath.Join(projectDir, "schema", "schema-diff.json"))
+	case "export", "import", "cdc", "validation":
+		return requireExecutablePlanStatus(filepath.Join(projectDir, "plan", stage+"-plan.yaml"), stage+" plan")
+	default:
+		return nil
+	}
 }
 
 func validateExecutorEvidenceCommands(status string, commands []executorEvidenceCommandSummary) error {
