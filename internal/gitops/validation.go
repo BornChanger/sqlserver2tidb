@@ -460,6 +460,11 @@ func validateProjectContent(root, projectRel string, cluster *clusterMetadata, r
 	if err != nil || info.IsDir() {
 		return
 	}
+	if projectMetaLoaded {
+		if err := validateOptionalProjectOwnedYAMLContent(validationPlanPath, projectMeta); err != nil {
+			report.addError(fmt.Sprintf("invalid validation plan %s: %v", validationPlanRel, err))
+		}
+	}
 	if err := validateValidationPlanContent(validationPlanPath); err != nil {
 		report.addError(fmt.Sprintf("invalid validation plan %s: %v", validationPlanRel, err))
 	}
@@ -576,6 +581,26 @@ func validateProjectOwnedYAMLContent(path string, project projectMetadata) error
 		return err
 	}
 	if sourceClusterID != project.SourceClusterID {
+		return fmt.Errorf("source_cluster_id %q does not match project metadata %q", sourceClusterID, project.SourceClusterID)
+	}
+
+	return nil
+}
+
+func validateOptionalProjectOwnedYAMLContent(path string, project projectMetadata) error {
+	projectID, err := readPlanTopLevelScalar(path, "project_id")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(projectID) != "" && projectID != project.ProjectID {
+		return fmt.Errorf("project_id %q does not match project metadata %q", projectID, project.ProjectID)
+	}
+
+	sourceClusterID, err := readPlanTopLevelScalar(path, "source_cluster_id")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(sourceClusterID) != "" && sourceClusterID != project.SourceClusterID {
 		return fmt.Errorf("source_cluster_id %q does not match project metadata %q", sourceClusterID, project.SourceClusterID)
 	}
 
