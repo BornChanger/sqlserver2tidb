@@ -1311,6 +1311,24 @@ func TestValidateRepoReportsInvalidValidationStatusState(t *testing.T) {
 	assertContains(t, strings.Join(report.Errors, "\n"), `invalid state file clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/validation-status.yaml: unsupported validation status "unknown"; supported statuses: pending, passed, failed`)
 }
 
+func TestValidateRepoReportsInvalidValidationStatusUpdatedAt(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)
+	rel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/validation-status.yaml"
+	stateYAML := readFile(t, root, rel)
+	stateYAML = strings.Replace(stateYAML, "checks: []", "updated_at: \"not-a-time\"\nchecks: []", 1)
+	writeFileForTest(t, root, rel, stateYAML)
+
+	report, err := ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
+	if report.Valid {
+		t.Fatal("ValidateRepo() valid = true, want invalid validation status updated_at")
+	}
+	assertContains(t, strings.Join(report.Errors, "\n"), `invalid state file clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/validation-status.yaml: validation status updated_at must be RFC3339`)
+}
+
 func TestValidateRepoReportsApprovalMetadataMismatch(t *testing.T) {
 	tests := []struct {
 		name      string

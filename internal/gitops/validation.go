@@ -909,6 +909,9 @@ func validateValidationStatusStateContent(path string) error {
 	if !isSupportedValidationStatusState(status) {
 		return fmt.Errorf("unsupported validation status %q; supported statuses: pending, passed, failed", status)
 	}
+	if err := validateOptionalValidationStatusUpdatedAt(path); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -928,6 +931,20 @@ func isSupportedValidationStatusState(status string) bool {
 	default:
 		return false
 	}
+}
+
+func validateOptionalValidationStatusUpdatedAt(path string) error {
+	updatedAt, err := readPlanTopLevelScalar(path, "updated_at")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(updatedAt) == "" {
+		return nil
+	}
+	if _, err := time.Parse(time.RFC3339, updatedAt); err != nil {
+		return errors.New("validation status updated_at must be RFC3339")
+	}
+	return nil
 }
 
 func validateMigrationStateUpdatedAt(path string) error {
