@@ -117,6 +117,20 @@ var projectStateFiles = []string{
 	"state/validation-status.yaml",
 }
 
+type projectApprovalFile struct {
+	Stage string
+	Rel   string
+}
+
+var projectApprovalFiles = []projectApprovalFile{
+	{Stage: "ddl", Rel: "approvals/ddl-approval.yaml"},
+	{Stage: "export", Rel: "approvals/export-approval.yaml"},
+	{Stage: "import", Rel: "approvals/import-approval.yaml"},
+	{Stage: "cdc", Rel: "approvals/cdc-approval.yaml"},
+	{Stage: "validation", Rel: "approvals/validation-approval.yaml"},
+	{Stage: "cutover", Rel: "approvals/cutover-approval.yaml"},
+}
+
 func ValidateRepo(root string) (ValidationReport, error) {
 	report := ValidationReport{Valid: true}
 	if err := report.checkDir(root, "."); err != nil {
@@ -391,6 +405,15 @@ func validateProjectContent(root, projectRel string, report *ValidationReport) {
 				}
 			}
 		}
+		for _, approval := range projectApprovalFiles {
+			rel := filepath.ToSlash(filepath.Join(projectRel, approval.Rel))
+			path := filepath.Join(root, filepath.FromSlash(rel))
+			if info, err := os.Stat(path); err == nil && !info.IsDir() {
+				if err := validateApprovalMetadataContent(path, projectMeta, approval.Stage); err != nil {
+					report.addError(fmt.Sprintf("invalid approval %s: %v", rel, err))
+				}
+			}
+		}
 	}
 
 	exportPlanRel := filepath.ToSlash(filepath.Join(projectRel, "plan", "export-plan.yaml"))
@@ -550,6 +573,45 @@ func validateProjectOwnedYAMLContent(path string, project projectMetadata) error
 	}
 
 	return nil
+}
+
+func validateApprovalMetadataContent(path string, project projectMetadata, expectedAction string) error {
+	projectID, err := readPlanTopLevelScalar(path, "project_id")
+	if err != nil {
+		return err
+	}
+	if projectID != project.ProjectID {
+		return fmt.Errorf("project_id %q does not match project metadata %q", projectID, project.ProjectID)
+	}
+
+	sourceClusterID, err := readPlanTopLevelScalar(path, "source_cluster_id")
+	if err != nil {
+		return err
+	}
+	if sourceClusterID != project.SourceClusterID {
+		return fmt.Errorf("source_cluster_id %q does not match project metadata %q", sourceClusterID, project.SourceClusterID)
+	}
+
+	approval, err := readApprovalMetadata(path)
+	if err != nil {
+		return err
+	}
+	if approval.Action != expectedAction {
+		return fmt.Errorf("action %q does not match approval file stage %q", approval.Action, expectedAction)
+	}
+	if !isSupportedApprovalStatus(approval.Status) {
+		return fmt.Errorf("unsupported approval status %q; supported statuses: pending, approved, rejected", approval.Status)
+	}
+	return nil
+}
+
+func isSupportedApprovalStatus(status string) bool {
+	switch status {
+	case "pending", "approved", "rejected":
+		return true
+	default:
+		return false
+	}
 }
 
 func validateExportPlanContent(path string) error {

@@ -677,6 +677,63 @@ func TestValidateRepoReportsProjectStateMetadataMismatch(t *testing.T) {
 	}
 }
 
+func TestValidateRepoReportsApprovalMetadataMismatch(t *testing.T) {
+	tests := []struct {
+		name      string
+		rel       string
+		oldValue  string
+		newValue  string
+		wantError string
+	}{
+		{
+			name:      "action",
+			rel:       "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/approvals/export-approval.yaml",
+			oldValue:  "action: export",
+			newValue:  "action: import",
+			wantError: `invalid approval clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/approvals/export-approval.yaml: action "import" does not match approval file stage "export"`,
+		},
+		{
+			name:      "project_id",
+			rel:       "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/approvals/cdc-approval.yaml",
+			oldValue:  "project_id: sales-db-to-tidb-prod-a",
+			newValue:  "project_id: inventory-db-to-tidb-prod-a",
+			wantError: `invalid approval clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/approvals/cdc-approval.yaml: project_id "inventory-db-to-tidb-prod-a" does not match project metadata "sales-db-to-tidb-prod-a"`,
+		},
+		{
+			name:      "source_cluster_id",
+			rel:       "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/approvals/validation-approval.yaml",
+			oldValue:  "source_cluster_id: prod-sqlserver-a",
+			newValue:  "source_cluster_id: prod-sqlserver-b",
+			wantError: `invalid approval clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/approvals/validation-approval.yaml: source_cluster_id "prod-sqlserver-b" does not match project metadata "prod-sqlserver-a"`,
+		},
+		{
+			name:      "status",
+			rel:       "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/approvals/ddl-approval.yaml",
+			oldValue:  "status: pending",
+			newValue:  "status: ready",
+			wantError: `invalid approval clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/approvals/ddl-approval.yaml: unsupported approval status "ready"; supported statuses: pending, approved, rejected`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)
+			approvalYAML := readFile(t, root, tt.rel)
+			approvalYAML = strings.Replace(approvalYAML, tt.oldValue, tt.newValue, 1)
+			writeFileForTest(t, root, tt.rel, approvalYAML)
+
+			report, err := ValidateRepo(root)
+			if err != nil {
+				t.Fatalf("ValidateRepo() error = %v", err)
+			}
+			if report.Valid {
+				t.Fatal("ValidateRepo() valid = true, want approval metadata mismatch")
+			}
+			assertContains(t, strings.Join(report.Errors, "\n"), tt.wantError)
+		})
+	}
+}
+
 func TestValidateRepoReportsMissingRequiredGlobalFile(t *testing.T) {
 	root := t.TempDir()
 	must(t, InitRepo(root))
