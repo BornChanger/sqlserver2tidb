@@ -874,6 +874,26 @@ func TestApplyTiDBCDCChangeSkipsBeforeUpdateRows(t *testing.T) {
 	}
 }
 
+func TestBuildSQLServerCDCChangesQueryQuotesCaptureFunctionAndColumns(t *testing.T) {
+	query, err := buildSQLServerCDCChangesQuery("sales.dbo.orders", []string{"id", "customer]name"})
+	if err != nil {
+		t.Fatalf("buildSQLServerCDCChangesQuery() error = %v", err)
+	}
+
+	want := "SELECT [__$operation], [__$start_lsn], [__$seqval], [id], [customer]]name] FROM [sales].[cdc].[fn_cdc_get_all_changes_dbo_orders](@from_lsn, @to_lsn, 'all update old') ORDER BY [__$start_lsn], [__$seqval]"
+	if query != want {
+		t.Fatalf("buildSQLServerCDCChangesQuery() = %q, want %q", query, want)
+	}
+}
+
+func TestBuildSQLServerCDCChangesQueryRejectsInvalidSourceObject(t *testing.T) {
+	_, err := buildSQLServerCDCChangesQuery("orders", []string{"id"})
+	if err == nil {
+		t.Fatal("buildSQLServerCDCChangesQuery() error = nil, want invalid object error")
+	}
+	assertOutputContains(t, err.Error(), "source object must be schema.table or database.schema.table")
+}
+
 func TestRunExportRequiresChunkID(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 

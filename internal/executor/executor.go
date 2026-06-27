@@ -1896,6 +1896,60 @@ func cdcKeyValues(columns []string, values []any, keyColumns []string) ([]any, e
 	return args, nil
 }
 
+func buildSQLServerCDCChangesQuery(sourceObject string, columns []string) (string, error) {
+	parts := strings.Split(strings.TrimSpace(sourceObject), ".")
+	if len(parts) != 2 && len(parts) != 3 {
+		return "", fmt.Errorf("source object must be schema.table or database.schema.table")
+	}
+	for _, part := range parts {
+		if strings.TrimSpace(part) == "" {
+			return "", fmt.Errorf("source object contains an empty identifier")
+		}
+	}
+	if len(columns) == 0 {
+		return "", fmt.Errorf("CDC captured columns must contain at least one column")
+	}
+
+	functionParts := make([]string, 0, 3)
+	if len(parts) == 3 {
+		functionParts = append(functionParts, quoteSQLServerIdentifier(strings.TrimSpace(parts[0])))
+	}
+	schemaName := strings.TrimSpace(parts[len(parts)-2])
+	tableName := strings.TrimSpace(parts[len(parts)-1])
+	captureInstance := schemaName + "_" + tableName
+	functionParts = append(functionParts,
+		quoteSQLServerIdentifier("cdc"),
+		quoteSQLServerIdentifier("fn_cdc_get_all_changes_"+captureInstance),
+	)
+
+	selectColumns := []string{
+		quoteSQLServerIdentifier("__$operation"),
+		quoteSQLServerIdentifier("__$start_lsn"),
+		quoteSQLServerIdentifier("__$seqval"),
+	}
+	seenColumns := map[string]struct{}{}
+	for _, column := range columns {
+		column = strings.TrimSpace(column)
+		if column == "" {
+			return "", fmt.Errorf("CDC captured columns contains an empty column")
+		}
+		normalized := strings.ToLower(column)
+		if _, ok := seenColumns[normalized]; ok {
+			return "", fmt.Errorf("CDC captured columns contains duplicate column %s", column)
+		}
+		seenColumns[normalized] = struct{}{}
+		selectColumns = append(selectColumns, quoteSQLServerIdentifier(column))
+	}
+
+	return fmt.Sprintf(
+		"SELECT %s FROM %s(@from_lsn, @to_lsn, 'all update old') ORDER BY %s, %s",
+		strings.Join(selectColumns, ", "),
+		strings.Join(functionParts, "."),
+		quoteSQLServerIdentifier("__$start_lsn"),
+		quoteSQLServerIdentifier("__$seqval"),
+	), nil
+}
+
 func parseCDCKeyColumns(raw string) ([]string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
