@@ -265,6 +265,30 @@ func TestRunValidateCountDryRunCommand(t *testing.T) {
 	assertOutputContains(t, output, "No TiDB connection will be opened.")
 }
 
+func TestRunValidateQueryDryRunCommand(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"validate-query",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--check-id", "orders-total",
+		"--source-sql", "SELECT SUM(total) FROM sales.dbo.orders",
+		"--target-sql", "SELECT SUM(total) FROM app.orders",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("validate-query code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	assertOutputContains(t, output, "executor validate-query dry run")
+	assertOutputContains(t, output, "check id: orders-total")
+	assertOutputContains(t, output, "source sql: SELECT SUM(total) FROM sales.dbo.orders")
+	assertOutputContains(t, output, "target sql: SELECT SUM(total) FROM app.orders")
+	assertOutputContains(t, output, "No SQL Server connection will be opened.")
+	assertOutputContains(t, output, "No TiDB connection will be opened.")
+}
+
 func TestRunValidateCountExecuteRejectsTODOPredicate(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 

@@ -1444,28 +1444,44 @@ func validateValidationPlanContent(path string) error {
 	}
 	seenIDs := make(map[string]struct{}, len(checks))
 	for _, check := range checks {
-		if check.Type != "row_count" && check.Type != "row-count" {
+		if check.Type != "row_count" && check.Type != "row-count" && check.Type != "business_sql" {
 			continue
 		}
 		checkID := strings.TrimSpace(check.ID)
 		if checkID == "" {
-			return fmt.Errorf("row_count check id is required")
+			return fmt.Errorf("%s check id is required", check.Type)
 		}
 		if _, ok := seenIDs[checkID]; ok {
 			return fmt.Errorf("duplicate validation check id %s", checkID)
 		}
 		seenIDs[checkID] = struct{}{}
-		if strings.TrimSpace(check.SourceObject) == "" {
-			return fmt.Errorf("row_count check %s source_object is required", check.ID)
-		}
-		if strings.TrimSpace(check.TargetObject) == "" {
-			return fmt.Errorf("row_count check %s target_object is required", check.ID)
-		}
-		if containsTODOMarker(check.Predicate) {
-			return fmt.Errorf("row_count check %s predicate still contains TODO", check.ID)
-		}
-		if containsTODOMarker(check.TargetPredicate) {
-			return fmt.Errorf("row_count check %s target_predicate still contains TODO", check.ID)
+		switch check.Type {
+		case "row_count", "row-count":
+			if strings.TrimSpace(check.SourceObject) == "" {
+				return fmt.Errorf("row_count check %s source_object is required", check.ID)
+			}
+			if strings.TrimSpace(check.TargetObject) == "" {
+				return fmt.Errorf("row_count check %s target_object is required", check.ID)
+			}
+			if containsTODOMarker(check.Predicate) {
+				return fmt.Errorf("row_count check %s predicate still contains TODO", check.ID)
+			}
+			if containsTODOMarker(check.TargetPredicate) {
+				return fmt.Errorf("row_count check %s target_predicate still contains TODO", check.ID)
+			}
+		case "business_sql":
+			if strings.TrimSpace(check.SourceSQL) == "" {
+				return fmt.Errorf("business_sql check %s source_sql is required", check.ID)
+			}
+			if strings.TrimSpace(check.TargetSQL) == "" {
+				return fmt.Errorf("business_sql check %s target_sql is required", check.ID)
+			}
+			if containsTODOMarker(check.SourceSQL) {
+				return fmt.Errorf("business_sql check %s source_sql still contains TODO", check.ID)
+			}
+			if containsTODOMarker(check.TargetSQL) {
+				return fmt.Errorf("business_sql check %s target_sql still contains TODO", check.ID)
+			}
 		}
 	}
 	return nil

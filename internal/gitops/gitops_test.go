@@ -2403,6 +2403,26 @@ checks:
 	assertContains(t, strings.Join(report.Errors, "\n"), "invalid validation plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/validation-plan.yaml: row_count check orders-row-count target_object is required")
 }
 
+func TestValidateRepoReportsInvalidValidationPlanBusinessSQLCheck(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/validation-plan.yaml", `status: reviewed
+checks:
+  - id: orders-total
+    type: business_sql
+    source_sql: "SELECT SUM(total) FROM sales.dbo.orders"
+`)
+
+	report, err := ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
+	if report.Valid {
+		t.Fatal("ValidateRepo() valid = true, want false")
+	}
+	assertContains(t, strings.Join(report.Errors, "\n"), "invalid validation plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/validation-plan.yaml: business_sql check orders-total target_sql is required")
+}
+
 func TestValidateRepoReportsDuplicateValidationCheckID(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
@@ -4261,7 +4281,45 @@ checks:
 	assertContains(t, first.ShellCommand, "--target-connection-string-env TIDB_VALIDATE_DSN")
 }
 
-func TestPrepareWorkerExecutorValidationRequiresSupportedRowCountChecks(t *testing.T) {
+func TestPrepareWorkerExecutorBuildsValidationBusinessSQLCommandsWhenApprovedHashMatches(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/validation-plan.yaml", `status: reviewed
+checks:
+  - id: orders-total
+    type: business_sql
+    source_sql: "SELECT SUM(total) FROM sales.dbo.orders"
+    target_sql: "SELECT SUM(total) FROM app.orders"
+`)
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "validation")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(validation) error = %v", err)
+	}
+	writeStageApproval(t, root, "validation", hash)
+
+	spec, err := PrepareWorkerExecutor(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "validation", WorkerExecutorPrepareSpec{
+		SourceConnectionStringEnv: "SQLSERVER_VALIDATE_DSN",
+		TargetConnectionStringEnv: "TIDB_VALIDATE_DSN",
+	})
+	if err != nil {
+		t.Fatalf("PrepareWorkerExecutor() error = %v", err)
+	}
+	if spec.Stage != "validation" || spec.PayloadHash != hash || len(spec.Commands) != 1 {
+		t.Fatalf("executor spec = %+v, want validation with 1 business SQL command and hash %s", spec, hash)
+	}
+	first := spec.Commands[0]
+	if first.ID != "orders-total" {
+		t.Fatalf("first command ID = %q, want validation check id", first.ID)
+	}
+	assertContains(t, first.ShellCommand, "sqlserver2tidb-executor validate-query")
+	assertContains(t, first.ShellCommand, "--check-id orders-total")
+	assertContains(t, first.ShellCommand, "--source-sql 'SELECT SUM(total) FROM sales.dbo.orders'")
+	assertContains(t, first.ShellCommand, "--target-sql 'SELECT SUM(total) FROM app.orders'")
+	assertContains(t, first.ShellCommand, "--source-connection-string-env SQLSERVER_VALIDATE_DSN")
+	assertContains(t, first.ShellCommand, "--target-connection-string-env TIDB_VALIDATE_DSN")
+}
+
+func TestPrepareWorkerExecutorValidationRequiresSupportedChecks(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
 	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/validation-plan.yaml", `status: reviewed
@@ -4277,7 +4335,7 @@ checks: []
 	if err == nil {
 		t.Fatal("PrepareWorkerExecutor() expected no validation command error")
 	}
-	assertContains(t, err.Error(), "validation plan contains no supported row_count checks")
+	assertContains(t, err.Error(), "validation plan contains no supported row_count or business_sql checks")
 }
 
 func TestRunImportWorkerWritesPlannedStateWhenApprovedHashMatches(t *testing.T) {

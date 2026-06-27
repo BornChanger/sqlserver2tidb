@@ -258,42 +258,68 @@ func prepareValidationExecutorCommands(projectDir, binary, sourceClusterID, proj
 	targetConnectionStringEnv := strings.TrimSpace(spec.TargetConnectionStringEnv)
 	commands := make([]WorkerExecutorCommand, 0, len(checks))
 	for _, check := range checks {
-		if check.Type != "row_count" && check.Type != "row-count" {
-			continue
+		switch check.Type {
+		case "row_count", "row-count":
+			if strings.TrimSpace(check.ID) == "" {
+				return nil, fmt.Errorf("validation row_count check id is required")
+			}
+			if strings.TrimSpace(check.SourceObject) == "" {
+				return nil, fmt.Errorf("validation row_count check %q source_object is required", check.ID)
+			}
+			if strings.TrimSpace(check.TargetObject) == "" {
+				return nil, fmt.Errorf("validation row_count check %q target_object is required", check.ID)
+			}
+			args := []string{
+				"validate-count",
+				"--root", ".",
+				"--source-cluster-id", sourceClusterID,
+				"--project-id", projectID,
+				"--source-object", check.SourceObject,
+				"--target-object", check.TargetObject,
+			}
+			if strings.TrimSpace(check.Predicate) != "" {
+				args = append(args, "--predicate", check.Predicate)
+			}
+			if strings.TrimSpace(check.TargetPredicate) != "" {
+				args = append(args, "--target-predicate", check.TargetPredicate)
+			}
+			if sourceConnectionStringEnv != "" {
+				args = append(args, "--source-connection-string-env", sourceConnectionStringEnv)
+			}
+			if targetConnectionStringEnv != "" {
+				args = append(args, "--target-connection-string-env", targetConnectionStringEnv)
+			}
+			commands = append(commands, newWorkerExecutorCommand(binary, check.ID, args))
+		case "business_sql":
+			if strings.TrimSpace(check.ID) == "" {
+				return nil, fmt.Errorf("validation business_sql check id is required")
+			}
+			if strings.TrimSpace(check.SourceSQL) == "" {
+				return nil, fmt.Errorf("validation business_sql check %q source_sql is required", check.ID)
+			}
+			if strings.TrimSpace(check.TargetSQL) == "" {
+				return nil, fmt.Errorf("validation business_sql check %q target_sql is required", check.ID)
+			}
+			args := []string{
+				"validate-query",
+				"--root", ".",
+				"--source-cluster-id", sourceClusterID,
+				"--project-id", projectID,
+				"--check-id", check.ID,
+				"--source-sql", check.SourceSQL,
+				"--target-sql", check.TargetSQL,
+			}
+			if sourceConnectionStringEnv != "" {
+				args = append(args, "--source-connection-string-env", sourceConnectionStringEnv)
+			}
+			if targetConnectionStringEnv != "" {
+				args = append(args, "--target-connection-string-env", targetConnectionStringEnv)
+			}
+			commands = append(commands, newWorkerExecutorCommand(binary, check.ID, args))
 		}
-		if strings.TrimSpace(check.ID) == "" {
-			return nil, fmt.Errorf("validation row_count check id is required")
-		}
-		if strings.TrimSpace(check.SourceObject) == "" {
-			return nil, fmt.Errorf("validation row_count check %q source_object is required", check.ID)
-		}
-		if strings.TrimSpace(check.TargetObject) == "" {
-			return nil, fmt.Errorf("validation row_count check %q target_object is required", check.ID)
-		}
-		args := []string{
-			"validate-count",
-			"--root", ".",
-			"--source-cluster-id", sourceClusterID,
-			"--project-id", projectID,
-			"--source-object", check.SourceObject,
-			"--target-object", check.TargetObject,
-		}
-		if strings.TrimSpace(check.Predicate) != "" {
-			args = append(args, "--predicate", check.Predicate)
-		}
-		if strings.TrimSpace(check.TargetPredicate) != "" {
-			args = append(args, "--target-predicate", check.TargetPredicate)
-		}
-		if sourceConnectionStringEnv != "" {
-			args = append(args, "--source-connection-string-env", sourceConnectionStringEnv)
-		}
-		if targetConnectionStringEnv != "" {
-			args = append(args, "--target-connection-string-env", targetConnectionStringEnv)
-		}
-		commands = append(commands, newWorkerExecutorCommand(binary, check.ID, args))
 	}
 	if len(commands) == 0 {
-		return nil, fmt.Errorf("validation plan contains no supported row_count checks")
+		return nil, fmt.Errorf("validation plan contains no supported row_count or business_sql checks")
 	}
 	return commands, nil
 }
@@ -333,6 +359,8 @@ type validationPlanCheck struct {
 	Type            string
 	SourceObject    string
 	TargetObject    string
+	SourceSQL       string
+	TargetSQL       string
 	Predicate       string
 	TargetPredicate string
 }
@@ -356,6 +384,10 @@ func readValidationPlanChecks(path string) ([]validationPlanCheck, error) {
 			checks[len(checks)-1].SourceObject = trimYAMLScalar(strings.TrimPrefix(trimmed, "source_object:"))
 		case strings.HasPrefix(trimmed, "target_object:") && len(checks) > 0:
 			checks[len(checks)-1].TargetObject = trimYAMLScalar(strings.TrimPrefix(trimmed, "target_object:"))
+		case strings.HasPrefix(trimmed, "source_sql:") && len(checks) > 0:
+			checks[len(checks)-1].SourceSQL = trimYAMLScalar(strings.TrimPrefix(trimmed, "source_sql:"))
+		case strings.HasPrefix(trimmed, "target_sql:") && len(checks) > 0:
+			checks[len(checks)-1].TargetSQL = trimYAMLScalar(strings.TrimPrefix(trimmed, "target_sql:"))
 		case strings.HasPrefix(trimmed, "predicate:") && len(checks) > 0:
 			checks[len(checks)-1].Predicate = trimYAMLScalar(strings.TrimPrefix(trimmed, "predicate:"))
 		case strings.HasPrefix(trimmed, "target_predicate:") && len(checks) > 0:

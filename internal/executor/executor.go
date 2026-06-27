@@ -42,6 +42,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runImport(args[1:], stdout, stderr)
 	case "validate-count":
 		return runValidateCount(args[1:], stdout, stderr)
+	case "validate-query":
+		return runValidateQuery(args[1:], stdout, stderr)
 	case "cdc":
 		return runCDC(args[1:], stdout, stderr)
 	case "version", "-v", "--version":
@@ -719,6 +721,58 @@ func runValidateCount(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+func runValidateQuery(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("validate-query", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	root := fs.String("root", ".", "repository root")
+	sourceClusterID := fs.String("source-cluster-id", "", "upstream SQL Server cluster id")
+	projectID := fs.String("project-id", "", "migration project id")
+	checkID := fs.String("check-id", "", "validation check id")
+	sourceSQL := fs.String("source-sql", "", "SQL query to run on SQL Server; must return one row and one column")
+	targetSQL := fs.String("target-sql", "", "SQL query to run on TiDB/MySQL; must return one row and one column")
+	sourceConnectionStringEnv := fs.String("source-connection-string-env", defaultSourceConnectionStringEnv, "environment variable containing the SQL Server connection string")
+	targetConnectionStringEnv := fs.String("target-connection-string-env", defaultTargetConnectionStringEnv, "environment variable containing the TiDB/MySQL connection string")
+	execute := fs.Bool("execute", false, "perform the business SQL validation")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if err := requireFields("executor validate-query",
+		field{"source cluster id", *sourceClusterID},
+		field{"project id", *projectID},
+		field{"check id", *checkID},
+		field{"source sql", *sourceSQL},
+		field{"target sql", *targetSQL},
+	); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	if *execute {
+		result, err := executeValidateQuery(context.Background(), validateQueryExecuteSpec{
+			SourceSQL:                 *sourceSQL,
+			TargetSQL:                 *targetSQL,
+			SourceConnectionStringEnv: *sourceConnectionStringEnv,
+			TargetConnectionStringEnv: *targetConnectionStringEnv,
+		})
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "executor validate-query matched: source=%s target=%s\n", result.SourceValue, result.TargetValue)
+		return 0
+	}
+
+	fmt.Fprintln(stdout, "executor validate-query dry run")
+	fmt.Fprintf(stdout, "root: %s\n", *root)
+	fmt.Fprintf(stdout, "source cluster: %s\n", *sourceClusterID)
+	fmt.Fprintf(stdout, "project: %s\n", *projectID)
+	fmt.Fprintf(stdout, "check id: %s\n", *checkID)
+	fmt.Fprintf(stdout, "source sql: %s\n", *sourceSQL)
+	fmt.Fprintf(stdout, "target sql: %s\n", *targetSQL)
+	fmt.Fprintln(stdout, "No SQL Server connection will be opened.")
+	fmt.Fprintln(stdout, "No TiDB connection will be opened.")
+	return 0
+}
+
 type validateCountExecuteSpec struct {
 	SourceObject              string
 	TargetObject              string
@@ -731,6 +785,18 @@ type validateCountExecuteSpec struct {
 type validateCountResult struct {
 	SourceRows int64
 	TargetRows int64
+}
+
+type validateQueryExecuteSpec struct {
+	SourceSQL                 string
+	TargetSQL                 string
+	SourceConnectionStringEnv string
+	TargetConnectionStringEnv string
+}
+
+type validateQueryResult struct {
+	SourceValue string
+	TargetValue string
 }
 
 func executeValidateCount(ctx context.Context, spec validateCountExecuteSpec) (validateCountResult, error) {
@@ -792,6 +858,104 @@ func executeValidateCount(ctx context.Context, spec validateCountExecuteSpec) (v
 		return validateCountResult{}, fmt.Errorf("executor validate-count: row count mismatch: source=%d target=%d", sourceRows, targetRows)
 	}
 	return validateCountResult{SourceRows: sourceRows, TargetRows: targetRows}, nil
+}
+
+func executeValidateQuery(ctx context.Context, spec validateQueryExecuteSpec) (validateQueryResult, error) {
+	if strings.Contains(strings.ToUpper(spec.SourceSQL), "TODO") {
+		return validateQueryResult{}, fmt.Errorf("executor validate-query: source_sql still contains TODO")
+	}
+	if strings.Contains(strings.ToUpper(spec.TargetSQL), "TODO") {
+		return validateQueryResult{}, fmt.Errorf("executor validate-query: target_sql still contains TODO")
+	}
+
+	sourceEnvName := strings.TrimSpace(spec.SourceConnectionStringEnv)
+	if sourceEnvName == "" {
+		sourceEnvName = defaultSourceConnectionStringEnv
+	}
+	sourceConnectionString := strings.TrimSpace(os.Getenv(sourceEnvName))
+	if sourceConnectionString == "" {
+		return validateQueryResult{}, fmt.Errorf("executor validate-query: source connection string env %s is not set", sourceEnvName)
+	}
+
+	targetEnvName := strings.TrimSpace(spec.TargetConnectionStringEnv)
+	if targetEnvName == "" {
+		targetEnvName = defaultTargetConnectionStringEnv
+	}
+	targetConnectionString := strings.TrimSpace(os.Getenv(targetEnvName))
+	if targetConnectionString == "" {
+		return validateQueryResult{}, fmt.Errorf("executor validate-query: target connection string env %s is not set", targetEnvName)
+	}
+
+	sourceDB, err := sql.Open("sqlserver", sourceConnectionString)
+	if err != nil {
+		return validateQueryResult{}, fmt.Errorf("executor validate-query: open SQL Server connection: %w", err)
+	}
+	defer sourceDB.Close()
+
+	targetDB, err := sql.Open("mysql", targetConnectionString)
+	if err != nil {
+		return validateQueryResult{}, fmt.Errorf("executor validate-query: open TiDB connection: %w", err)
+	}
+	defer targetDB.Close()
+
+	sourceValue, err := querySingleScalar(ctx, sourceDB, spec.SourceSQL)
+	if err != nil {
+		return validateQueryResult{}, fmt.Errorf("executor validate-query: query source SQL: %w", err)
+	}
+	targetValue, err := querySingleScalar(ctx, targetDB, spec.TargetSQL)
+	if err != nil {
+		return validateQueryResult{}, fmt.Errorf("executor validate-query: query target SQL: %w", err)
+	}
+	if sourceValue != targetValue {
+		return validateQueryResult{}, fmt.Errorf("executor validate-query mismatch: source=%s target=%s", sourceValue, targetValue)
+	}
+	return validateQueryResult{SourceValue: sourceValue, TargetValue: targetValue}, nil
+}
+
+func querySingleScalar(ctx context.Context, db *sql.DB, query string) (string, error) {
+	rows, err := db.QueryContext(ctx, query)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+
+	columns, err := rows.Columns()
+	if err != nil {
+		return "", err
+	}
+	if len(columns) != 1 {
+		return "", fmt.Errorf("query returned %d columns, want 1", len(columns))
+	}
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return "", err
+		}
+		return "", fmt.Errorf("query returned no rows")
+	}
+	var raw any
+	if err := rows.Scan(&raw); err != nil {
+		return "", err
+	}
+	if rows.Next() {
+		return "", fmt.Errorf("query returned more than one row")
+	}
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	return normalizeSQLScalar(raw), nil
+}
+
+func normalizeSQLScalar(value any) string {
+	switch v := value.(type) {
+	case nil:
+		return "<NULL>"
+	case []byte:
+		return string(v)
+	case time.Time:
+		return v.Format(time.RFC3339Nano)
+	default:
+		return fmt.Sprint(v)
+	}
 }
 
 type importExecuteSpec struct {
@@ -1230,6 +1394,8 @@ Usage:
   sqlserver2tidb-executor import --execute --target-connection-string-env SQLSERVER2TIDB_TARGET_CONNECTION_STRING --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --job-id import-dbo.orders.000001 --target-object app.orders --source-uri file:///tmp/path.csv --import-batch-size 1000
   sqlserver2tidb-executor validate-count --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --source-object sales.dbo.orders --target-object app.orders --predicate "id >= 1" --target-predicate "id >= 1"
   sqlserver2tidb-executor validate-count --execute --source-connection-string-env SQLSERVER2TIDB_SOURCE_CONNECTION_STRING --target-connection-string-env SQLSERVER2TIDB_TARGET_CONNECTION_STRING --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --source-object sales.dbo.orders --target-object app.orders
+  sqlserver2tidb-executor validate-query --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --check-id orders-total --source-sql "SELECT SUM(total) FROM sales.dbo.orders" --target-sql "SELECT SUM(total) FROM app.orders"
+  sqlserver2tidb-executor validate-query --execute --source-connection-string-env SQLSERVER2TIDB_SOURCE_CONNECTION_STRING --target-connection-string-env SQLSERVER2TIDB_TARGET_CONNECTION_STRING --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --check-id orders-total --source-sql "SELECT SUM(total) FROM sales.dbo.orders" --target-sql "SELECT SUM(total) FROM app.orders"
   sqlserver2tidb-executor cdc --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --source-object sales.dbo.orders --target-object app.orders --apply-batch-size 1000
 `)
 }

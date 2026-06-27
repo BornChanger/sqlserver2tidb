@@ -298,6 +298,8 @@ approval_required:
           "type": {"enum": ["row_count", "row-count", "checksum", "sampled_hash", "business_sql"]},
           "source_object": {"type": "string", "minLength": 1},
           "target_object": {"type": "string", "minLength": 1},
+          "source_sql": {"type": "string", "minLength": 1},
+          "target_sql": {"type": "string", "minLength": 1},
           "predicate": {"type": "string"},
           "target_predicate": {"type": "string"},
           "description": {"type": "string"}
@@ -306,6 +308,10 @@ approval_required:
           {
             "if": {"properties": {"type": {"enum": ["row_count", "row-count"]}}},
             "then": {"required": ["source_object", "target_object"]}
+          },
+          {
+            "if": {"properties": {"type": {"enum": ["business_sql"]}}},
+            "then": {"required": ["source_sql", "target_sql"]}
           }
         ],
         "additionalProperties": true
