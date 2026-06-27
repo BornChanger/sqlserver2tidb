@@ -1270,6 +1270,9 @@ func isValidPayloadHash(value string) bool {
 }
 
 func validateExportPlanContent(path string) error {
+	if err := validateReviewPlanStatus(path, "export plan"); err != nil {
+		return err
+	}
 	format, err := readPlanTopLevelScalar(path, "format")
 	if err != nil {
 		return err
@@ -1312,6 +1315,9 @@ func validateExportPlanContent(path string) error {
 }
 
 func validateImportPlanContent(path string) error {
+	if err := validateReviewPlanStatus(path, "import plan"); err != nil {
+		return err
+	}
 	engine, err := readPlanTopLevelScalar(path, "engine")
 	if err != nil {
 		return err
@@ -1367,6 +1373,9 @@ func validateImportPlanExportDependencies(exportPlanPath, importPlanPath string)
 }
 
 func validateCDCPlanContent(path string, project *projectMetadata, cluster *clusterMetadata) error {
+	if err := validateReviewPlanStatus(path, "cdc plan"); err != nil {
+		return err
+	}
 	if err := validateCDCPlanMetadataContent(path, project, cluster); err != nil {
 		return err
 	}
@@ -1418,6 +1427,9 @@ func validateCDCPlanMetadataContent(path string, project *projectMetadata, clust
 }
 
 func validateValidationPlanContent(path string) error {
+	if err := validateReviewPlanStatus(path, "validation plan"); err != nil {
+		return err
+	}
 	checks, err := readValidationPlanChecks(path)
 	if err != nil {
 		return err
@@ -1449,6 +1461,26 @@ func validateValidationPlanContent(path string) error {
 		}
 	}
 	return nil
+}
+
+func validateReviewPlanStatus(path, planKind string) error {
+	status, err := readPlanTopLevelScalar(path, "status")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(status) != "" && !isSupportedReviewPlanStatus(status) {
+		return fmt.Errorf("unsupported %s status %q; supported statuses: draft, reviewed, approved", planKind, status)
+	}
+	return nil
+}
+
+func isSupportedReviewPlanStatus(status string) bool {
+	switch status {
+	case "draft", "reviewed", "approved":
+		return true
+	default:
+		return false
+	}
 }
 
 func containsTODOMarker(value string) bool {
