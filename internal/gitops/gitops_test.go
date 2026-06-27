@@ -2423,6 +2423,26 @@ checks:
 	assertContains(t, strings.Join(report.Errors, "\n"), "invalid validation plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/validation-plan.yaml: business_sql check orders-total target_sql is required")
 }
 
+func TestValidateRepoReportsInvalidValidationPlanChecksumCheck(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/validation-plan.yaml", `status: reviewed
+checks:
+  - id: orders-checksum
+    type: checksum
+    source_sql: "SELECT CHECKSUM_AGG(BINARY_CHECKSUM(id, total)) FROM sales.dbo.orders"
+`)
+
+	report, err := ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
+	if report.Valid {
+		t.Fatal("ValidateRepo() valid = true, want false")
+	}
+	assertContains(t, strings.Join(report.Errors, "\n"), "invalid validation plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/validation-plan.yaml: checksum check orders-checksum target_sql is required")
+}
+
 func TestValidateRepoReportsDuplicateValidationCheckID(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
@@ -4319,6 +4339,39 @@ checks:
 	assertContains(t, first.ShellCommand, "--target-connection-string-env TIDB_VALIDATE_DSN")
 }
 
+func TestPrepareWorkerExecutorBuildsValidationChecksumCommandsWhenApprovedHashMatches(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/validation-plan.yaml", `status: reviewed
+checks:
+  - id: orders-checksum
+    type: checksum
+    source_sql: "SELECT CHECKSUM_AGG(BINARY_CHECKSUM(id, total)) FROM sales.dbo.orders"
+    target_sql: "SELECT BIT_XOR(CRC32(CONCAT(id, total))) FROM app.orders"
+`)
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "validation")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(validation) error = %v", err)
+	}
+	writeStageApproval(t, root, "validation", hash)
+
+	spec, err := PrepareWorkerExecutor(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "validation", WorkerExecutorPrepareSpec{})
+	if err != nil {
+		t.Fatalf("PrepareWorkerExecutor() error = %v", err)
+	}
+	if len(spec.Commands) != 1 {
+		t.Fatalf("executor commands = %+v, want 1 checksum command", spec.Commands)
+	}
+	first := spec.Commands[0]
+	if first.ID != "orders-checksum" {
+		t.Fatalf("first command ID = %q, want validation check id", first.ID)
+	}
+	assertContains(t, first.ShellCommand, "sqlserver2tidb-executor validate-query")
+	assertContains(t, first.ShellCommand, "--check-id orders-checksum")
+	assertContains(t, first.ShellCommand, "--source-sql 'SELECT CHECKSUM_AGG(BINARY_CHECKSUM(id, total)) FROM sales.dbo.orders'")
+	assertContains(t, first.ShellCommand, "--target-sql 'SELECT BIT_XOR(CRC32(CONCAT(id, total))) FROM app.orders'")
+}
+
 func TestPrepareWorkerExecutorValidationRequiresSupportedChecks(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
@@ -4335,7 +4388,7 @@ checks: []
 	if err == nil {
 		t.Fatal("PrepareWorkerExecutor() expected no validation command error")
 	}
-	assertContains(t, err.Error(), "validation plan contains no supported row_count or business_sql checks")
+	assertContains(t, err.Error(), "validation plan contains no supported row_count, checksum, sampled_hash, or business_sql checks")
 }
 
 func TestRunImportWorkerWritesPlannedStateWhenApprovedHashMatches(t *testing.T) {

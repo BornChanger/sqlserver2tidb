@@ -290,15 +290,15 @@ func prepareValidationExecutorCommands(projectDir, binary, sourceClusterID, proj
 				args = append(args, "--target-connection-string-env", targetConnectionStringEnv)
 			}
 			commands = append(commands, newWorkerExecutorCommand(binary, check.ID, args))
-		case "business_sql":
+		case "checksum", "sampled_hash", "business_sql":
 			if strings.TrimSpace(check.ID) == "" {
-				return nil, fmt.Errorf("validation business_sql check id is required")
+				return nil, fmt.Errorf("validation %s check id is required", check.Type)
 			}
 			if strings.TrimSpace(check.SourceSQL) == "" {
-				return nil, fmt.Errorf("validation business_sql check %q source_sql is required", check.ID)
+				return nil, fmt.Errorf("validation %s check %q source_sql is required", check.Type, check.ID)
 			}
 			if strings.TrimSpace(check.TargetSQL) == "" {
-				return nil, fmt.Errorf("validation business_sql check %q target_sql is required", check.ID)
+				return nil, fmt.Errorf("validation %s check %q target_sql is required", check.Type, check.ID)
 			}
 			args := []string{
 				"validate-query",
@@ -319,7 +319,7 @@ func prepareValidationExecutorCommands(projectDir, binary, sourceClusterID, proj
 		}
 	}
 	if len(commands) == 0 {
-		return nil, fmt.Errorf("validation plan contains no supported row_count or business_sql checks")
+		return nil, fmt.Errorf("validation plan contains no supported row_count, checksum, sampled_hash, or business_sql checks")
 	}
 	return commands, nil
 }

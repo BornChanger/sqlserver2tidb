@@ -310,7 +310,7 @@ approval_required:
             "then": {"required": ["source_object", "target_object"]}
           },
           {
-            "if": {"properties": {"type": {"enum": ["business_sql"]}}},
+            "if": {"properties": {"type": {"enum": ["checksum", "sampled_hash", "business_sql"]}}},
             "then": {"required": ["source_sql", "target_sql"]}
           }
         ],
