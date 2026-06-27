@@ -2,6 +2,7 @@ package gitops
 
 import (
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -391,6 +392,18 @@ func validateProjectContent(root, projectRel string, cluster *clusterMetadata, r
 		}
 	}
 
+	schemaDiffRel := filepath.ToSlash(filepath.Join(projectRel, "schema", "schema-diff.json"))
+	schemaDiffPath := filepath.Join(root, filepath.FromSlash(schemaDiffRel))
+	if info, err := os.Stat(schemaDiffPath); err == nil && !info.IsDir() {
+		var projectForSchema *projectMetadata
+		if projectMetaLoaded {
+			projectForSchema = &projectMeta
+		}
+		if err := validateSchemaDiffContent(schemaDiffPath, projectForSchema); err != nil {
+			report.addError(fmt.Sprintf("invalid schema diff %s: %v", schemaDiffRel, err))
+		}
+	}
+
 	migrationPlanRel := filepath.ToSlash(filepath.Join(projectRel, "plan", "migration-plan.yaml"))
 	migrationPlanPath := filepath.Join(root, filepath.FromSlash(migrationPlanRel))
 	if projectMetaLoaded {
@@ -518,6 +531,30 @@ func validateProjectMetadata(meta projectMetadata, expectedClusterID, expectedPr
 	}
 	if err := validateOwners("project", meta.Owners); err != nil {
 		return err
+	}
+	return nil
+}
+
+func validateSchemaDiffContent(path string, project *projectMetadata) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read schema diff: %w", err)
+	}
+	var doc struct {
+		ProjectID       string `json:"project_id"`
+		SourceClusterID string `json:"source_cluster_id"`
+	}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return fmt.Errorf("parse schema diff JSON: %w", err)
+	}
+	if project == nil {
+		return nil
+	}
+	if strings.TrimSpace(doc.ProjectID) != "" && doc.ProjectID != project.ProjectID {
+		return fmt.Errorf("project_id %q does not match project metadata %q", doc.ProjectID, project.ProjectID)
+	}
+	if strings.TrimSpace(doc.SourceClusterID) != "" && doc.SourceClusterID != project.SourceClusterID {
+		return fmt.Errorf("source_cluster_id %q does not match project metadata %q", doc.SourceClusterID, project.SourceClusterID)
 	}
 	return nil
 }
