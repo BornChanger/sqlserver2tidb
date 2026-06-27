@@ -5141,6 +5141,40 @@ func TestRunValidationWorkerWritesPassedEvidenceWhenApprovedHashMatches(t *testi
 	assertContains(t, report, "schema_diff_parseable")
 }
 
+func TestRunValidationWorkerWritesBusinessSQLPlanCheckStatus(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateSchemaDraftOnly(root))
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/validation-plan.yaml", `status: reviewed
+checks:
+  - id: orders-total
+    type: business_sql
+    source_sql: "SELECT SUM(total) FROM sales.dbo.orders"
+    target_sql: "SELECT SUM(total) FROM app.orders"
+`)
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "validation")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage() error = %v", err)
+	}
+	writeValidationApproval(t, root, hash)
+
+	result, err := RunValidationWorker(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a")
+	if err != nil {
+		t.Fatalf("RunValidationWorker() error = %v", err)
+	}
+	if !result.Passed {
+		t.Fatalf("RunValidationWorker() Passed = false, checks = %+v", result.Checks)
+	}
+
+	state := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/validation-status.yaml")
+	assertContains(t, state, "status: passed")
+	assertContains(t, state, "name: validation_plan_checks_valid")
+	assertContains(t, state, "validation checks are structurally valid")
+
+	report := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/validation-report.md")
+	assertContains(t, report, "validation_plan_checks_valid")
+}
+
 func TestRunValidationWorkerFailsInvalidValidationPlanRowCountCheck(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, `{
@@ -5188,12 +5222,12 @@ checks:
 
 	state := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/validation-status.yaml")
 	assertContains(t, state, "status: failed")
-	assertContains(t, state, "name: validation_plan_row_count_checks_valid")
+	assertContains(t, state, "name: validation_plan_checks_valid")
 	assertContains(t, state, "row_count check orders-row-count target_object is required")
 
 	report := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/validation-report.md")
 	assertContains(t, report, "- Status: `failed`")
-	assertContains(t, report, "validation_plan_row_count_checks_valid")
+	assertContains(t, report, "validation_plan_checks_valid")
 }
 
 func TestRunValidationWorkerWritesFailedEvidenceForManualReviewItems(t *testing.T) {

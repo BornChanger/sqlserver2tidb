@@ -157,9 +157,9 @@ func RunValidationWorker(root, sourceClusterID, projectID string) (ValidationWor
 	} else {
 		result.addCheck("validation_plan_present", true, "plan/validation-plan.yaml exists")
 		if err := validateValidationPlanContent(validationPlanPath); err != nil {
-			result.addCheck("validation_plan_row_count_checks_valid", false, err.Error())
+			result.addCheck("validation_plan_checks_valid", false, err.Error())
 		} else {
-			result.addCheck("validation_plan_row_count_checks_valid", true, "row-count validation checks are structurally valid")
+			result.addCheck("validation_plan_checks_valid", true, "validation checks are structurally valid")
 		}
 	}
 
