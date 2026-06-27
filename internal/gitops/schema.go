@@ -442,7 +442,26 @@ func readSQLServerInventory(path string) (SQLServerInventory, error) {
 	if err := json.Unmarshal(data, &inventory); err != nil {
 		return SQLServerInventory{}, fmt.Errorf("parse inventory: %w", err)
 	}
+	if err := validateSQLServerInventory(inventory); err != nil {
+		return SQLServerInventory{}, err
+	}
 	return inventory, nil
+}
+
+func validateSQLServerInventory(inventory SQLServerInventory) error {
+	if strings.TrimSpace(inventory.Status) != "" && !isSupportedInventoryStatus(inventory.Status) {
+		return fmt.Errorf("unsupported inventory status %q; supported statuses: pending, discovered", inventory.Status)
+	}
+	return nil
+}
+
+func isSupportedInventoryStatus(status string) bool {
+	switch status {
+	case "pending", "discovered":
+		return true
+	default:
+		return false
+	}
 }
 
 func removeGeneratedSQLFiles(dir string) error {

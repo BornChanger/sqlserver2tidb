@@ -818,6 +818,22 @@ func TestValidateRepoReportsInvalidInventoryJSON(t *testing.T) {
 	assertContains(t, strings.Join(report.Errors, "\n"), `invalid inventory clusters/prod-sqlserver-a/inventory/inventory.json: parse inventory`)
 }
 
+func TestValidateRepoReportsInvalidInventoryStatus(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)
+	inventoryRel := "clusters/prod-sqlserver-a/inventory/inventory.json"
+	writeFileForTest(t, root, inventoryRel, `{"status":"ready","databases":[]}`)
+
+	report, err := ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
+	if report.Valid {
+		t.Fatal("ValidateRepo() valid = true, want invalid inventory status")
+	}
+	assertContains(t, strings.Join(report.Errors, "\n"), `invalid inventory clusters/prod-sqlserver-a/inventory/inventory.json: unsupported inventory status "ready"; supported statuses: pending, discovered`)
+}
+
 func TestValidateRepoReportsProjectIDMismatch(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)
