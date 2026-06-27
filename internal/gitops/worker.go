@@ -159,7 +159,12 @@ func RunValidationWorker(root, sourceClusterID, projectID string) (ValidationWor
 		if err := validateValidationPlanContent(validationPlanPath); err != nil {
 			result.addCheck("validation_plan_checks_valid", false, err.Error())
 		} else {
-			result.addCheck("validation_plan_checks_valid", true, "validation checks are structurally valid")
+			summary, err := summarizeValidationPlanCheckTypes(validationPlanPath)
+			if err != nil {
+				result.addCheck("validation_plan_checks_valid", false, err.Error())
+			} else {
+				result.addCheck("validation_plan_checks_valid", true, fmt.Sprintf("validation checks are structurally valid (%s)", summary))
+			}
 		}
 	}
 
@@ -299,6 +304,37 @@ func (result *ValidationWorkerResult) addCheck(name string, passed bool, message
 		Status:  status,
 		Message: message,
 	})
+}
+
+func summarizeValidationPlanCheckTypes(path string) (string, error) {
+	checks, err := readValidationPlanChecks(path)
+	if err != nil {
+		return "", err
+	}
+	counts := map[string]int{
+		"row_count":    0,
+		"checksum":     0,
+		"sampled_hash": 0,
+		"business_sql": 0,
+	}
+	for _, check := range checks {
+		switch check.Type {
+		case "row_count", "row-count":
+			counts["row_count"]++
+		case "checksum", "sampled_hash", "business_sql":
+			counts[check.Type]++
+		}
+	}
+	parts := make([]string, 0, len(counts))
+	for _, checkType := range []string{"row_count", "checksum", "sampled_hash", "business_sql"} {
+		if counts[checkType] > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", counts[checkType], checkType))
+		}
+	}
+	if len(parts) == 0 {
+		return "0 supported checks", nil
+	}
+	return strings.Join(parts, ", "), nil
 }
 
 func validateProjectAddress(root, sourceClusterID, projectID string) error {

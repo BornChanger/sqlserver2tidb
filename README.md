@@ -390,7 +390,7 @@ go run ./cmd/sqlserver2tidb worker-validate \
   --project-id sales-db-to-tidb-prod-a
 ```
 
-This checks approved metadata, writes `state/validation-status.yaml`, and writes `evidence/validation-report.md`.
+This checks approved metadata, writes `state/validation-status.yaml`, and writes `evidence/validation-report.md`. The validation plan structural check message includes a supported check-type summary, for example `1 row_count, 1 checksum, 1 sampled_hash, 1 business_sql`.
 
 ## Documentation
 

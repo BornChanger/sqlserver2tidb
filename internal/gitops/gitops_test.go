@@ -5228,6 +5228,51 @@ checks:
 	assertContains(t, report, "validation_plan_checks_valid")
 }
 
+func TestRunValidationWorkerSummarizesValidationPlanCheckTypes(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateSchemaDraftOnly(root))
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/validation-plan.yaml", `status: reviewed
+checks:
+  - id: orders-row-count
+    type: row_count
+    source_object: sales.dbo.orders
+    target_object: app.orders
+  - id: orders-checksum
+    type: checksum
+    source_sql: "SELECT CHECKSUM_AGG(BINARY_CHECKSUM(id, total)) FROM sales.dbo.orders"
+    target_sql: "SELECT BIT_XOR(CRC32(CONCAT(id, total))) FROM app.orders"
+  - id: orders-sampled-hash
+    type: sampled_hash
+    source_sql: "SELECT COUNT(*) FROM sales.dbo.orders WHERE id % 100 = 0"
+    target_sql: "SELECT COUNT(*) FROM app.orders WHERE id % 100 = 0"
+  - id: orders-total
+    type: business_sql
+    source_sql: "SELECT SUM(total) FROM sales.dbo.orders"
+    target_sql: "SELECT SUM(total) FROM app.orders"
+`)
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "validation")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage() error = %v", err)
+	}
+	writeValidationApproval(t, root, hash)
+
+	result, err := RunValidationWorker(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a")
+	if err != nil {
+		t.Fatalf("RunValidationWorker() error = %v", err)
+	}
+	if !result.Passed {
+		t.Fatalf("RunValidationWorker() Passed = false, checks = %+v", result.Checks)
+	}
+
+	wantSummary := "validation checks are structurally valid (1 row_count, 1 checksum, 1 sampled_hash, 1 business_sql)"
+	state := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/validation-status.yaml")
+	assertContains(t, state, wantSummary)
+
+	report := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/validation-report.md")
+	assertContains(t, report, wantSummary)
+}
+
 func TestRunValidationWorkerFailsInvalidValidationPlanRowCountCheck(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, `{

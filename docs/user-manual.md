@@ -1210,7 +1210,7 @@ payload hash 覆盖：
 - `schema/conversion-report.md` 存在。
 - `plan/validation-plan.yaml` 存在。
 
-如果 approval 未通过或 hash 不匹配，worker 直接退出，不写 `state/` 或 `evidence/`。如果 approval 通过，worker 写回 `state/validation-status.yaml` 和 `evidence/validation-report.md`。如果检查失败，worker 会写入 failed 状态，CLI 返回非零退出码。
+如果 approval 未通过或 hash 不匹配，worker 直接退出，不写 `state/` 或 `evidence/`。如果 approval 通过，worker 写回 `state/validation-status.yaml` 和 `evidence/validation-report.md`。当 validation plan 结构合法时，`validation_plan_checks_valid` 消息会汇总支持的检查类型数量，例如 `1 row_count, 1 checksum, 1 sampled_hash, 1 business_sql`。如果检查失败，worker 会写入 failed 状态，CLI 返回非零退出码。
 
 行数校验计划示例：
 
@@ -1756,7 +1756,7 @@ bin/sqlserver2tidb worker-validate \
   --project-id sales-db-to-tidb-prod-a
 ```
 
-该命令先检查 `approvals/validation-approval.yaml`，只有 approval 通过、payload hash 匹配，且 `plan/validation-plan.yaml` 已经是 `reviewed` 或 `approved` 时才执行 validation checks。执行后写回 `state/validation-status.yaml` 和 `evidence/validation-report.md`。
+该命令先检查 `approvals/validation-approval.yaml`，只有 approval 通过、payload hash 匹配，且 `plan/validation-plan.yaml` 已经是 `reviewed` 或 `approved` 时才执行 validation checks。执行后写回 `state/validation-status.yaml` 和 `evidence/validation-report.md`，并在 `validation_plan_checks_valid` 消息中列出支持的 validation check 类型数量。
 
 ### 16.17 worker-executor
 
