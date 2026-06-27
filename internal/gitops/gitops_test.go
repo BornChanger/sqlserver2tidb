@@ -1293,6 +1293,24 @@ func TestValidateRepoReportsInvalidMigrationStateUpdatedAt(t *testing.T) {
 	}
 }
 
+func TestValidateRepoReportsInvalidValidationStatusState(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)
+	rel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/validation-status.yaml"
+	stateYAML := readFile(t, root, rel)
+	stateYAML = strings.Replace(stateYAML, "status: pending", "status: unknown", 1)
+	writeFileForTest(t, root, rel, stateYAML)
+
+	report, err := ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
+	if report.Valid {
+		t.Fatal("ValidateRepo() valid = true, want invalid validation status state")
+	}
+	assertContains(t, strings.Join(report.Errors, "\n"), `invalid state file clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/validation-status.yaml: unsupported validation status "unknown"; supported statuses: pending, passed, failed`)
+}
+
 func TestValidateRepoReportsApprovalMetadataMismatch(t *testing.T) {
 	tests := []struct {
 		name      string

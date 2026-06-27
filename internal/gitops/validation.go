@@ -877,9 +877,17 @@ func validateProjectStateContent(path, stateRel string, project projectMetadata)
 	if err := validateProjectOwnedYAMLContent(path, project); err != nil {
 		return err
 	}
-	if stateRel != "state/migration-state.yaml" {
+	switch stateRel {
+	case "state/migration-state.yaml":
+		return validateMigrationStateContent(path)
+	case "state/validation-status.yaml":
+		return validateValidationStatusStateContent(path)
+	default:
 		return nil
 	}
+}
+
+func validateMigrationStateContent(path string) error {
 	phase, err := readPlanTopLevelScalar(path, "phase")
 	if err != nil {
 		return err
@@ -893,9 +901,29 @@ func validateProjectStateContent(path, stateRel string, project projectMetadata)
 	return nil
 }
 
+func validateValidationStatusStateContent(path string) error {
+	status, err := readPlanTopLevelScalar(path, "status")
+	if err != nil {
+		return err
+	}
+	if !isSupportedValidationStatusState(status) {
+		return fmt.Errorf("unsupported validation status %q; supported statuses: pending, passed, failed", status)
+	}
+	return nil
+}
+
 func isSupportedMigrationStatePhase(phase string) bool {
 	switch phase {
 	case "planning", "ddl", "export", "import", "cdc", "validation", "cutover", "completed":
+		return true
+	default:
+		return false
+	}
+}
+
+func isSupportedValidationStatusState(status string) bool {
+	switch status {
+	case "pending", "passed", "failed":
 		return true
 	default:
 		return false
