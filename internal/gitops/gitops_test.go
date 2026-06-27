@@ -37,6 +37,9 @@ func TestInitRepoCreatesGlobalStructure(t *testing.T) {
 	assertContains(t, policyYAML, "import_plan: global/schemas/import-plan.schema.json")
 	assertContains(t, policyYAML, "cdc_plan: global/schemas/cdc-plan.schema.json")
 	assertContains(t, policyYAML, "validation_plan: global/schemas/validation-plan.schema.json")
+
+	importSchema := readFile(t, root, "global/schemas/import-plan.schema.json")
+	assertContains(t, importSchema, `"engine": {"enum": ["sql-insert", "tidb-import-into", "import-into"]}`)
 }
 
 func TestCreateClusterCreatesUpstreamSQLServerClusterDirectory(t *testing.T) {

@@ -227,7 +227,7 @@ approval_required:
     "status": {"enum": ["draft", "reviewed", "approved"]},
     "project_id": {"type": "string"},
     "source_cluster_id": {"type": "string"},
-    "engine": {"type": "string"},
+    "engine": {"enum": ["sql-insert", "tidb-import-into", "import-into"]},
     "mode": {"type": "string"},
     "jobs": {
       "type": "array",
