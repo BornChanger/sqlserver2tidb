@@ -3888,6 +3888,7 @@ func TestPrepareWorkerExecutorRejectsTODOExportPredicate(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
 	must(t, GenerateDataPlansOnly(root))
+	setReviewPlanStatus(t, root, "export", "reviewed")
 	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
 	if err != nil {
 		t.Fatalf("ComputePayloadHashForStage(export) error = %v", err)
@@ -4339,6 +4340,7 @@ func TestPlanWorkerReconcileReportsReadyAndBlockedProjectStages(t *testing.T) {
 	must(t, GenerateSchemaDraftOnly(root))
 	must(t, GenerateDataPlansOnly(root))
 	reviewExportPlanPredicates(t, root)
+	setReviewPlanStatus(t, root, "export", "reviewed")
 	must(t, GenerateCDCPlanOnly(root))
 	exportHash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
 	if err != nil {
@@ -4392,6 +4394,28 @@ func TestPlanWorkerReconcileReportsReadyAndBlockedProjectStages(t *testing.T) {
 		t.Fatalf("validation action = %+v, want blocked", validation)
 	}
 	assertContains(t, validation.Reason, "validation approval is not approved")
+}
+
+func TestPlanWorkerReconcileBlocksDraftExportPlan(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateDataPlansOnly(root))
+	reviewExportPlanPredicates(t, root)
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(export) error = %v", err)
+	}
+	writeStageApproval(t, root, "export", hash)
+
+	report, err := PlanWorkerReconcile(root)
+	if err != nil {
+		t.Fatalf("PlanWorkerReconcile() error = %v", err)
+	}
+	export := findReconcileAction(t, report.Actions, "export")
+	if export.Status != "blocked" {
+		t.Fatalf("export action = %+v, want blocked", export)
+	}
+	assertContains(t, export.Reason, `export plan status is "draft", want reviewed or approved`)
 }
 
 func TestExecuteNextWorkerReconcileSkipsDDLExecutorActions(t *testing.T) {
@@ -4653,6 +4677,7 @@ func TestExecuteNextWorkerReconcileBlocksWhenLeaseHeldByAnotherHolder(t *testing
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
 	must(t, GenerateDataPlansOnly(root))
+	setReviewPlanStatus(t, root, "export", "reviewed")
 	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
 	if err != nil {
 		t.Fatalf("ComputePayloadHashForStage(export) error = %v", err)

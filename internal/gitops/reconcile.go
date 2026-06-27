@@ -164,6 +164,13 @@ func planWorkerReconcileAction(root, sourceClusterID, projectID, stage string) W
 		action.Reason = err.Error()
 		return action
 	}
+	if stage == "export" {
+		planPath := filepath.Join(root, "clusters", sourceClusterID, "projects", projectID, "plan", "export-plan.yaml")
+		if err := requireExecutablePlanStatus(planPath, "export plan"); err != nil {
+			action.Reason = err.Error()
+			return action
+		}
+	}
 	action.Status = "ready"
 	action.PayloadHash = payloadHash
 	return action
