@@ -776,6 +776,70 @@ func TestValidateRepoReportsInvalidSchemaDiffJSON(t *testing.T) {
 	assertContains(t, strings.Join(report.Errors, "\n"), `invalid schema diff clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/schema/schema-diff.json: parse schema diff JSON`)
 }
 
+func TestValidateRepoReportsEvidenceMetadataMismatch(t *testing.T) {
+	tests := []struct {
+		name      string
+		rel       string
+		body      string
+		wantError string
+	}{
+		{
+			name: "precheck_project_id",
+			rel:  "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/precheck.json",
+			body: `{
+  "status": "planned",
+  "project_id": "inventory-db-to-tidb-prod-a",
+  "source_cluster_id": "prod-sqlserver-a"
+}
+`,
+			wantError: `invalid evidence clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/precheck.json: project_id "inventory-db-to-tidb-prod-a" does not match project metadata "sales-db-to-tidb-prod-a"`,
+		},
+		{
+			name: "cdc_catchup_source_cluster_id",
+			rel:  "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/cdc-catchup.json",
+			body: `{
+  "status": "planned",
+  "project_id": "sales-db-to-tidb-prod-a",
+  "source_cluster_id": "prod-sqlserver-b"
+}
+`,
+			wantError: `invalid evidence clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/cdc-catchup.json: source_cluster_id "prod-sqlserver-b" does not match project metadata "prod-sqlserver-a"`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)
+			writeFileForTest(t, root, tt.rel, tt.body)
+
+			report, err := ValidateRepo(root)
+			if err != nil {
+				t.Fatalf("ValidateRepo() error = %v", err)
+			}
+			if report.Valid {
+				t.Fatal("ValidateRepo() valid = true, want evidence metadata mismatch")
+			}
+			assertContains(t, strings.Join(report.Errors, "\n"), tt.wantError)
+		})
+	}
+}
+
+func TestValidateRepoReportsInvalidEvidenceJSON(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)
+	evidenceRel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/import-summary.json"
+	writeFileForTest(t, root, evidenceRel, "{")
+
+	report, err := ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
+	if report.Valid {
+		t.Fatal("ValidateRepo() valid = true, want invalid evidence JSON")
+	}
+	assertContains(t, strings.Join(report.Errors, "\n"), `invalid evidence clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/import-summary.json: parse evidence JSON`)
+}
+
 func TestValidateRepoReportsDataPlanMetadataMismatch(t *testing.T) {
 	tests := []struct {
 		name      string

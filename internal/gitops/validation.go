@@ -133,6 +133,12 @@ var projectApprovalFiles = []projectApprovalFile{
 	{Stage: "cutover", Rel: "approvals/cutover-approval.yaml"},
 }
 
+var projectEvidenceJSONFiles = []string{
+	"evidence/precheck.json",
+	"evidence/import-summary.json",
+	"evidence/cdc-catchup.json",
+}
+
 func ValidateRepo(root string) (ValidationReport, error) {
 	report := ValidationReport{Valid: true}
 	if err := report.checkDir(root, "."); err != nil {
@@ -404,6 +410,20 @@ func validateProjectContent(root, projectRel string, cluster *clusterMetadata, r
 		}
 	}
 
+	var projectForEvidence *projectMetadata
+	if projectMetaLoaded {
+		projectForEvidence = &projectMeta
+	}
+	for _, evidenceRel := range projectEvidenceJSONFiles {
+		rel := filepath.ToSlash(filepath.Join(projectRel, evidenceRel))
+		path := filepath.Join(root, filepath.FromSlash(rel))
+		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+			if err := validateEvidenceJSONContent(path, projectForEvidence); err != nil {
+				report.addError(fmt.Sprintf("invalid evidence %s: %v", rel, err))
+			}
+		}
+	}
+
 	migrationPlanRel := filepath.ToSlash(filepath.Join(projectRel, "plan", "migration-plan.yaml"))
 	migrationPlanPath := filepath.Join(root, filepath.FromSlash(migrationPlanRel))
 	if projectMetaLoaded {
@@ -546,6 +566,30 @@ func validateSchemaDiffContent(path string, project *projectMetadata) error {
 	}
 	if err := json.Unmarshal(data, &doc); err != nil {
 		return fmt.Errorf("parse schema diff JSON: %w", err)
+	}
+	if project == nil {
+		return nil
+	}
+	if strings.TrimSpace(doc.ProjectID) != "" && doc.ProjectID != project.ProjectID {
+		return fmt.Errorf("project_id %q does not match project metadata %q", doc.ProjectID, project.ProjectID)
+	}
+	if strings.TrimSpace(doc.SourceClusterID) != "" && doc.SourceClusterID != project.SourceClusterID {
+		return fmt.Errorf("source_cluster_id %q does not match project metadata %q", doc.SourceClusterID, project.SourceClusterID)
+	}
+	return nil
+}
+
+func validateEvidenceJSONContent(path string, project *projectMetadata) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read evidence: %w", err)
+	}
+	var doc struct {
+		ProjectID       string `json:"project_id"`
+		SourceClusterID string `json:"source_cluster_id"`
+	}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return fmt.Errorf("parse evidence JSON: %w", err)
 	}
 	if project == nil {
 		return nil
