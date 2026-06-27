@@ -761,7 +761,23 @@ func validateCDCPlanSummaryForExecutionWithLSN(plan cdcPlanSummary, requireKeyCo
 			if strings.TrimSpace(table.ToLSN) == "" {
 				return fmt.Errorf("cdc tracked table %s to_lsn is required for executor", table.SourceObject)
 			}
+			if err := validateCDCPlanLSN(table.FromLSN, "from_lsn"); err != nil {
+				return fmt.Errorf("cdc tracked table %s %w", table.SourceObject, err)
+			}
+			if err := validateCDCPlanLSN(table.ToLSN, "to_lsn"); err != nil {
+				return fmt.Errorf("cdc tracked table %s %w", table.SourceObject, err)
+			}
 		}
+	}
+	return nil
+}
+
+func validateCDCPlanLSN(raw, field string) error {
+	value := strings.TrimSpace(raw)
+	value = strings.TrimPrefix(strings.TrimPrefix(value, "0x"), "0X")
+	decoded, err := hex.DecodeString(value)
+	if err != nil || len(decoded) != 10 {
+		return fmt.Errorf("%s must be a 10-byte hex value", field)
 	}
 	return nil
 }

@@ -4560,6 +4560,25 @@ func TestPrepareWorkerExecutorRejectsCDCPlanWithoutLSNRange(t *testing.T) {
 	assertContains(t, err.Error(), "cdc tracked table sales.dbo.orders from_lsn is required for executor")
 }
 
+func TestPrepareWorkerExecutorRejectsInvalidCDCLSNRange(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateCDCPlanOnly(root))
+	setCDCPlanLSNRange(t, root, "not-a-lsn", "0x00000027000001f40002")
+	setReviewPlanStatus(t, root, "cdc", "reviewed")
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "cdc")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(cdc) error = %v", err)
+	}
+	writeStageApproval(t, root, "cdc", hash)
+
+	_, err = PrepareWorkerExecutor(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "cdc", WorkerExecutorPrepareSpec{})
+	if err == nil {
+		t.Fatal("PrepareWorkerExecutor() expected invalid CDC LSN range error")
+	}
+	assertContains(t, err.Error(), "cdc tracked table sales.dbo.orders from_lsn must be a 10-byte hex value")
+}
+
 func TestPrepareWorkerExecutorBuildsCDCCommandsWhenApprovedHashMatches(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
