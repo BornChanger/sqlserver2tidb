@@ -3827,6 +3827,24 @@ func TestRunExportWorkerRejectsTODOExportPredicate(t *testing.T) {
 	assertContains(t, err.Error(), "export chunk dbo.orders.000001 predicate still contains TODO")
 }
 
+func TestPrepareWorkerExecutorRejectsDraftExportPlan(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateDataPlansOnly(root))
+	reviewExportPlanPredicates(t, root)
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(export) error = %v", err)
+	}
+	writeStageApproval(t, root, "export", hash)
+
+	_, err = PrepareWorkerExecutor(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export", WorkerExecutorPrepareSpec{})
+	if err == nil {
+		t.Fatal("PrepareWorkerExecutor() expected draft export plan error")
+	}
+	assertContains(t, err.Error(), `export plan status is "draft", want reviewed or approved`)
+}
+
 func TestPrepareWorkerExecutorBuildsExportCommandsWhenApprovedHashMatches(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
@@ -3871,6 +3889,7 @@ func TestPrepareWorkerExecutorRejectsUnsupportedExportFormat(t *testing.T) {
 	exportPlan := readFile(t, root, exportPlanRel)
 	exportPlan = strings.Replace(exportPlan, "format: csv", "format: parquet", 1)
 	writeFileForTest(t, root, exportPlanRel, exportPlan)
+	setReviewPlanStatus(t, root, "export", "reviewed")
 	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
 	if err != nil {
 		t.Fatalf("ComputePayloadHashForStage(export) error = %v", err)
@@ -3943,6 +3962,7 @@ func TestPrepareWorkerExecutorBuildsImportCommandsWhenApprovedHashMatches(t *tes
 	createValidationWorkerProject(t, root, dataWorkerInventory())
 	must(t, GenerateSchemaDraftOnly(root))
 	must(t, GenerateDataPlansOnly(root))
+	setReviewPlanStatus(t, root, "import", "reviewed")
 	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import")
 	if err != nil {
 		t.Fatalf("ComputePayloadHashForStage(import) error = %v", err)
@@ -3976,6 +3996,7 @@ func TestPrepareWorkerExecutorRejectsUnsupportedImportEngine(t *testing.T) {
 	importPlan := readFile(t, root, importPlanRel)
 	importPlan = strings.Replace(importPlan, "engine: sql-insert", "engine: import-into", 1)
 	writeFileForTest(t, root, importPlanRel, importPlan)
+	setReviewPlanStatus(t, root, "import", "reviewed")
 	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import")
 	if err != nil {
 		t.Fatalf("ComputePayloadHashForStage(import) error = %v", err)
@@ -3994,6 +4015,7 @@ func TestPrepareWorkerExecutorAddsImportConnectionStringEnvAndBatchSize(t *testi
 	createValidationWorkerProject(t, root, dataWorkerInventory())
 	must(t, GenerateSchemaDraftOnly(root))
 	must(t, GenerateDataPlansOnly(root))
+	setReviewPlanStatus(t, root, "import", "reviewed")
 	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import")
 	if err != nil {
 		t.Fatalf("ComputePayloadHashForStage(import) error = %v", err)
@@ -4065,6 +4087,7 @@ func TestPrepareWorkerExecutorBuildsDDLCommand(t *testing.T) {
 func TestPrepareWorkerExecutorRejectsEmptyExportPlan(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
+	setReviewPlanStatus(t, root, "export", "reviewed")
 	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
 	if err != nil {
 		t.Fatalf("ComputePayloadHashForStage(export) error = %v", err)
@@ -4081,6 +4104,7 @@ func TestPrepareWorkerExecutorRejectsEmptyExportPlan(t *testing.T) {
 func TestPrepareWorkerExecutorRejectsEmptyImportPlan(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
+	setReviewPlanStatus(t, root, "import", "reviewed")
 	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import")
 	if err != nil {
 		t.Fatalf("ComputePayloadHashForStage(import) error = %v", err)
@@ -4097,6 +4121,7 @@ func TestPrepareWorkerExecutorRejectsEmptyImportPlan(t *testing.T) {
 func TestPrepareWorkerExecutorRejectsEmptyCDCPlan(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
+	setReviewPlanStatus(t, root, "cdc", "reviewed")
 	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "cdc")
 	if err != nil {
 		t.Fatalf("ComputePayloadHashForStage(cdc) error = %v", err)
@@ -4114,6 +4139,7 @@ func TestPrepareWorkerExecutorBuildsCDCCommandsWhenApprovedHashMatches(t *testin
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
 	must(t, GenerateCDCPlanOnly(root))
+	setReviewPlanStatus(t, root, "cdc", "reviewed")
 	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "cdc")
 	if err != nil {
 		t.Fatalf("ComputePayloadHashForStage(cdc) error = %v", err)
@@ -4140,7 +4166,7 @@ func TestPrepareWorkerExecutorBuildsCDCCommandsWhenApprovedHashMatches(t *testin
 func TestPrepareWorkerExecutorBuildsValidationCountCommandsWhenApprovedHashMatches(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
-	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/validation-plan.yaml", `status: draft
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/validation-plan.yaml", `status: reviewed
 checks:
   - id: orders-row-count
     type: row_count
@@ -4181,7 +4207,7 @@ checks:
 func TestPrepareWorkerExecutorValidationRequiresSupportedRowCountChecks(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
-	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/validation-plan.yaml", `status: draft
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/validation-plan.yaml", `status: reviewed
 checks: []
 `)
 	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "validation")

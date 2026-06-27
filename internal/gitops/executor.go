@@ -53,6 +53,13 @@ func PrepareWorkerExecutor(root, sourceClusterID, projectID, stage string, spec 
 	}
 
 	projectDir := filepath.Join(root, "clusters", sourceClusterID, "projects", projectID)
+	switch stage {
+	case "export", "import", "cdc", "validation":
+		planPath := filepath.Join(projectDir, "plan", stage+"-plan.yaml")
+		if err := requireExecutablePlanStatus(planPath, stage+" plan"); err != nil {
+			return WorkerExecutorSpec{}, err
+		}
+	}
 	result := WorkerExecutorSpec{
 		SourceClusterID: sourceClusterID,
 		ProjectID:       projectID,

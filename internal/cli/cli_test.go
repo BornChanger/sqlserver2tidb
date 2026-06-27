@@ -1332,7 +1332,7 @@ func TestRunWorkerExecutorValidationDryRunCommand(t *testing.T) {
 		t.Fatalf("create-project code = %d, stderr = %s", code, stderr.String())
 	}
 	validationPlanPath := filepath.Join(root, "clusters", "prod-sqlserver-a", "projects", "sales-db-to-tidb-prod-a", "plan", "validation-plan.yaml")
-	if err := os.WriteFile(validationPlanPath, []byte(`status: draft
+	if err := os.WriteFile(validationPlanPath, []byte(`status: reviewed
 checks:
   - id: orders-row-count
     type: row_count
