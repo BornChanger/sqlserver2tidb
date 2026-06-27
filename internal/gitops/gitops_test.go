@@ -3546,6 +3546,7 @@ func TestGenerateDataMovementPlansUsesTrivialPredicateForSingleChunkTable(t *tes
 		t.Fatalf("single chunk export plan should not require a TODO predicate:\n%s", exportPlan)
 	}
 
+	setReviewPlanStatus(t, root, "export", "reviewed")
 	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
 	if err != nil {
 		t.Fatalf("ComputePayloadHashForStage(export) error = %v", err)
@@ -3752,11 +3753,30 @@ func TestRunExportWorkerRequiresApprovedExportApproval(t *testing.T) {
 	}
 }
 
+func TestRunExportWorkerRejectsDraftExportPlan(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateDataPlansOnly(root))
+	reviewExportPlanPredicates(t, root)
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(export) error = %v", err)
+	}
+	writeStageApproval(t, root, "export", hash)
+
+	_, err = RunExportWorker(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a")
+	if err == nil {
+		t.Fatal("RunExportWorker() expected draft plan error")
+	}
+	assertContains(t, err.Error(), `export plan status is "draft", want reviewed or approved`)
+}
+
 func TestRunExportWorkerWritesPlannedStateWhenApprovedHashMatches(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
 	must(t, GenerateDataPlansOnly(root))
 	reviewExportPlanPredicates(t, root)
+	setReviewPlanStatus(t, root, "export", "reviewed")
 	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
 	if err != nil {
 		t.Fatalf("ComputePayloadHashForStage(export) error = %v", err)
@@ -3793,6 +3813,7 @@ func TestRunExportWorkerRejectsTODOExportPredicate(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
 	must(t, GenerateDataPlansOnly(root))
+	setReviewPlanStatus(t, root, "export", "reviewed")
 	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
 	if err != nil {
 		t.Fatalf("ComputePayloadHashForStage(export) error = %v", err)
@@ -3811,6 +3832,7 @@ func TestPrepareWorkerExecutorBuildsExportCommandsWhenApprovedHashMatches(t *tes
 	createValidationWorkerProject(t, root, dataWorkerInventory())
 	must(t, GenerateDataPlansOnly(root))
 	reviewExportPlanPredicates(t, root)
+	setReviewPlanStatus(t, root, "export", "reviewed")
 	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
 	if err != nil {
 		t.Fatalf("ComputePayloadHashForStage(export) error = %v", err)
@@ -3884,6 +3906,7 @@ func TestPrepareWorkerExecutorAddsExportConnectionStringEnv(t *testing.T) {
 	createValidationWorkerProject(t, root, dataWorkerInventory())
 	must(t, GenerateDataPlansOnly(root))
 	reviewExportPlanPredicates(t, root)
+	setReviewPlanStatus(t, root, "export", "reviewed")
 	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
 	if err != nil {
 		t.Fatalf("ComputePayloadHashForStage(export) error = %v", err)
@@ -4396,6 +4419,7 @@ func TestExecuteNextWorkerReconcileAcquiresLeaseAndRunsFirstReadyAction(t *testi
 	createValidationWorkerProject(t, root, dataWorkerInventory())
 	must(t, GenerateDataPlansOnly(root))
 	reviewExportPlanPredicates(t, root)
+	setReviewPlanStatus(t, root, "export", "reviewed")
 	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
 	if err != nil {
 		t.Fatalf("ComputePayloadHashForStage(export) error = %v", err)
@@ -4437,6 +4461,7 @@ func TestExecuteNextWorkerReconcileWritesStatePRDraftWhenRequested(t *testing.T)
 	createValidationWorkerProject(t, root, dataWorkerInventory())
 	must(t, GenerateDataPlansOnly(root))
 	reviewExportPlanPredicates(t, root)
+	setReviewPlanStatus(t, root, "export", "reviewed")
 	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
 	if err != nil {
 		t.Fatalf("ComputePayloadHashForStage(export) error = %v", err)
@@ -4479,6 +4504,7 @@ func TestPrepareWorkerStatePRCreateBuildsGitAndGitHubCommands(t *testing.T) {
 	createValidationWorkerProject(t, root, dataWorkerInventory())
 	must(t, GenerateDataPlansOnly(root))
 	reviewExportPlanPredicates(t, root)
+	setReviewPlanStatus(t, root, "export", "reviewed")
 	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
 	if err != nil {
 		t.Fatalf("ComputePayloadHashForStage(export) error = %v", err)
@@ -4527,6 +4553,7 @@ func TestPrepareWorkerStatePRCreateIncludesExecutorEvidenceWhenPresent(t *testin
 	createValidationWorkerProject(t, root, dataWorkerInventory())
 	must(t, GenerateDataPlansOnly(root))
 	reviewExportPlanPredicates(t, root)
+	setReviewPlanStatus(t, root, "export", "reviewed")
 	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
 	if err != nil {
 		t.Fatalf("ComputePayloadHashForStage(export) error = %v", err)
@@ -4558,6 +4585,7 @@ func TestPrepareWorkerStatePRCreatePlansBodyRefreshForExecutorEvidence(t *testin
 	createValidationWorkerProject(t, root, dataWorkerInventory())
 	must(t, GenerateDataPlansOnly(root))
 	reviewExportPlanPredicates(t, root)
+	setReviewPlanStatus(t, root, "export", "reviewed")
 	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
 	if err != nil {
 		t.Fatalf("ComputePayloadHashForStage(export) error = %v", err)
@@ -5003,6 +5031,17 @@ func reviewExportPlanPredicates(t *testing.T, root string) {
 		reviewed.WriteByte('\n')
 	}
 	writeFileForTest(t, root, rel, reviewed.String())
+}
+
+func setReviewPlanStatus(t *testing.T, root, stage, status string) {
+	t.Helper()
+	rel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/" + stage + "-plan.yaml"
+	plan := readFile(t, root, rel)
+	updated := strings.Replace(plan, "status: draft", "status: "+status, 1)
+	if updated == plan {
+		t.Fatalf("plan %s does not contain draft status", rel)
+	}
+	writeFileForTest(t, root, rel, updated)
 }
 
 func GenerateCDCPlanOnly(root string) error {

@@ -898,7 +898,7 @@ checks:
 state/export-chunks.yaml
 ```
 
-当前 MVP 的 `worker-export` 只在 export approval 和 payload hash 匹配后，把 `plan/export-plan.yaml` 写成 planned 状态和 evidence。它会拒绝仍包含 `TODO` predicate 的 export chunk。它不执行导出、不连接 SQL Server、不写对象存储。
+当前 MVP 的 `worker-export` 只在 export approval 和 payload hash 匹配、且 `plan/export-plan.yaml` 的 status 已经是 `reviewed` 或 `approved` 后，把 `plan/export-plan.yaml` 写成 planned 状态和 evidence。它会拒绝 draft export plan，也会拒绝仍包含 `TODO` predicate 的 export chunk。它不执行导出、不连接 SQL Server、不写对象存储。
 
 先计算 export payload hash：
 

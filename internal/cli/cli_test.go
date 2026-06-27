@@ -768,6 +768,7 @@ func TestRunWorkerExportAndImportCommands(t *testing.T) {
 		t.Fatalf("generate-data-plans code = %d, stderr = %s", code, stderr.String())
 	}
 	reviewCLIExportPlanPredicates(t, root)
+	setCLIReviewPlanStatus(t, root, "export", "reviewed")
 
 	stdout.Reset()
 	stderr.Reset()
@@ -957,6 +958,7 @@ func TestRunWorkerExecutorExecutePassesExecuteFlagToExternalExecutor(t *testing.
 		t.Fatalf("generate-data-plans code = %d, stderr = %s", code, stderr.String())
 	}
 	reviewCLIExportPlanPredicates(t, root)
+	setCLIReviewPlanStatus(t, root, "export", "reviewed")
 
 	stdout.Reset()
 	stderr.Reset()
@@ -1035,6 +1037,7 @@ func TestRunWorkerExecutorExecuteWritesFailedEvidenceOnCommandFailure(t *testing
 
 	createCLIProjectWithOneExportChunk(t, root, &stdout, &stderr)
 	reviewCLIExportPlanPredicates(t, root)
+	setCLIReviewPlanStatus(t, root, "export", "reviewed")
 
 	stdout.Reset()
 	stderr.Reset()
@@ -1523,6 +1526,7 @@ func TestRunWorkerReconcileDryRunCommand(t *testing.T) {
 		t.Fatalf("default import plan = %s, want engine: sql-insert", defaultImportPlan)
 	}
 	reviewCLIExportPlanPredicates(t, root)
+	setCLIReviewPlanStatus(t, root, "export", "reviewed")
 	if code := Run([]string{
 		"generate-cdc-plan",
 		"--root", root,
@@ -1665,6 +1669,7 @@ func TestRunWorkerReconcileExecuteNextCommand(t *testing.T) {
 		t.Fatalf("generate-data-plans code = %d, stderr = %s", code, stderr.String())
 	}
 	reviewCLIExportPlanPredicates(t, root)
+	setCLIReviewPlanStatus(t, root, "export", "reviewed")
 
 	stdout.Reset()
 	stderr.Reset()
@@ -2021,6 +2026,23 @@ func reviewCLIExportPlanPredicates(t *testing.T, root string) {
 		reviewed.WriteByte('\n')
 	}
 	if err := os.WriteFile(path, []byte(reviewed.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func setCLIReviewPlanStatus(t *testing.T, root, stage, status string) {
+	t.Helper()
+	path := filepath.Join(root, "clusters", "prod-sqlserver-a", "projects", "sales-db-to-tidb-prod-a", "plan", stage+"-plan.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := string(data)
+	updated := strings.Replace(plan, "status: draft", "status: "+status, 1)
+	if updated == plan {
+		t.Fatalf("plan %s does not contain draft status", path)
+	}
+	if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

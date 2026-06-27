@@ -227,6 +227,11 @@ func runDataWorker(root, sourceClusterID, projectID, stage string) (DataWorkerRe
 	}
 
 	projectDir := filepath.Join(root, "clusters", sourceClusterID, "projects", projectID)
+	if stage == "export" {
+		if err := requireExecutablePlanStatus(filepath.Join(projectDir, "plan", "export-plan.yaml"), "export plan"); err != nil {
+			return DataWorkerResult{}, err
+		}
+	}
 	result := DataWorkerResult{
 		SourceClusterID: sourceClusterID,
 		ProjectID:       projectID,
@@ -309,6 +314,17 @@ func validateProjectAddress(root, sourceClusterID, projectID string) error {
 	}
 	if project.SourceClusterID != sourceClusterID {
 		return fmt.Errorf("project.yaml source_cluster_id %q does not match %q", project.SourceClusterID, sourceClusterID)
+	}
+	return nil
+}
+
+func requireExecutablePlanStatus(path, planKind string) error {
+	status, err := readPlanTopLevelScalar(path, "status")
+	if err != nil {
+		return err
+	}
+	if status != "reviewed" && status != "approved" {
+		return fmt.Errorf("%s status is %q, want reviewed or approved", planKind, status)
 	}
 	return nil
 }
