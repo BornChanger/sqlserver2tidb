@@ -283,7 +283,13 @@ func validateClusterDir(root, clusterRel string, report *ValidationReport) {
 				rel := filepath.ToSlash(filepath.Join(clusterRel, stateRel))
 				path := filepath.Join(root, filepath.FromSlash(rel))
 				if info, err := os.Stat(path); err == nil && !info.IsDir() {
-					if err := validateSourceClusterOwnedYAMLContent(path, meta); err != nil {
+					var err error
+					if stateRel == "state/worker-lease.yaml" {
+						err = validateWorkerLeaseMetadataContent(path, meta)
+					} else {
+						err = validateSourceClusterOwnedYAMLContent(path, meta)
+					}
+					if err != nil {
 						report.addError(fmt.Sprintf("invalid cluster state %s: %v", rel, err))
 					}
 				}
@@ -346,6 +352,29 @@ func validateSourceClusterOwnedYAMLContent(path string, cluster clusterMetadata)
 		return fmt.Errorf("source_cluster_id %q does not match cluster metadata %q", sourceClusterID, cluster.ClusterID)
 	}
 	return nil
+}
+
+func validateWorkerLeaseMetadataContent(path string, cluster clusterMetadata) error {
+	if err := validateSourceClusterOwnedYAMLContent(path, cluster); err != nil {
+		return err
+	}
+	phase, err := readPlanTopLevelScalar(path, "phase")
+	if err != nil {
+		return err
+	}
+	if !isSupportedWorkerLeasePhase(phase) {
+		return fmt.Errorf("unsupported worker lease phase %q; supported phases: idle, export, import, cdc, validation", phase)
+	}
+	return nil
+}
+
+func isSupportedWorkerLeasePhase(phase string) bool {
+	switch phase {
+	case "idle", "export", "import", "cdc", "validation":
+		return true
+	default:
+		return false
+	}
 }
 
 func validateProjects(root, projectsRel string, cluster *clusterMetadata, report *ValidationReport) {

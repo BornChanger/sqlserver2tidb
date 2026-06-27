@@ -525,6 +525,24 @@ func TestValidateRepoReportsClusterStateMetadataMismatch(t *testing.T) {
 	}
 }
 
+func TestValidateRepoReportsInvalidWorkerLeasePhase(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)
+	leaseRel := "clusters/prod-sqlserver-a/state/worker-lease.yaml"
+	leaseYAML := readFile(t, root, leaseRel)
+	leaseYAML = strings.Replace(leaseYAML, "phase: idle", "phase: running", 1)
+	writeFileForTest(t, root, leaseRel, leaseYAML)
+
+	report, err := ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
+	if report.Valid {
+		t.Fatal("ValidateRepo() valid = true, want invalid worker lease phase")
+	}
+	assertContains(t, strings.Join(report.Errors, "\n"), `invalid cluster state clusters/prod-sqlserver-a/state/worker-lease.yaml: unsupported worker lease phase "running"; supported phases: idle, export, import, cdc, validation`)
+}
+
 func TestValidateRepoReportsInvalidInventoryJSON(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)
