@@ -1089,6 +1089,129 @@ func TestRunWorkerExecutorExecuteWritesFailedEvidenceOnCommandFailure(t *testing
 	}
 }
 
+func TestRunWorkerExecutorCDCExecuteRecordsAppliedChangesInEvidence(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	if code := Run([]string{"init-repo", "--root", root}, &stdout, &stderr); code != 0 {
+		t.Fatalf("init-repo code = %d, stderr = %s", code, stderr.String())
+	}
+	if code := Run([]string{
+		"create-cluster",
+		"--root", root,
+		"--cluster-id", "prod-sqlserver-a",
+		"--display-name", "prod SQL Server A",
+		"--listener", "sqlserver-a.internal",
+		"--secret-ref", "vault://migration/prod-sqlserver-a/readonly",
+		"--owner", "dba-team",
+	}, &stdout, &stderr); code != 0 {
+		t.Fatalf("create-cluster code = %d, stderr = %s", code, stderr.String())
+	}
+	if code := Run([]string{
+		"create-project",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--display-name", "sales DB to TiDB prod A",
+		"--source-database", "sales",
+		"--source-schema", "dbo",
+		"--target-name", "tidb-prod-a",
+		"--target-database", "app",
+		"--target-secret-ref", "vault://migration/tidb-prod-a/migrate-user",
+		"--owner", "dba-team",
+	}, &stdout, &stderr); code != 0 {
+		t.Fatalf("create-project code = %d, stderr = %s", code, stderr.String())
+	}
+	inventoryPath := filepath.Join(root, "clusters", "prod-sqlserver-a", "inventory", "inventory.json")
+	if err := os.WriteFile(inventoryPath, []byte(`{
+  "status": "discovered",
+  "databases": [
+    {
+      "name": "sales",
+      "schemas": [
+        {
+          "name": "dbo",
+          "tables": [
+            {
+              "name": "orders",
+              "row_count": 1,
+              "columns": [
+                {"name": "id", "type": "int"},
+                {"name": "customer_name", "type": "nvarchar"}
+              ],
+              "indexes": [
+                {"name": "PK_orders", "columns": ["id"], "unique": true, "primary_key": true}
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code := Run([]string{
+		"generate-cdc-plan",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+	}, &stdout, &stderr); code != 0 {
+		t.Fatalf("generate-cdc-plan code = %d, stderr = %s", code, stderr.String())
+	}
+	setCLICDCPlanLSNRange(t, root, "0x00000000000000000001", "0x00000000000000000002")
+	setCLIReviewPlanStatus(t, root, "cdc", "reviewed")
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"compute-payload-hash",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "cdc",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("compute-payload-hash cdc code = %d, stderr = %s", code, stderr.String())
+	}
+	writeCLIStageApproval(t, root, "cdc", parsePayloadHash(t, stdout.String()))
+
+	fakeExecutor := filepath.Join(root, "fake-executor-cdc")
+	if err := os.WriteFile(fakeExecutor, []byte("#!/bin/sh\nprintf 'executor cdc completed: sales.dbo.orders -> app.orders\\n'\nprintf 'applied changes: 2\\n'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = Run([]string{
+		"worker-executor",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "cdc",
+		"--executor-binary", "./fake-executor-cdc",
+		"--execute",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("worker-executor cdc execute code = %d, stderr = %s", code, stderr.String())
+	}
+
+	evidence := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-cdc-run.json")
+	if !strings.Contains(evidence, `"stage": "cdc"`) {
+		t.Fatalf("executor evidence = %q, want cdc stage", evidence)
+	}
+	if !strings.Contains(evidence, `"cdc_applied_changes": 2`) {
+		t.Fatalf("executor evidence = %q, want structured CDC applied changes", evidence)
+	}
+	if !strings.Contains(evidence, `applied changes: 2`) {
+		t.Fatalf("executor evidence = %q, want executor output", evidence)
+	}
+	if !strings.Contains(stdout.String(), "wrote evidence/executor-cdc-run.json") {
+		t.Fatalf("worker-executor stdout = %q, want evidence path", stdout.String())
+	}
+}
+
 func TestRunGenerateCDCPlanAndWorkerCDCCommands(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer
@@ -2160,6 +2283,24 @@ func setCLIReviewPlanStatus(t *testing.T, root, stage, status string) {
 	updated := strings.Replace(plan, "status: draft", "status: "+status, 1)
 	if updated == plan {
 		t.Fatalf("plan %s does not contain draft status", path)
+	}
+	if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func setCLICDCPlanLSNRange(t *testing.T, root, fromLSN, toLSN string) {
+	t.Helper()
+	path := filepath.Join(root, "clusters", "prod-sqlserver-a", "projects", "sales-db-to-tidb-prod-a", "plan", "cdc-plan.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := string(data)
+	updated := strings.Replace(plan, `from_lsn: ""`, "from_lsn: "+fromLSN, 1)
+	updated = strings.Replace(updated, `to_lsn: ""`, "to_lsn: "+toLSN, 1)
+	if updated == plan {
+		t.Fatalf("cdc plan %s does not contain empty LSN placeholders", path)
 	}
 	if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
 		t.Fatal(err)

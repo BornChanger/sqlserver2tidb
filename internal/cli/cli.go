@@ -691,26 +691,32 @@ func runWorkerExecutor(args []string, stdout, stderr io.Writer) int {
 		cmd := exec.Command(args[0], args[1:]...)
 		cmd.Dir = *root
 		startedAt := time.Now().UTC()
-		output, err := cmd.CombinedOutput()
+		output, commandErr := cmd.CombinedOutput()
 		completedAt := time.Now().UTC()
 		if len(output) > 0 {
 			fmt.Fprint(stdout, string(output))
 		}
+		cdcAppliedChanges, parseErr := workerExecutorCDCAppliedChanges(spec.Stage, string(output))
+		if parseErr != nil {
+			fmt.Fprintf(stderr, "worker executor: command %s: %v\n", command.ID, parseErr)
+			return 1
+		}
 		results = append(results, workerExecutorRunCommandEvidence{
-			ID:           command.ID,
-			Args:         args,
-			ShellCommand: renderArgsForEvidence(args),
-			ExitCode:     exitCodeForCommandError(err),
-			Output:       string(output),
-			StartedAt:    startedAt.Format(time.RFC3339Nano),
-			CompletedAt:  completedAt.Format(time.RFC3339Nano),
-			DurationMs:   completedAt.Sub(startedAt).Milliseconds(),
+			ID:                command.ID,
+			Args:              args,
+			ShellCommand:      renderArgsForEvidence(args),
+			ExitCode:          exitCodeForCommandError(commandErr),
+			Output:            string(output),
+			StartedAt:         startedAt.Format(time.RFC3339Nano),
+			CompletedAt:       completedAt.Format(time.RFC3339Nano),
+			DurationMs:        completedAt.Sub(startedAt).Milliseconds(),
+			CDCAppliedChanges: cdcAppliedChanges,
 		})
-		if err != nil {
+		if commandErr != nil {
 			if _, evidenceErr := writeWorkerExecutorRunEvidence(*root, spec, "failed", results); evidenceErr != nil {
 				fmt.Fprintf(stderr, "worker executor: %v\n", evidenceErr)
 			}
-			fmt.Fprintf(stderr, "worker executor: command %s failed: %v\n", command.ID, err)
+			fmt.Fprintf(stderr, "worker executor: command %s failed: %v\n", command.ID, commandErr)
 			return 1
 		}
 	}
@@ -727,14 +733,15 @@ func runWorkerExecutor(args []string, stdout, stderr io.Writer) int {
 }
 
 type workerExecutorRunCommandEvidence struct {
-	ID           string   `json:"id"`
-	Args         []string `json:"args"`
-	ShellCommand string   `json:"shell_command"`
-	ExitCode     int      `json:"exit_code"`
-	Output       string   `json:"output"`
-	StartedAt    string   `json:"started_at"`
-	CompletedAt  string   `json:"completed_at"`
-	DurationMs   int64    `json:"duration_ms"`
+	ID                string   `json:"id"`
+	Args              []string `json:"args"`
+	ShellCommand      string   `json:"shell_command"`
+	ExitCode          int      `json:"exit_code"`
+	Output            string   `json:"output"`
+	StartedAt         string   `json:"started_at"`
+	CompletedAt       string   `json:"completed_at"`
+	DurationMs        int64    `json:"duration_ms"`
+	CDCAppliedChanges *int     `json:"cdc_applied_changes,omitempty"`
 }
 
 type workerExecutorRunEvidence struct {
@@ -781,6 +788,25 @@ func exitCodeForCommandError(err error) int {
 
 func renderArgsForEvidence(args []string) string {
 	return strings.Join(args, " ")
+}
+
+func workerExecutorCDCAppliedChanges(stage, output string) (*int, error) {
+	if stage != "cdc" {
+		return nil, nil
+	}
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "applied changes:") {
+			continue
+		}
+		value := strings.TrimSpace(strings.TrimPrefix(line, "applied changes:"))
+		appliedChanges, err := strconv.Atoi(value)
+		if err != nil || appliedChanges < 0 {
+			return nil, fmt.Errorf("CDC applied changes output %q must contain a non-negative integer", line)
+		}
+		return &appliedChanges, nil
+	}
+	return nil, nil
 }
 
 func withExternalExecutorExecuteFlag(args []string) []string {

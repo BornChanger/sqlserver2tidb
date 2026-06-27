@@ -42,13 +42,14 @@ type executorEvidenceSummary struct {
 }
 
 type executorEvidenceCommandSummary struct {
-	ID           string   `json:"id"`
-	Args         []string `json:"args"`
-	ShellCommand string   `json:"shell_command"`
-	ExitCode     *int     `json:"exit_code"`
-	StartedAt    string   `json:"started_at"`
-	CompletedAt  string   `json:"completed_at"`
-	DurationMs   *int64   `json:"duration_ms"`
+	ID                string   `json:"id"`
+	Args              []string `json:"args"`
+	ShellCommand      string   `json:"shell_command"`
+	ExitCode          *int     `json:"exit_code"`
+	StartedAt         string   `json:"started_at"`
+	CompletedAt       string   `json:"completed_at"`
+	DurationMs        *int64   `json:"duration_ms"`
+	CDCAppliedChanges *int     `json:"cdc_applied_changes"`
 }
 
 func GenerateExecutorEvidencePRDraft(root, sourceClusterID, projectID, stage string) (ExecutorEvidencePRDraft, error) {
@@ -272,6 +273,9 @@ func validateExecutorEvidenceCommands(status string, commands []executorEvidence
 		if *command.DurationMs < 0 {
 			return fmt.Errorf("executor evidence command %s duration_ms must be non-negative", commandID)
 		}
+		if command.CDCAppliedChanges != nil && *command.CDCAppliedChanges < 0 {
+			return fmt.Errorf("executor evidence command %s cdc_applied_changes must be non-negative", commandID)
+		}
 	}
 	if strings.TrimSpace(status) == "failed" && !hasFailedCommand {
 		return fmt.Errorf("executor evidence status failed requires at least one non-zero command exit_code")
@@ -368,12 +372,35 @@ func renderExecutorEvidencePRDraftMarkdown(ctx executorEvidencePRContext, draft 
 
 func writeExecutorEvidenceCommandTable(b *strings.Builder, commands []executorEvidenceCommandSummary) {
 	b.WriteString("\n## Executor Commands\n\n")
-	b.WriteString("| Command ID | Exit code | Started at | Completed at | Duration ms |\n")
-	b.WriteString("| --- | ---: | --- | --- | ---: |\n")
+	includeCDC := executorEvidenceTableIncludesCDCAppliedChanges(commands)
+	if includeCDC {
+		b.WriteString("| Command ID | Exit code | Started at | Completed at | Duration ms | CDC applied changes |\n")
+		b.WriteString("| --- | ---: | --- | --- | ---: | ---: |\n")
+	} else {
+		b.WriteString("| Command ID | Exit code | Started at | Completed at | Duration ms |\n")
+		b.WriteString("| --- | ---: | --- | --- | ---: |\n")
+	}
 	for _, command := range commands {
 		duration := ""
 		if command.DurationMs != nil {
 			duration = fmt.Sprintf("%d", *command.DurationMs)
+		}
+		if includeCDC {
+			cdcAppliedChanges := ""
+			if command.CDCAppliedChanges != nil {
+				cdcAppliedChanges = fmt.Sprintf("%d", *command.CDCAppliedChanges)
+			}
+			fmt.Fprintf(
+				b,
+				"| %s | %d | %s | %s | %s | %s |\n",
+				escapeMarkdownTableCell(command.ID),
+				*command.ExitCode,
+				escapeMarkdownTableCell(command.StartedAt),
+				escapeMarkdownTableCell(command.CompletedAt),
+				duration,
+				cdcAppliedChanges,
+			)
+			continue
 		}
 		fmt.Fprintf(
 			b,
@@ -385,6 +412,15 @@ func writeExecutorEvidenceCommandTable(b *strings.Builder, commands []executorEv
 			duration,
 		)
 	}
+}
+
+func executorEvidenceTableIncludesCDCAppliedChanges(commands []executorEvidenceCommandSummary) bool {
+	for _, command := range commands {
+		if command.CDCAppliedChanges != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func escapeMarkdownTableCell(value string) string {
