@@ -622,6 +622,7 @@ type cdcPlanSummary struct {
 type cdcTrackedTableState struct {
 	SourceObject   string
 	TargetObject   string
+	Columns        []string
 	KeyColumns     []string
 	ApplyBatchSize int
 }
@@ -649,6 +650,14 @@ func readCDCPlanSummary(path string) (cdcPlanSummary, error) {
 		case strings.HasPrefix(trimmed, "target_object:") && len(plan.Tables) > 0:
 			plan.Tables[len(plan.Tables)-1].TargetObject = trimYAMLScalar(strings.TrimPrefix(trimmed, "target_object:"))
 			listKey = ""
+		case strings.HasPrefix(trimmed, "columns:") && len(plan.Tables) > 0:
+			listKey = "cdc.columns"
+			if trimYAMLScalar(strings.TrimPrefix(trimmed, "columns:")) == "[]" {
+				plan.Tables[len(plan.Tables)-1].Columns = nil
+				listKey = ""
+			}
+		case strings.HasPrefix(trimmed, "- ") && listKey == "cdc.columns" && len(plan.Tables) > 0:
+			plan.Tables[len(plan.Tables)-1].Columns = append(plan.Tables[len(plan.Tables)-1].Columns, trimYAMLScalar(strings.TrimPrefix(trimmed, "- ")))
 		case strings.HasPrefix(trimmed, "key_columns:") && len(plan.Tables) > 0:
 			listKey = "cdc.key_columns"
 			if trimYAMLScalar(strings.TrimPrefix(trimmed, "key_columns:")) == "[]" {
@@ -694,6 +703,21 @@ func validateCDCPlanSummaryForExecution(plan cdcPlanSummary, requireKeyColumns b
 		if table.ApplyBatchSize <= 0 {
 			return fmt.Errorf("cdc tracked table %s apply_batch_size must be positive", table.SourceObject)
 		}
+		if requireKeyColumns && len(table.Columns) == 0 {
+			return fmt.Errorf("cdc tracked table %s columns is required for execution", table.SourceObject)
+		}
+		seenColumns := map[string]struct{}{}
+		for _, column := range table.Columns {
+			column = strings.TrimSpace(column)
+			if column == "" {
+				return fmt.Errorf("cdc tracked table %s columns contains an empty column", table.SourceObject)
+			}
+			normalized := strings.ToLower(column)
+			if _, ok := seenColumns[normalized]; ok {
+				return fmt.Errorf("cdc tracked table %s columns contains duplicate column %s", table.SourceObject, column)
+			}
+			seenColumns[normalized] = struct{}{}
+		}
 		if requireKeyColumns && len(table.KeyColumns) == 0 {
 			return fmt.Errorf("cdc tracked table %s key_columns is required for execution", table.SourceObject)
 		}
@@ -706,6 +730,11 @@ func validateCDCPlanSummaryForExecution(plan cdcPlanSummary, requireKeyColumns b
 			normalized := strings.ToLower(column)
 			if _, ok := seenKeyColumns[normalized]; ok {
 				return fmt.Errorf("cdc tracked table %s key_columns contains duplicate column %s", table.SourceObject, column)
+			}
+			if requireKeyColumns {
+				if _, ok := seenColumns[normalized]; !ok {
+					return fmt.Errorf("cdc tracked table %s key column %s is not present in columns", table.SourceObject, column)
+				}
 			}
 			seenKeyColumns[normalized] = struct{}{}
 		}

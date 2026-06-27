@@ -2321,6 +2321,9 @@ mode: sqlserver-cdc
 tracked_tables:
   - source_object: sales.dbo.orders
     target_object: app.orders
+    columns:
+      - id
+      - customer_name
     key_columns: []
     apply_batch_size: 1000
 `)
@@ -2343,11 +2346,17 @@ mode: sqlserver-cdc
 tracked_tables:
   - source_object: sales.dbo.orders
     target_object: app.orders
+    columns:
+      - id
+      - customer_name
     key_columns:
       - id
     apply_batch_size: 1000
   - source_object: sales.dbo.orders
     target_object: app.orders_copy
+    columns:
+      - id
+      - customer_name
     key_columns:
       - id
     apply_batch_size: 1000
@@ -3830,6 +3839,8 @@ func TestGenerateCDCPlanWritesProjectCDCPlan(t *testing.T) {
 	assertContains(t, plan, "tracked_tables:")
 	assertContains(t, plan, "source_object: sales.dbo.orders")
 	assertContains(t, plan, "target_object: app.orders")
+	assertContains(t, plan, "columns:")
+	assertContains(t, plan, "- customer_name")
 	assertContains(t, plan, "key_columns:")
 	assertContains(t, plan, "- id")
 	assertContains(t, plan, "apply_batch_size: 1000")
@@ -4476,6 +4487,59 @@ func TestPrepareWorkerExecutorRejectsEmptyCDCPlan(t *testing.T) {
 	assertContains(t, err.Error(), "cdc plan contains no tracked tables")
 }
 
+func TestPrepareWorkerExecutorRejectsCDCPlanWithoutColumns(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/cdc-plan.yaml", `status: reviewed
+mode: sqlserver-cdc
+tracked_tables:
+  - source_object: sales.dbo.orders
+    target_object: app.orders
+    key_columns:
+      - id
+    apply_batch_size: 1000
+`)
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "cdc")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(cdc) error = %v", err)
+	}
+	writeStageApproval(t, root, "cdc", hash)
+
+	_, err = PrepareWorkerExecutor(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "cdc", WorkerExecutorPrepareSpec{})
+	if err == nil {
+		t.Fatal("PrepareWorkerExecutor() expected missing cdc columns error")
+	}
+	assertContains(t, err.Error(), "cdc tracked table sales.dbo.orders columns is required for execution")
+}
+
+func TestPrepareWorkerExecutorRejectsCDCKeyColumnOutsideColumns(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/cdc-plan.yaml", `status: reviewed
+mode: sqlserver-cdc
+tracked_tables:
+  - source_object: sales.dbo.orders
+    target_object: app.orders
+    columns:
+      - id
+      - customer_name
+    key_columns:
+      - tenant_id
+    apply_batch_size: 1000
+`)
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "cdc")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(cdc) error = %v", err)
+	}
+	writeStageApproval(t, root, "cdc", hash)
+
+	_, err = PrepareWorkerExecutor(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "cdc", WorkerExecutorPrepareSpec{})
+	if err == nil {
+		t.Fatal("PrepareWorkerExecutor() expected key column outside columns error")
+	}
+	assertContains(t, err.Error(), "cdc tracked table sales.dbo.orders key column tenant_id is not present in columns")
+}
+
 func TestPrepareWorkerExecutorBuildsCDCCommandsWhenApprovedHashMatches(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
@@ -4501,8 +4565,10 @@ func TestPrepareWorkerExecutorBuildsCDCCommandsWhenApprovedHashMatches(t *testin
 	assertContains(t, first.ShellCommand, "sqlserver2tidb-executor cdc")
 	assertContains(t, first.ShellCommand, "--source-object sales.dbo.orders")
 	assertContains(t, first.ShellCommand, "--target-object app.orders")
+	assertContains(t, first.ShellCommand, "--columns 'id,customer_name'")
 	assertContains(t, first.ShellCommand, "--key-columns id")
 	assertContains(t, first.ShellCommand, "--apply-batch-size 1000")
+	assertArgValue(t, first.Args, "--columns", "id,customer_name")
 	assertArgValue(t, first.Args, "--key-columns", "id")
 }
 

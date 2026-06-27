@@ -710,6 +710,7 @@ func TestRunCDCDryRunCommand(t *testing.T) {
 		"--project-id", "sales-db-to-tidb-prod-a",
 		"--source-object", "sales.dbo.orders",
 		"--target-object", "app.orders",
+		"--columns", "id,customer_name",
 		"--key-columns", "id",
 		"--apply-batch-size", "1000",
 	}, &stdout, &stderr)
@@ -720,6 +721,7 @@ func TestRunCDCDryRunCommand(t *testing.T) {
 	assertOutputContains(t, output, "executor cdc dry run")
 	assertOutputContains(t, output, "source object: sales.dbo.orders")
 	assertOutputContains(t, output, "target object: app.orders")
+	assertOutputContains(t, output, "columns: id,customer_name")
 	assertOutputContains(t, output, "key columns: id")
 	assertOutputContains(t, output, "apply batch size: 1000")
 	assertOutputContains(t, output, "No CDC reader or TiDB apply worker will be started.")
@@ -736,6 +738,7 @@ func TestRunCDCExecuteRequiresSourceConnectionStringEnv(t *testing.T) {
 		"--project-id", "sales-db-to-tidb-prod-a",
 		"--source-object", "sales.dbo.orders",
 		"--target-object", "app.orders",
+		"--columns", "id,customer_name",
 		"--key-columns", "id",
 		"--apply-batch-size", "1000",
 		"--source-connection-string-env", "MISSING_SQLSERVER_CDC_DSN",
@@ -759,6 +762,7 @@ func TestRunCDCExecuteRequiresTargetConnectionStringEnv(t *testing.T) {
 		"--project-id", "sales-db-to-tidb-prod-a",
 		"--source-object", "sales.dbo.orders",
 		"--target-object", "app.orders",
+		"--columns", "id,customer_name",
 		"--key-columns", "id",
 		"--apply-batch-size", "1000",
 		"--source-connection-string-env", "SQLSERVER_CDC_TEST_DSN",
@@ -768,6 +772,46 @@ func TestRunCDCExecuteRequiresTargetConnectionStringEnv(t *testing.T) {
 		t.Fatalf("cdc execute code = 0, want non-zero")
 	}
 	assertOutputContains(t, stderr.String(), "executor cdc: target connection string env MISSING_TIDB_APPLY_DSN is not set")
+}
+
+func TestRunCDCRejectsMissingColumns(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"cdc",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--source-object", "sales.dbo.orders",
+		"--target-object", "app.orders",
+		"--key-columns", "id",
+		"--apply-batch-size", "1000",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatal("cdc code = 0, want missing columns error")
+	}
+	assertOutputContains(t, stderr.String(), "executor cdc: columns is required")
+}
+
+func TestRunCDCExecuteRejectsKeyColumnOutsideColumns(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"cdc",
+		"--execute",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--source-object", "sales.dbo.orders",
+		"--target-object", "app.orders",
+		"--columns", "id,customer_name",
+		"--key-columns", "tenant_id",
+		"--apply-batch-size", "1000",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatal("cdc execute code = 0, want key column outside columns error")
+	}
+	assertOutputContains(t, stderr.String(), "executor cdc: CDC key column tenant_id is not present in captured columns")
 }
 
 func TestBuildTiDBCDCUpsertStatementQuotesTargetAndSkipsKeyUpdates(t *testing.T) {

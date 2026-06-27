@@ -24,6 +24,7 @@ type CDCPlanResult struct {
 type cdcTrackedTablePlan struct {
 	SourceObject   string
 	TargetObject   string
+	Columns        []string
 	KeyColumns     []string
 	ApplyBatchSize int
 }
@@ -104,9 +105,22 @@ func buildCDCTrackedTablePlan(project projectMetadata, databaseName, schemaName 
 	return cdcTrackedTablePlan{
 		SourceObject:   joinObject(databaseName, schemaName, table.Name),
 		TargetObject:   joinObject(project.TargetDatabase, targetTable),
+		Columns:        chooseCDCCapturedColumns(table),
 		KeyColumns:     chooseCDCKeyColumns(table),
 		ApplyBatchSize: spec.ApplyBatchSize,
 	}
+}
+
+func chooseCDCCapturedColumns(table SQLServerTable) []string {
+	columns := make([]string, 0, len(table.Columns))
+	for _, column := range table.Columns {
+		name := strings.TrimSpace(column.Name)
+		if name == "" || column.Computed {
+			continue
+		}
+		columns = append(columns, name)
+	}
+	return columns
 }
 
 func chooseCDCKeyColumns(table SQLServerTable) []string {
@@ -146,6 +160,14 @@ func renderCDCPlanYAML(sourceClusterID string, project projectMetadata, spec CDC
 	for _, table := range tables {
 		fmt.Fprintf(&b, "  - source_object: %s\n", table.SourceObject)
 		fmt.Fprintf(&b, "    target_object: %s\n", table.TargetObject)
+		if len(table.Columns) == 0 {
+			b.WriteString("    columns: []\n")
+		} else {
+			b.WriteString("    columns:\n")
+			for _, column := range table.Columns {
+				fmt.Fprintf(&b, "      - %s\n", column)
+			}
+		}
 		if len(table.KeyColumns) == 0 {
 			b.WriteString("    key_columns: []\n")
 		} else {
