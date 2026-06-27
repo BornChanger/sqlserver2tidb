@@ -247,12 +247,14 @@ func validateClusterDir(root, clusterRel string, report *ValidationReport) {
 	}
 	clusterMetadataRel := filepath.ToSlash(filepath.Join(clusterRel, "cluster.yaml"))
 	clusterMetadataPath := filepath.Join(root, filepath.FromSlash(clusterMetadataRel))
+	var clusterMeta *clusterMetadata
 	if info, err := os.Stat(clusterMetadataPath); err == nil && !info.IsDir() {
 		expectedClusterID := filepath.Base(filepath.FromSlash(clusterRel))
 		meta, err := readClusterMetadata(clusterMetadataPath)
 		if err != nil {
 			report.addError(fmt.Sprintf("invalid cluster metadata %s: %v", clusterMetadataRel, err))
 		} else {
+			clusterMeta = &meta
 			if err := validateClusterMetadata(meta, expectedClusterID); err != nil {
 				report.addError(fmt.Sprintf("invalid cluster metadata %s: %v", clusterMetadataRel, err))
 			}
@@ -274,7 +276,7 @@ func validateClusterDir(root, clusterRel string, report *ValidationReport) {
 			}
 		}
 	}
-	validateProjects(root, filepath.ToSlash(filepath.Join(clusterRel, "projects")), report)
+	validateProjects(root, filepath.ToSlash(filepath.Join(clusterRel, "projects")), clusterMeta, report)
 }
 
 func validateClusterMetadataContent(path, expectedClusterID string) error {
@@ -332,7 +334,7 @@ func validateSourceClusterOwnedYAMLContent(path string, cluster clusterMetadata)
 	return nil
 }
 
-func validateProjects(root, projectsRel string, report *ValidationReport) {
+func validateProjects(root, projectsRel string, cluster *clusterMetadata, report *ValidationReport) {
 	projectsDir := filepath.Join(root, filepath.FromSlash(projectsRel))
 	entries, err := os.ReadDir(projectsDir)
 	if err != nil {
@@ -365,11 +367,11 @@ func validateProjects(root, projectsRel string, report *ValidationReport) {
 		for _, rel := range requiredProjectFiles {
 			report.requireFile(root, filepath.ToSlash(filepath.Join(projectRel, rel)))
 		}
-		validateProjectContent(root, projectRel, report)
+		validateProjectContent(root, projectRel, cluster, report)
 	}
 }
 
-func validateProjectContent(root, projectRel string, report *ValidationReport) {
+func validateProjectContent(root, projectRel string, cluster *clusterMetadata, report *ValidationReport) {
 	projectMetadataRel := filepath.ToSlash(filepath.Join(projectRel, "project.yaml"))
 	projectMetadataPath := filepath.Join(root, filepath.FromSlash(projectMetadataRel))
 	var projectMeta projectMetadata
@@ -443,7 +445,11 @@ func validateProjectContent(root, projectRel string, report *ValidationReport) {
 	cdcPlanRel := filepath.ToSlash(filepath.Join(projectRel, "plan", "cdc-plan.yaml"))
 	cdcPlanPath := filepath.Join(root, filepath.FromSlash(cdcPlanRel))
 	if info, err := os.Stat(cdcPlanPath); err == nil && !info.IsDir() {
-		if err := validateCDCPlanContent(cdcPlanPath); err != nil {
+		var projectForCDC *projectMetadata
+		if projectMetaLoaded {
+			projectForCDC = &projectMeta
+		}
+		if err := validateCDCPlanContent(cdcPlanPath, projectForCDC, cluster); err != nil {
 			report.addError(fmt.Sprintf("invalid cdc plan %s: %v", cdcPlanRel, err))
 		}
 	}
@@ -736,7 +742,10 @@ func validateImportPlanExportDependencies(exportPlanPath, importPlanPath string)
 	return nil
 }
 
-func validateCDCPlanContent(path string) error {
+func validateCDCPlanContent(path string, project *projectMetadata, cluster *clusterMetadata) error {
+	if err := validateCDCPlanMetadataContent(path, project, cluster); err != nil {
+		return err
+	}
 	plan, err := readCDCPlanSummary(path)
 	if err != nil {
 		return err
@@ -745,6 +754,43 @@ func validateCDCPlanContent(path string) error {
 		return nil
 	}
 	return validateCDCPlanSummary(plan)
+}
+
+func validateCDCPlanMetadataContent(path string, project *projectMetadata, cluster *clusterMetadata) error {
+	projectID, err := readPlanTopLevelScalar(path, "project_id")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(projectID) != "" && project != nil && projectID != project.ProjectID {
+		return fmt.Errorf("project_id %q does not match project metadata %q", projectID, project.ProjectID)
+	}
+
+	sourceClusterID, err := readPlanTopLevelScalar(path, "source_cluster_id")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(sourceClusterID) != "" && project != nil && sourceClusterID != project.SourceClusterID {
+		return fmt.Errorf("source_cluster_id %q does not match project metadata %q", sourceClusterID, project.SourceClusterID)
+	}
+
+	mode, err := readPlanTopLevelScalar(path, "mode")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(mode) != "" && cluster != nil && mode != cluster.CDCMode {
+		return fmt.Errorf("mode %q does not match cluster cdc mode %q", mode, cluster.CDCMode)
+	}
+
+	const expectedCheckpointFile = "../../../state/cdc-checkpoint.yaml"
+	checkpointFile, err := readPlanTopLevelScalar(path, "checkpoint_file")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(checkpointFile) != "" && checkpointFile != expectedCheckpointFile {
+		return fmt.Errorf("checkpoint_file %q does not match %q", checkpointFile, expectedCheckpointFile)
+	}
+
+	return nil
 }
 
 func validateValidationPlanContent(path string) error {

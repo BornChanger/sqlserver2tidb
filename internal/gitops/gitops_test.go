@@ -620,6 +620,60 @@ func TestValidateRepoReportsMigrationPlanMetadataMismatch(t *testing.T) {
 	}
 }
 
+func TestValidateRepoReportsCDCPlanMetadataMismatch(t *testing.T) {
+	tests := []struct {
+		name      string
+		oldValue  string
+		newValue  string
+		wantError string
+	}{
+		{
+			name:      "project_id",
+			oldValue:  "project_id: sales-db-to-tidb-prod-a",
+			newValue:  "project_id: inventory-db-to-tidb-prod-a",
+			wantError: `invalid cdc plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/cdc-plan.yaml: project_id "inventory-db-to-tidb-prod-a" does not match project metadata "sales-db-to-tidb-prod-a"`,
+		},
+		{
+			name:      "source_cluster_id",
+			oldValue:  "source_cluster_id: prod-sqlserver-a",
+			newValue:  "source_cluster_id: prod-sqlserver-b",
+			wantError: `invalid cdc plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/cdc-plan.yaml: source_cluster_id "prod-sqlserver-b" does not match project metadata "prod-sqlserver-a"`,
+		},
+		{
+			name:      "mode",
+			oldValue:  "mode: sqlserver-cdc",
+			newValue:  "mode: custom-cdc",
+			wantError: `invalid cdc plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/cdc-plan.yaml: mode "custom-cdc" does not match cluster cdc mode "sqlserver-cdc"`,
+		},
+		{
+			name:      "checkpoint_file",
+			oldValue:  "checkpoint_file: ../../../state/cdc-checkpoint.yaml",
+			newValue:  "checkpoint_file: state/cdc-checkpoint.yaml",
+			wantError: `invalid cdc plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/cdc-plan.yaml: checkpoint_file "state/cdc-checkpoint.yaml" does not match "../../../state/cdc-checkpoint.yaml"`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			createValidationWorkerProject(t, root, dataWorkerInventory())
+			must(t, GenerateCDCPlanOnly(root))
+			planRel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/cdc-plan.yaml"
+			planYAML := readFile(t, root, planRel)
+			planYAML = strings.Replace(planYAML, tt.oldValue, tt.newValue, 1)
+			writeFileForTest(t, root, planRel, planYAML)
+
+			report, err := ValidateRepo(root)
+			if err != nil {
+				t.Fatalf("ValidateRepo() error = %v", err)
+			}
+			if report.Valid {
+				t.Fatal("ValidateRepo() valid = true, want cdc plan metadata mismatch")
+			}
+			assertContains(t, strings.Join(report.Errors, "\n"), tt.wantError)
+		})
+	}
+}
+
 func TestValidateRepoReportsProjectStateMetadataMismatch(t *testing.T) {
 	tests := []struct {
 		name      string
