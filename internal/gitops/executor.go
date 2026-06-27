@@ -91,7 +91,7 @@ func PrepareWorkerExecutor(root, sourceClusterID, projectID, stage string, spec 
 		}
 		result.Commands = commands
 	case "cdc":
-		commands, err := prepareCDCExecutorCommands(projectDir, binary, sourceClusterID, projectID)
+		commands, err := prepareCDCExecutorCommands(projectDir, binary, sourceClusterID, projectID, spec)
 		if err != nil {
 			return WorkerExecutorSpec{}, err
 		}
@@ -229,7 +229,7 @@ func prepareImportExecutorCommands(projectDir, binary, sourceClusterID, projectI
 	return commands, nil
 }
 
-func prepareCDCExecutorCommands(projectDir, binary, sourceClusterID, projectID string) ([]WorkerExecutorCommand, error) {
+func prepareCDCExecutorCommands(projectDir, binary, sourceClusterID, projectID string, spec WorkerExecutorPrepareSpec) ([]WorkerExecutorCommand, error) {
 	plan, err := readCDCPlanSummary(filepath.Join(projectDir, "plan", "cdc-plan.yaml"))
 	if err != nil {
 		return nil, err
@@ -237,6 +237,8 @@ func prepareCDCExecutorCommands(projectDir, binary, sourceClusterID, projectID s
 	if err := validateCDCPlanSummary(plan); err != nil {
 		return nil, err
 	}
+	sourceConnectionStringEnv := strings.TrimSpace(spec.SourceConnectionStringEnv)
+	targetConnectionStringEnv := strings.TrimSpace(spec.TargetConnectionStringEnv)
 	commands := make([]WorkerExecutorCommand, 0, len(plan.Tables))
 	for _, table := range plan.Tables {
 		args := []string{
@@ -247,6 +249,12 @@ func prepareCDCExecutorCommands(projectDir, binary, sourceClusterID, projectID s
 			"--source-object", table.SourceObject,
 			"--target-object", table.TargetObject,
 			"--apply-batch-size", strconv.Itoa(table.ApplyBatchSize),
+		}
+		if sourceConnectionStringEnv != "" {
+			args = append(args, "--source-connection-string-env", sourceConnectionStringEnv)
+		}
+		if targetConnectionStringEnv != "" {
+			args = append(args, "--target-connection-string-env", targetConnectionStringEnv)
 		}
 		commands = append(commands, newWorkerExecutorCommand(binary, table.SourceObject, args))
 	}

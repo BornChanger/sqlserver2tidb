@@ -1625,13 +1625,11 @@ func runCDC(args []string, stdout, stderr io.Writer) int {
 	sourceObject := fs.String("source-object", "", "source object")
 	targetObject := fs.String("target-object", "", "target object")
 	applyBatchSize := fs.Int("apply-batch-size", 0, "apply batch size")
+	sourceConnectionStringEnv := fs.String("source-connection-string-env", defaultSourceConnectionStringEnv, "environment variable containing the SQL Server CDC connection string")
+	targetConnectionStringEnv := fs.String("target-connection-string-env", defaultTargetConnectionStringEnv, "environment variable containing the TiDB/MySQL connection string")
 	execute := fs.Bool("execute", false, "perform CDC apply; not implemented in this adapter")
 	if err := fs.Parse(args); err != nil {
 		return 2
-	}
-	if *execute {
-		fmt.Fprintln(stderr, "executor cdc: --execute is not implemented yet")
-		return 1
 	}
 	if err := requireFields("executor cdc",
 		field{"source cluster id", *sourceClusterID},
@@ -1646,6 +1644,17 @@ func runCDC(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "executor cdc: apply batch size must be positive")
 		return 1
 	}
+	if *execute {
+		if err := executeCDCApply(context.Background(), cdcExecuteSpec{
+			SourceConnectionStringEnv: *sourceConnectionStringEnv,
+			TargetConnectionStringEnv: *targetConnectionStringEnv,
+		}); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "executor cdc completed: %s -> %s\n", *sourceObject, *targetObject)
+		return 0
+	}
 
 	fmt.Fprintln(stdout, "executor cdc dry run")
 	fmt.Fprintf(stdout, "root: %s\n", *root)
@@ -1656,6 +1665,34 @@ func runCDC(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "apply batch size: %s\n", strconv.Itoa(*applyBatchSize))
 	fmt.Fprintln(stdout, "No CDC reader or TiDB apply worker will be started.")
 	return 0
+}
+
+type cdcExecuteSpec struct {
+	SourceConnectionStringEnv string
+	TargetConnectionStringEnv string
+}
+
+func executeCDCApply(ctx context.Context, spec cdcExecuteSpec) error {
+	_ = ctx
+	sourceEnvName := strings.TrimSpace(spec.SourceConnectionStringEnv)
+	if sourceEnvName == "" {
+		sourceEnvName = defaultSourceConnectionStringEnv
+	}
+	sourceConnectionString := strings.TrimSpace(os.Getenv(sourceEnvName))
+	if sourceConnectionString == "" {
+		return fmt.Errorf("executor cdc: source connection string env %s is not set", sourceEnvName)
+	}
+
+	targetEnvName := strings.TrimSpace(spec.TargetConnectionStringEnv)
+	if targetEnvName == "" {
+		targetEnvName = defaultTargetConnectionStringEnv
+	}
+	targetConnectionString := strings.TrimSpace(os.Getenv(targetEnvName))
+	if targetConnectionString == "" {
+		return fmt.Errorf("executor cdc: target connection string env %s is not set", targetEnvName)
+	}
+
+	return fmt.Errorf("executor cdc: apply loop is not implemented yet")
 }
 
 type field struct {

@@ -709,6 +709,49 @@ func TestRunCDCDryRunCommand(t *testing.T) {
 	assertOutputContains(t, output, "No CDC reader or TiDB apply worker will be started.")
 }
 
+func TestRunCDCExecuteRequiresSourceConnectionStringEnv(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"cdc",
+		"--execute",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--source-object", "sales.dbo.orders",
+		"--target-object", "app.orders",
+		"--apply-batch-size", "1000",
+		"--source-connection-string-env", "MISSING_SQLSERVER_CDC_DSN",
+		"--target-connection-string-env", "MISSING_TIDB_APPLY_DSN",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("cdc execute code = 0, want non-zero")
+	}
+	assertOutputContains(t, stderr.String(), "executor cdc: source connection string env MISSING_SQLSERVER_CDC_DSN is not set")
+}
+
+func TestRunCDCExecuteRequiresTargetConnectionStringEnv(t *testing.T) {
+	t.Setenv("SQLSERVER_CDC_TEST_DSN", "sqlserver://readonly:secret@localhost?database=sales")
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"cdc",
+		"--execute",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--source-object", "sales.dbo.orders",
+		"--target-object", "app.orders",
+		"--apply-batch-size", "1000",
+		"--source-connection-string-env", "SQLSERVER_CDC_TEST_DSN",
+		"--target-connection-string-env", "MISSING_TIDB_APPLY_DSN",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("cdc execute code = 0, want non-zero")
+	}
+	assertOutputContains(t, stderr.String(), "executor cdc: target connection string env MISSING_TIDB_APPLY_DSN is not set")
+}
+
 func TestRunExportRequiresChunkID(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 

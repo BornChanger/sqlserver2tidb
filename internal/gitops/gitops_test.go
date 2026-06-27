@@ -4476,6 +4476,30 @@ func TestPrepareWorkerExecutorBuildsCDCCommandsWhenApprovedHashMatches(t *testin
 	assertContains(t, first.ShellCommand, "--apply-batch-size 1000")
 }
 
+func TestPrepareWorkerExecutorAddsCDCConnectionStringEnv(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateCDCPlanOnly(root))
+	setReviewPlanStatus(t, root, "cdc", "reviewed")
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "cdc")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(cdc) error = %v", err)
+	}
+	writeStageApproval(t, root, "cdc", hash)
+
+	spec, err := PrepareWorkerExecutor(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "cdc", WorkerExecutorPrepareSpec{
+		SourceConnectionStringEnv: "SQLSERVER_CDC_DSN",
+		TargetConnectionStringEnv: "TIDB_APPLY_DSN",
+	})
+	if err != nil {
+		t.Fatalf("PrepareWorkerExecutor() error = %v", err)
+	}
+	assertContains(t, spec.Commands[0].ShellCommand, "--source-connection-string-env SQLSERVER_CDC_DSN")
+	assertContains(t, spec.Commands[0].ShellCommand, "--target-connection-string-env TIDB_APPLY_DSN")
+	assertArgValue(t, spec.Commands[0].Args, "--source-connection-string-env", "SQLSERVER_CDC_DSN")
+	assertArgValue(t, spec.Commands[0].Args, "--target-connection-string-env", "TIDB_APPLY_DSN")
+}
+
 func TestPrepareWorkerExecutorBuildsValidationCountCommandsWhenApprovedHashMatches(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
