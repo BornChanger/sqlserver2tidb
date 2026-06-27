@@ -584,6 +584,24 @@ func TestValidateRepoReportsInvalidCDCCheckpointStatus(t *testing.T) {
 	assertContains(t, strings.Join(report.Errors, "\n"), `invalid cluster state clusters/prod-sqlserver-a/state/cdc-checkpoint.yaml: unsupported CDC checkpoint status "replaying"; supported statuses: not_started, planned, running, caught_up, failed`)
 }
 
+func TestValidateRepoReportsInvalidCDCCheckpointPhase(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)
+	rel := "clusters/prod-sqlserver-a/state/cdc-checkpoint.yaml"
+	stateYAML := readFile(t, root, rel)
+	stateYAML = strings.Replace(stateYAML, "checkpoints: []", "phase: export\ncheckpoints: []", 1)
+	writeFileForTest(t, root, rel, stateYAML)
+
+	report, err := ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
+	if report.Valid {
+		t.Fatal("ValidateRepo() valid = true, want invalid CDC checkpoint phase")
+	}
+	assertContains(t, strings.Join(report.Errors, "\n"), `invalid cluster state clusters/prod-sqlserver-a/state/cdc-checkpoint.yaml: CDC checkpoint phase "export" does not match expected phase "cdc"`)
+}
+
 func TestValidateRepoReportsInvalidCDCCheckpointUpdatedAt(t *testing.T) {
 	tests := []struct {
 		name      string

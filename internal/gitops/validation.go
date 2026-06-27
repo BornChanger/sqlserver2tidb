@@ -368,6 +368,9 @@ func validateCDCCheckpointMetadataContent(path string, cluster clusterMetadata) 
 	if err := validateCDCCheckpointMode(path, "mode", cluster); err != nil {
 		return err
 	}
+	if err := validateOptionalCDCCheckpointPhase(path); err != nil {
+		return err
+	}
 	status, err := readPlanTopLevelScalar(path, "status")
 	if err != nil {
 		return err
@@ -377,6 +380,20 @@ func validateCDCCheckpointMetadataContent(path string, cluster clusterMetadata) 
 	}
 	if err := validateCDCCheckpointUpdatedAt(path); err != nil {
 		return err
+	}
+	return nil
+}
+
+func validateOptionalCDCCheckpointPhase(path string) error {
+	phase, err := readPlanTopLevelScalar(path, "phase")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(phase) == "" {
+		return nil
+	}
+	if phase != "cdc" {
+		return fmt.Errorf("CDC checkpoint phase %q does not match expected phase %q", phase, "cdc")
 	}
 	return nil
 }
