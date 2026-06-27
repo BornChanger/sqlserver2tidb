@@ -1137,6 +1137,9 @@ func TestRunGenerateCDCPlanAndWorkerCDCCommands(t *testing.T) {
               "row_count": 2500000,
               "columns": [
                 {"name": "id", "type": "int"}
+              ],
+              "indexes": [
+                {"name": "PK_orders", "columns": ["id"], "unique": true, "primary_key": true}
               ]
             }
           ]

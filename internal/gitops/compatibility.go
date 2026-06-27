@@ -63,6 +63,9 @@ type inventoryColumn struct {
 
 type inventoryIndex struct {
 	Name            string   `json:"name"`
+	Columns         []string `json:"columns,omitempty"`
+	Unique          bool     `json:"unique,omitempty"`
+	PrimaryKey      bool     `json:"primary_key,omitempty"`
 	Filtered        bool     `json:"filtered,omitempty"`
 	IncludedColumns []string `json:"included_columns,omitempty"`
 }

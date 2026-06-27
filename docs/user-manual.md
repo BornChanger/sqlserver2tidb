@@ -52,7 +52,7 @@ LLM 只生成解释、候选方案和文档，不直接执行迁移
 - 生成核心 JSON Schema 文件。
 - 单元测试和 CLI smoke test。
 
-当前 CLI 在执行 `discover-sqlserver --connection-string-env ...` 时会连接 SQL Server，并且只读取 catalog metadata。`sqlserver2tidb-executor apply-ddl --execute` 可以显式连接 TiDB，执行已 review 且不含 `TODO` 的 DDL 文件。`sqlserver2tidb-executor export --execute` 也可以显式连接 SQL Server，把一个已审批的导出 work item 写成本地 `file://` CSV 或 HTTP(S) CSV，例如对象存储预签名 URL；CSV 会带内部 `__sqlserver2tidb_null_bitmap` 尾列，用来保留 SQL NULL。`sqlserver2tidb-executor import --execute` 可以显式连接 TiDB；默认 `--engine sql-insert` 会把本地 `file://` CSV 或 HTTP(S) CSV 逐行写入目标表，并在识别该内部尾列时恢复 NULL；显式 `--engine tidb-import-into` 会执行 TiDB `IMPORT INTO ... FROM FILE`，支持本地路径、`file://`、`s3://`、`gs://` file location，本地/file CSV 会读取 header 并把内部尾列映射成 TiDB user variable 以跳过写入，远端对象存储文件则应使用 import plan 里已 review 的 `fields` 列表。`sqlserver2tidb-executor validate-count --execute` 可以显式同时连接 SQL Server 和 TiDB，对一个源/目标对象做 `COUNT(*)` 对比；`sqlserver2tidb-executor validate-query --execute` 可以执行已 review 的源端/目标端 SQL 标量查询并比较结果，用于 `checksum`、`sampled_hash` 和 `business_sql` 检查项。除此之外，它不会执行原生对象存储 export IO、TiDB Lightning、CDC 回放、切流、自动 checksum 生成或分桶 sampled hash 策略。`discover-sqlserver --dry-run` 只输出计划，不打开数据库连接，也不写 inventory 文件。`analyze-compatibility`、`generate-schema-draft`、`generate-data-plans`、`generate-cdc-plan`、`generate-validation-plan`、`generate-pr-draft`、`create-pr` 的默认 dry-run、`create-worker-state-pr` 的默认 dry-run、`create-executor-evidence-pr` 的默认 dry-run、`worker-executor` 的默认 dry-run、`sqlserver2tidb-executor` 的默认 dry-run、`compute-payload-hash`、`worker-export`、`worker-import`、`worker-cdc`、`worker-validate`、`worker-reconcile --dry-run` 和 `worker-reconcile --execute-next` 只读取并写回或汇报 GitHub metadata 文件。`worker-reconcile --state-pr-draft` 和 `generate-executor-evidence-pr-draft` 只生成 Markdown PR body，不调用 GitHub。`create-pr --execute` 会调用本地 `gh pr create`；`create-worker-state-pr --execute` 和 `create-executor-evidence-pr --execute` 会调用本地 `git` 和 `gh`；`sqlserver2tidb-executor cdc --execute` 当前会先校验源端和目标端连接串环境变量，再返回 apply loop not implemented。
+当前 CLI 在执行 `discover-sqlserver --connection-string-env ...` 时会连接 SQL Server，并且只读取 catalog metadata。`sqlserver2tidb-executor apply-ddl --execute` 可以显式连接 TiDB，执行已 review 且不含 `TODO` 的 DDL 文件。`sqlserver2tidb-executor export --execute` 也可以显式连接 SQL Server，把一个已审批的导出 work item 写成本地 `file://` CSV 或 HTTP(S) CSV，例如对象存储预签名 URL；CSV 会带内部 `__sqlserver2tidb_null_bitmap` 尾列，用来保留 SQL NULL。`sqlserver2tidb-executor import --execute` 可以显式连接 TiDB；默认 `--engine sql-insert` 会把本地 `file://` CSV 或 HTTP(S) CSV 逐行写入目标表，并在识别该内部尾列时恢复 NULL；显式 `--engine tidb-import-into` 会执行 TiDB `IMPORT INTO ... FROM FILE`，支持本地路径、`file://`、`s3://`、`gs://` file location，本地/file CSV 会读取 header 并把内部尾列映射成 TiDB user variable 以跳过写入，远端对象存储文件则应使用 import plan 里已 review 的 `fields` 列表。`sqlserver2tidb-executor validate-count --execute` 可以显式同时连接 SQL Server 和 TiDB，对一个源/目标对象做 `COUNT(*)` 对比；`sqlserver2tidb-executor validate-query --execute` 可以执行已 review 的源端/目标端 SQL 标量查询并比较结果，用于 `checksum`、`sampled_hash` 和 `business_sql` 检查项。除此之外，它不会执行原生对象存储 export IO、TiDB Lightning、CDC 回放、切流、自动 checksum 生成或分桶 sampled hash 策略。`discover-sqlserver --dry-run` 只输出计划，不打开数据库连接，也不写 inventory 文件。`analyze-compatibility`、`generate-schema-draft`、`generate-data-plans`、`generate-cdc-plan`、`generate-validation-plan`、`generate-pr-draft`、`create-pr` 的默认 dry-run、`create-worker-state-pr` 的默认 dry-run、`create-executor-evidence-pr` 的默认 dry-run、`worker-executor` 的默认 dry-run、`sqlserver2tidb-executor` 的默认 dry-run、`compute-payload-hash`、`worker-export`、`worker-import`、`worker-cdc`、`worker-validate`、`worker-reconcile --dry-run` 和 `worker-reconcile --execute-next` 只读取并写回或汇报 GitHub metadata 文件。`worker-reconcile --state-pr-draft` 和 `generate-executor-evidence-pr-draft` 只生成 Markdown PR body，不调用 GitHub。`create-pr --execute` 会调用本地 `gh pr create`；`create-worker-state-pr --execute` 和 `create-executor-evidence-pr --execute` 会调用本地 `git` 和 `gh`；`sqlserver2tidb-executor cdc --execute` 当前会先校验源端/目标端连接串环境变量和 key columns，再返回 apply loop not implemented。
 
 ### 2.2 终极目标
 
@@ -275,7 +275,7 @@ bin/sqlserver2tidb validate-repo --root .
 repository is valid at . (5 dirs, 13 files checked)
 ```
 
-如果缺少必需文件、必需目录、file schema policy 映射，或者 inventory JSON 无法解析或 status 不是 `pending` / `discovered`，或者 cluster/project 目录名与元数据 ID 不一致，或者 `source-profile.yaml`、cluster state、CDC checkpoint mode/phase/status/updated_at、worker lease phase、active worker lease 必需字段、project state phase/status/updated_at、export/import state phase/status/updated_at、validation status state/phase/updated_at、state payload hash、schema diff status/generated_at/summary counts、evidence JSON ownership/status/generated_at、executor evidence JSON、`plan/migration-plan.yaml`、approval 文件中的 `project_id` / `source_cluster_id` / action / mode / status / payload hash 与项目元数据不一致，或者 approval 的 `approved_at` 非空但不是 RFC3339，或者已 approved 的 approval 缺少 reviewer / `payload_hash` / `approved_at`，或者 export/import/CDC/validation plan 缺少 status 或 status 不是 `draft` / `reviewed` / `approved`，或者 export/import/CDC plan 中已有 work item 但缺少执行必需字段，或者 export plan 使用当前 executor 不支持的 `format`，或者 import plan 使用当前 executor 不支持的 `engine`，或者 export chunk / import job / CDC source / validation check 出现重复标识，或者 import job 引用了不存在的 export chunk，或者 import job 的 `source_uri` 与所依赖 export chunk 的 `output_uri` 不一致，或者 export chunk predicate 仍包含 `TODO`，或者 `plan/validation-plan.yaml` 中的 `row_count` / `row-count` 检查项缺少 `id`、`source_object`、`target_object`，或 predicate / target predicate 仍包含 `TODO`，或者 `checksum` / `sampled_hash` / `business_sql` 检查项缺少 `id`、`source_sql`、`target_sql`，或 source_sql / target_sql 仍包含 `TODO`，命令会返回非零退出码，并列出问题。空的 draft plan 列表仍然是合法的初始化状态；`phase: idle` 的 worker lease 可以为空闲占位文件，但 `export`、`import`、`cdc` 或 `validation` 这类 active phase 必须包含非空 `holder`、`lease_id`、`project_id`、`expires_at` 和 `renewed_at`，`project_id` 必须引用同一源集群下已存在的项目目录，两个时间字段必须是 RFC3339，且 `expires_at` 不能早于 `renewed_at`。示例：
+如果缺少必需文件、必需目录、file schema policy 映射，或者 inventory JSON 无法解析或 status 不是 `pending` / `discovered`，或者 cluster/project 目录名与元数据 ID 不一致，或者 `source-profile.yaml`、cluster state、CDC checkpoint mode/phase/status/updated_at、worker lease phase、active worker lease 必需字段、project state phase/status/updated_at、export/import state phase/status/updated_at、validation status state/phase/updated_at、state payload hash、schema diff status/generated_at/summary counts、evidence JSON ownership/status/generated_at、executor evidence JSON、`plan/migration-plan.yaml`、approval 文件中的 `project_id` / `source_cluster_id` / action / mode / status / payload hash 与项目元数据不一致，或者 approval 的 `approved_at` 非空但不是 RFC3339，或者已 approved 的 approval 缺少 reviewer / `payload_hash` / `approved_at`，或者 export/import/CDC/validation plan 缺少 status 或 status 不是 `draft` / `reviewed` / `approved`，或者 export/import/CDC plan 中已有 work item 但缺少执行必需字段，或者 reviewed/approved CDC tracked table 缺少 `key_columns`，或者 export plan 使用当前 executor 不支持的 `format`，或者 import plan 使用当前 executor 不支持的 `engine`，或者 export chunk / import job / CDC source / validation check 出现重复标识，或者 import job 引用了不存在的 export chunk，或者 import job 的 `source_uri` 与所依赖 export chunk 的 `output_uri` 不一致，或者 export chunk predicate 仍包含 `TODO`，或者 `plan/validation-plan.yaml` 中的 `row_count` / `row-count` 检查项缺少 `id`、`source_object`、`target_object`，或 predicate / target predicate 仍包含 `TODO`，或者 `checksum` / `sampled_hash` / `business_sql` 检查项缺少 `id`、`source_sql`、`target_sql`，或 source_sql / target_sql 仍包含 `TODO`，命令会返回非零退出码，并列出问题。空的 draft plan 列表仍然是合法的初始化状态；`phase: idle` 的 worker lease 可以为空闲占位文件，但 `export`、`import`、`cdc` 或 `validation` 这类 active phase 必须包含非空 `holder`、`lease_id`、`project_id`、`expires_at` 和 `renewed_at`，`project_id` 必须引用同一源集群下已存在的项目目录，两个时间字段必须是 RFC3339，且 `expires_at` 不能早于 `renewed_at`。示例：
 
 ```text
 repository validation failed at .:
@@ -847,7 +847,7 @@ bin/sqlserver2tidb generate-cdc-plan \
 
 - `clusters/<source_cluster_id>/projects/<project_id>/plan/cdc-plan.yaml`
 
-当前 `generate-cdc-plan` 只生成追踪表清单和 checkpoint 策略，不启用 SQL Server CDC，不创建 Debezium connector，不读取 LSN，不写 Kafka，也不向 TiDB 回放增量。
+当前 `generate-cdc-plan` 只生成追踪表清单、目标端 apply key columns 和 checkpoint 策略，不启用 SQL Server CDC，不创建 Debezium connector，不读取 LSN，不写 Kafka，也不向 TiDB 回放增量。key columns 优先来自 inventory 中发现的 SQL Server primary key，其次来自非过滤 unique index；如果没有这类索引，会生成 `key_columns: []`，必须人工 review 后补齐才能执行 CDC worker 或 executor。
 
 示例 `plan/cdc-plan.yaml`：
 
@@ -866,6 +866,8 @@ checkpoint_file: ../../../state/cdc-checkpoint.yaml
 tracked_tables:
   - source_object: sales.dbo.orders
     target_object: app.orders
+    key_columns:
+      - id
     apply_batch_size: 1000
     status: draft
 ```
@@ -1072,7 +1074,7 @@ clusters/<source_cluster_id>/state/cdc-checkpoint.yaml
 
 LLM 不参与 LSN 判断，也不参与 offset 决策。
 
-当前 MVP 的 `worker-cdc` 只在 `plan/cdc-plan.yaml` 已经是 `reviewed` 或 `approved`、cdc approval 通过且 payload hash 匹配后，把 `plan/cdc-plan.yaml` 写成 planned 状态和 evidence。它会拒绝 draft CDC plan、没有 tracked tables 或缺少必需字段的 CDC plan。它不启用 SQL Server CDC，不启动 Debezium，不读取 LSN，不判断 catch-up，也不向 TiDB 回放增量。
+当前 MVP 的 `worker-cdc` 只在 `plan/cdc-plan.yaml` 已经是 `reviewed` 或 `approved`、cdc approval 通过且 payload hash 匹配后，把 `plan/cdc-plan.yaml` 写成 planned 状态和 evidence。它会拒绝 draft CDC plan、没有 tracked tables、缺少 `key_columns` 或缺少其他必需字段的 CDC plan。它不启用 SQL Server CDC，不启动 Debezium，不读取 LSN，不判断 catch-up，也不向 TiDB 回放增量。
 
 先计算 cdc payload hash：
 
@@ -1663,7 +1665,7 @@ bin/sqlserver2tidb generate-cdc-plan \
   --apply-batch-size 1000
 ```
 
-该命令读取源集群 inventory 和项目 metadata，写回项目目录下的 `plan/cdc-plan.yaml`。它只生成草稿，不启用 SQL Server CDC，不启动 Debezium，不读取 LSN，不连接 TiDB，也不执行增量回放。`--mode` 默认是 `sqlserver-cdc`，`--retention-hours` 默认是 `168`，`--apply-batch-size` 默认是 `1000`。
+该命令读取源集群 inventory 和项目 metadata，写回项目目录下的 `plan/cdc-plan.yaml`。它只生成草稿，不启用 SQL Server CDC，不启动 Debezium，不读取 LSN，不连接 TiDB，也不执行增量回放。生成的 tracked table 会包含 `key_columns`，优先使用 SQL Server primary key，其次使用非过滤 unique index；缺少可用 key 时会保留空列表等待人工 review。`--mode` 默认是 `sqlserver-cdc`，`--retention-hours` 默认是 `168`，`--apply-batch-size` 默认是 `1000`。
 
 ### 16.9.1 generate-validation-plan
 
@@ -1830,7 +1832,7 @@ bin/sqlserver2tidb worker-executor \
   --target-connection-string-env SQLSERVER2TIDB_TARGET_CONNECTION_STRING
 ```
 
-该命令支持 `ddl`、`export`、`import`、`cdc` 和 `validation`。它复用对应 stage 的 approval/hash gate，只有 approval 通过、payload hash 匹配，且 DDL 的 `schema/schema-diff.json` 已经是 `reviewed`，或 export/import/CDC/validation plan 已经是 `reviewed` 或 `approved` 时才生成执行器命令。默认外部 binary 是 `sqlserver2tidb-executor`，可以通过 `--executor-binary` 覆盖。`--source-connection-string-env`、`--target-connection-string-env` 和 `--import-batch-size` 会被渲染进生成的 executor 命令，不写入 GitHub metadata；import job 里的可选 `fields` 会被透传成 executor 的 `--fields` 参数。默认 dry-run 只打印命令；只有加 `--execute` 才会调用外部 binary，并在 executor 子命令后自动注入 `--execute`，让随仓库提供的 executor 离开 dry-run 模式。执行模式会写回 `evidence/executor-<stage>-run.json`，记录 payload hash、每条命令、输出、exit code、每条命令的开始/结束时间和耗时；如果某条命令失败，会先写 failed evidence，再返回非零退出码。`ddl` stage 会为 `schema/tidb-ddl/*.sql` 生成 `apply-ddl` 命令；审批后的 export/import/CDC plan 如果没有任何 work item，会直接失败；export chunk predicate 如果仍包含 `TODO` 也会失败；export plan 只有 `format: csv` 才会生成当前 executor 命令，import plan 只有 `engine: sql-insert` 或 `engine: tidb-import-into` 才会生成当前 executor 命令；`validation` stage 会为 `row_count` 检查生成 `validate-count` 命令，为 `checksum`、`sampled_hash` 和 `business_sql` 检查生成 `validate-query` 命令，如果审批后的 validation plan 没有任何支持的 row-count、checksum、sampled-hash 或 business-SQL 检查，也会直接失败。当前随仓库提供的 `sqlserver2tidb-executor apply-ddl --execute` 可以把已 review DDL 执行到 TiDB；`export --execute` 支持 SQL Server 到本地 `file://` CSV 或 HTTP(S) CSV，并写入内部 null bitmap 尾列；`import --execute --engine sql-insert` 支持本地 `file://` CSV 或 HTTP(S) CSV 到 TiDB 的流式逐行 insert，并识别该尾列恢复 NULL；`import --execute --engine tidb-import-into` 支持 TiDB `IMPORT INTO ... FROM FILE`，要求目标表已存在且为空，file location 为本地路径、`file://`、`s3://` 或 `gs://`，并可通过 `--fields` 显式传入列名/user variable 列表；`validate-query --execute` 支持单行单列 SQL 标量结果对比；`cdc --execute` 会校验源端/目标端连接串环境变量，随后返回 apply loop not implemented。
+该命令支持 `ddl`、`export`、`import`、`cdc` 和 `validation`。它复用对应 stage 的 approval/hash gate，只有 approval 通过、payload hash 匹配，且 DDL 的 `schema/schema-diff.json` 已经是 `reviewed`，或 export/import/CDC/validation plan 已经是 `reviewed` 或 `approved` 时才生成执行器命令。默认外部 binary 是 `sqlserver2tidb-executor`，可以通过 `--executor-binary` 覆盖。`--source-connection-string-env`、`--target-connection-string-env` 和 `--import-batch-size` 会被渲染进生成的 executor 命令，不写入 GitHub metadata；import job 里的可选 `fields` 会被透传成 executor 的 `--fields` 参数，CDC tracked table 的 `key_columns` 会被透传成 executor 的 `--key-columns` 参数。默认 dry-run 只打印命令；只有加 `--execute` 才会调用外部 binary，并在 executor 子命令后自动注入 `--execute`，让随仓库提供的 executor 离开 dry-run 模式。执行模式会写回 `evidence/executor-<stage>-run.json`，记录 payload hash、每条命令、输出、exit code、每条命令的开始/结束时间和耗时；如果某条命令失败，会先写 failed evidence，再返回非零退出码。`ddl` stage 会为 `schema/tidb-ddl/*.sql` 生成 `apply-ddl` 命令；审批后的 export/import/CDC plan 如果没有任何 work item，会直接失败；审批后的 CDC tracked table 如果没有 `key_columns` 也会失败；export chunk predicate 如果仍包含 `TODO` 也会失败；export plan 只有 `format: csv` 才会生成当前 executor 命令，import plan 只有 `engine: sql-insert` 或 `engine: tidb-import-into` 才会生成当前 executor 命令；`validation` stage 会为 `row_count` 检查生成 `validate-count` 命令，为 `checksum`、`sampled_hash` 和 `business_sql` 检查生成 `validate-query` 命令，如果审批后的 validation plan 没有任何支持的 row-count、checksum、sampled-hash 或 business-SQL 检查，也会直接失败。当前随仓库提供的 `sqlserver2tidb-executor apply-ddl --execute` 可以把已 review DDL 执行到 TiDB；`export --execute` 支持 SQL Server 到本地 `file://` CSV 或 HTTP(S) CSV，并写入内部 null bitmap 尾列；`import --execute --engine sql-insert` 支持本地 `file://` CSV 或 HTTP(S) CSV 到 TiDB 的流式逐行 insert，并识别该尾列恢复 NULL；`import --execute --engine tidb-import-into` 支持 TiDB `IMPORT INTO ... FROM FILE`，要求目标表已存在且为空，file location 为本地路径、`file://`、`s3://` 或 `gs://`，并可通过 `--fields` 显式传入列名/user variable 列表；`validate-query --execute` 支持单行单列 SQL 标量结果对比；`cdc --execute` 会校验源端/目标端连接串环境变量和 key columns，随后返回 apply loop not implemented。
 
 ### 16.18 sqlserver2tidb-executor
 
@@ -2004,6 +2006,7 @@ bin/sqlserver2tidb-executor cdc \
   --project-id sales-db-to-tidb-prod-a \
   --source-object sales.dbo.orders \
   --target-object app.orders \
+  --key-columns id \
   --apply-batch-size 1000
 ```
 

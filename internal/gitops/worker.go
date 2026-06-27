@@ -203,7 +203,7 @@ func RunCDCWorker(root, sourceClusterID, projectID string) (DataWorkerResult, er
 	if err != nil {
 		return DataWorkerResult{}, err
 	}
-	if err := validateCDCPlanSummary(plan); err != nil {
+	if err := validateCDCPlanSummaryForExecution(plan, true); err != nil {
 		return DataWorkerResult{}, err
 	}
 	result := DataWorkerResult{
@@ -622,6 +622,7 @@ type cdcPlanSummary struct {
 type cdcTrackedTableState struct {
 	SourceObject   string
 	TargetObject   string
+	KeyColumns     []string
 	ApplyBatchSize int
 }
 
@@ -631,6 +632,7 @@ func readCDCPlanSummary(path string) (cdcPlanSummary, error) {
 		return cdcPlanSummary{}, fmt.Errorf("read cdc plan: %w", err)
 	}
 	plan := cdcPlanSummary{Mode: "sqlserver-cdc"}
+	listKey := ""
 	for _, raw := range strings.Split(string(data), "\n") {
 		trimmed := strings.TrimSpace(raw)
 		switch {
@@ -643,8 +645,18 @@ func readCDCPlanSummary(path string) (cdcPlanSummary, error) {
 			plan.Tables = append(plan.Tables, cdcTrackedTableState{
 				SourceObject: trimYAMLScalar(strings.TrimPrefix(trimmed, "- source_object:")),
 			})
+			listKey = ""
 		case strings.HasPrefix(trimmed, "target_object:") && len(plan.Tables) > 0:
 			plan.Tables[len(plan.Tables)-1].TargetObject = trimYAMLScalar(strings.TrimPrefix(trimmed, "target_object:"))
+			listKey = ""
+		case strings.HasPrefix(trimmed, "key_columns:") && len(plan.Tables) > 0:
+			listKey = "cdc.key_columns"
+			if trimYAMLScalar(strings.TrimPrefix(trimmed, "key_columns:")) == "[]" {
+				plan.Tables[len(plan.Tables)-1].KeyColumns = nil
+				listKey = ""
+			}
+		case strings.HasPrefix(trimmed, "- ") && listKey == "cdc.key_columns" && len(plan.Tables) > 0:
+			plan.Tables[len(plan.Tables)-1].KeyColumns = append(plan.Tables[len(plan.Tables)-1].KeyColumns, trimYAMLScalar(strings.TrimPrefix(trimmed, "- ")))
 		case strings.HasPrefix(trimmed, "apply_batch_size:") && len(plan.Tables) > 0:
 			value := trimYAMLScalar(strings.TrimPrefix(trimmed, "apply_batch_size:"))
 			batchSize, err := strconv.Atoi(value)
@@ -652,12 +664,17 @@ func readCDCPlanSummary(path string) (cdcPlanSummary, error) {
 				return cdcPlanSummary{}, fmt.Errorf("parse cdc apply_batch_size %q: %w", value, err)
 			}
 			plan.Tables[len(plan.Tables)-1].ApplyBatchSize = batchSize
+			listKey = ""
 		}
 	}
 	return plan, nil
 }
 
 func validateCDCPlanSummary(plan cdcPlanSummary) error {
+	return validateCDCPlanSummaryForExecution(plan, false)
+}
+
+func validateCDCPlanSummaryForExecution(plan cdcPlanSummary, requireKeyColumns bool) error {
 	if len(plan.Tables) == 0 {
 		return fmt.Errorf("cdc plan contains no tracked tables")
 	}
@@ -676,6 +693,21 @@ func validateCDCPlanSummary(plan cdcPlanSummary) error {
 		}
 		if table.ApplyBatchSize <= 0 {
 			return fmt.Errorf("cdc tracked table %s apply_batch_size must be positive", table.SourceObject)
+		}
+		if requireKeyColumns && len(table.KeyColumns) == 0 {
+			return fmt.Errorf("cdc tracked table %s key_columns is required for execution", table.SourceObject)
+		}
+		seenKeyColumns := map[string]struct{}{}
+		for _, column := range table.KeyColumns {
+			column = strings.TrimSpace(column)
+			if column == "" {
+				return fmt.Errorf("cdc tracked table %s key_columns contains an empty column", table.SourceObject)
+			}
+			normalized := strings.ToLower(column)
+			if _, ok := seenKeyColumns[normalized]; ok {
+				return fmt.Errorf("cdc tracked table %s key_columns contains duplicate column %s", table.SourceObject, column)
+			}
+			seenKeyColumns[normalized] = struct{}{}
 		}
 	}
 	return nil

@@ -1624,6 +1624,7 @@ func runCDC(args []string, stdout, stderr io.Writer) int {
 	projectID := fs.String("project-id", "", "migration project id")
 	sourceObject := fs.String("source-object", "", "source object")
 	targetObject := fs.String("target-object", "", "target object")
+	keyColumnsRaw := fs.String("key-columns", "", "comma-separated target key columns for CDC upsert/delete apply")
 	applyBatchSize := fs.Int("apply-batch-size", 0, "apply batch size")
 	sourceConnectionStringEnv := fs.String("source-connection-string-env", defaultSourceConnectionStringEnv, "environment variable containing the SQL Server CDC connection string")
 	targetConnectionStringEnv := fs.String("target-connection-string-env", defaultTargetConnectionStringEnv, "environment variable containing the TiDB/MySQL connection string")
@@ -1640,6 +1641,11 @@ func runCDC(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
+	keyColumns, err := parseCDCKeyColumns(*keyColumnsRaw)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
 	if *applyBatchSize <= 0 {
 		fmt.Fprintln(stderr, "executor cdc: apply batch size must be positive")
 		return 1
@@ -1648,6 +1654,7 @@ func runCDC(args []string, stdout, stderr io.Writer) int {
 		if err := executeCDCApply(context.Background(), cdcExecuteSpec{
 			SourceConnectionStringEnv: *sourceConnectionStringEnv,
 			TargetConnectionStringEnv: *targetConnectionStringEnv,
+			KeyColumns:                keyColumns,
 		}); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
@@ -1662,6 +1669,7 @@ func runCDC(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "project: %s\n", *projectID)
 	fmt.Fprintf(stdout, "source object: %s\n", *sourceObject)
 	fmt.Fprintf(stdout, "target object: %s\n", *targetObject)
+	fmt.Fprintf(stdout, "key columns: %s\n", strings.Join(keyColumns, ","))
 	fmt.Fprintf(stdout, "apply batch size: %s\n", strconv.Itoa(*applyBatchSize))
 	fmt.Fprintln(stdout, "No CDC reader or TiDB apply worker will be started.")
 	return 0
@@ -1670,10 +1678,14 @@ func runCDC(args []string, stdout, stderr io.Writer) int {
 type cdcExecuteSpec struct {
 	SourceConnectionStringEnv string
 	TargetConnectionStringEnv string
+	KeyColumns                []string
 }
 
 func executeCDCApply(ctx context.Context, spec cdcExecuteSpec) error {
 	_ = ctx
+	if len(spec.KeyColumns) == 0 {
+		return fmt.Errorf("executor cdc: key columns is required")
+	}
 	sourceEnvName := strings.TrimSpace(spec.SourceConnectionStringEnv)
 	if sourceEnvName == "" {
 		sourceEnvName = defaultSourceConnectionStringEnv
@@ -1693,6 +1705,29 @@ func executeCDCApply(ctx context.Context, spec cdcExecuteSpec) error {
 	}
 
 	return fmt.Errorf("executor cdc: apply loop is not implemented yet")
+}
+
+func parseCDCKeyColumns(raw string) ([]string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, fmt.Errorf("executor cdc: key columns is required")
+	}
+	parts := strings.Split(raw, ",")
+	columns := make([]string, 0, len(parts))
+	seenColumns := map[string]struct{}{}
+	for _, part := range parts {
+		column := strings.TrimSpace(part)
+		if column == "" {
+			return nil, fmt.Errorf("executor cdc: key columns contains an empty item")
+		}
+		normalized := strings.ToLower(column)
+		if _, ok := seenColumns[normalized]; ok {
+			return nil, fmt.Errorf("executor cdc: key columns contains duplicate column %s", column)
+		}
+		seenColumns[normalized] = struct{}{}
+		columns = append(columns, column)
+	}
+	return columns, nil
 }
 
 type field struct {
@@ -1724,6 +1759,6 @@ Usage:
   sqlserver2tidb-executor validate-count --execute --source-connection-string-env SQLSERVER2TIDB_SOURCE_CONNECTION_STRING --target-connection-string-env SQLSERVER2TIDB_TARGET_CONNECTION_STRING --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --source-object sales.dbo.orders --target-object app.orders
   sqlserver2tidb-executor validate-query --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --check-id orders-total --source-sql "SELECT SUM(total) FROM sales.dbo.orders" --target-sql "SELECT SUM(total) FROM app.orders"
   sqlserver2tidb-executor validate-query --execute --source-connection-string-env SQLSERVER2TIDB_SOURCE_CONNECTION_STRING --target-connection-string-env SQLSERVER2TIDB_TARGET_CONNECTION_STRING --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --check-id orders-total --source-sql "SELECT SUM(total) FROM sales.dbo.orders" --target-sql "SELECT SUM(total) FROM app.orders"
-  sqlserver2tidb-executor cdc --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --source-object sales.dbo.orders --target-object app.orders --apply-batch-size 1000
+  sqlserver2tidb-executor cdc --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --source-object sales.dbo.orders --target-object app.orders --key-columns id --apply-batch-size 1000
 `)
 }

@@ -1393,7 +1393,12 @@ func validateCDCPlanContent(path string, project *projectMetadata, cluster *clus
 	if len(plan.Tables) == 0 {
 		return nil
 	}
-	return validateCDCPlanSummary(plan)
+	status, err := readPlanTopLevelScalar(path, "status")
+	if err != nil {
+		return err
+	}
+	requireKeyColumns := status == "reviewed" || status == "approved"
+	return validateCDCPlanSummaryForExecution(plan, requireKeyColumns)
 }
 
 func validateCDCPlanMetadataContent(path string, project *projectMetadata, cluster *clusterMetadata) error {

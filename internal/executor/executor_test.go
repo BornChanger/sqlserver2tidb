@@ -696,6 +696,7 @@ func TestRunCDCDryRunCommand(t *testing.T) {
 		"--project-id", "sales-db-to-tidb-prod-a",
 		"--source-object", "sales.dbo.orders",
 		"--target-object", "app.orders",
+		"--key-columns", "id",
 		"--apply-batch-size", "1000",
 	}, &stdout, &stderr)
 	if code != 0 {
@@ -705,6 +706,7 @@ func TestRunCDCDryRunCommand(t *testing.T) {
 	assertOutputContains(t, output, "executor cdc dry run")
 	assertOutputContains(t, output, "source object: sales.dbo.orders")
 	assertOutputContains(t, output, "target object: app.orders")
+	assertOutputContains(t, output, "key columns: id")
 	assertOutputContains(t, output, "apply batch size: 1000")
 	assertOutputContains(t, output, "No CDC reader or TiDB apply worker will be started.")
 }
@@ -720,6 +722,7 @@ func TestRunCDCExecuteRequiresSourceConnectionStringEnv(t *testing.T) {
 		"--project-id", "sales-db-to-tidb-prod-a",
 		"--source-object", "sales.dbo.orders",
 		"--target-object", "app.orders",
+		"--key-columns", "id",
 		"--apply-batch-size", "1000",
 		"--source-connection-string-env", "MISSING_SQLSERVER_CDC_DSN",
 		"--target-connection-string-env", "MISSING_TIDB_APPLY_DSN",
@@ -742,6 +745,7 @@ func TestRunCDCExecuteRequiresTargetConnectionStringEnv(t *testing.T) {
 		"--project-id", "sales-db-to-tidb-prod-a",
 		"--source-object", "sales.dbo.orders",
 		"--target-object", "app.orders",
+		"--key-columns", "id",
 		"--apply-batch-size", "1000",
 		"--source-connection-string-env", "SQLSERVER_CDC_TEST_DSN",
 		"--target-connection-string-env", "MISSING_TIDB_APPLY_DSN",

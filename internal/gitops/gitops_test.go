@@ -2313,6 +2313,28 @@ tracked_tables:
 	assertContains(t, strings.Join(report.Errors, "\n"), "invalid cdc plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/cdc-plan.yaml: cdc tracked table sales.dbo.orders apply_batch_size must be positive")
 }
 
+func TestValidateRepoReportsMissingCDCKeyColumnsForReviewedPlan(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/cdc-plan.yaml", `status: reviewed
+mode: sqlserver-cdc
+tracked_tables:
+  - source_object: sales.dbo.orders
+    target_object: app.orders
+    key_columns: []
+    apply_batch_size: 1000
+`)
+
+	report, err := ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("ValidateRepo() valid = true, want false")
+	}
+	assertContains(t, strings.Join(report.Errors, "\n"), "invalid cdc plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/cdc-plan.yaml: cdc tracked table sales.dbo.orders key_columns is required for execution")
+}
+
 func TestValidateRepoReportsDuplicateCDCTrackedTable(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
@@ -2321,9 +2343,13 @@ mode: sqlserver-cdc
 tracked_tables:
   - source_object: sales.dbo.orders
     target_object: app.orders
+    key_columns:
+      - id
     apply_batch_size: 1000
   - source_object: sales.dbo.orders
     target_object: app.orders_copy
+    key_columns:
+      - id
     apply_batch_size: 1000
 `)
 
@@ -3804,6 +3830,8 @@ func TestGenerateCDCPlanWritesProjectCDCPlan(t *testing.T) {
 	assertContains(t, plan, "tracked_tables:")
 	assertContains(t, plan, "source_object: sales.dbo.orders")
 	assertContains(t, plan, "target_object: app.orders")
+	assertContains(t, plan, "key_columns:")
+	assertContains(t, plan, "- id")
 	assertContains(t, plan, "apply_batch_size: 1000")
 	assertContains(t, plan, "checkpoint_scope: source-cluster")
 	assertContains(t, plan, "checkpoint_file: ../../../state/cdc-checkpoint.yaml")
@@ -4473,7 +4501,9 @@ func TestPrepareWorkerExecutorBuildsCDCCommandsWhenApprovedHashMatches(t *testin
 	assertContains(t, first.ShellCommand, "sqlserver2tidb-executor cdc")
 	assertContains(t, first.ShellCommand, "--source-object sales.dbo.orders")
 	assertContains(t, first.ShellCommand, "--target-object app.orders")
+	assertContains(t, first.ShellCommand, "--key-columns id")
 	assertContains(t, first.ShellCommand, "--apply-batch-size 1000")
+	assertArgValue(t, first.Args, "--key-columns", "id")
 }
 
 func TestPrepareWorkerExecutorAddsCDCConnectionStringEnv(t *testing.T) {
@@ -5923,6 +5953,9 @@ func dataWorkerInventory() string {
               "columns": [
                 {"name": "id", "type": "int"},
                 {"name": "customer_name", "type": "nvarchar"}
+              ],
+              "indexes": [
+                {"name": "PK_orders", "columns": ["id"], "unique": true, "primary_key": true}
               ]
             }
           ]

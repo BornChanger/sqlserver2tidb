@@ -24,6 +24,7 @@ type CDCPlanResult struct {
 type cdcTrackedTablePlan struct {
 	SourceObject   string
 	TargetObject   string
+	KeyColumns     []string
 	ApplyBatchSize int
 }
 
@@ -103,8 +104,23 @@ func buildCDCTrackedTablePlan(project projectMetadata, databaseName, schemaName 
 	return cdcTrackedTablePlan{
 		SourceObject:   joinObject(databaseName, schemaName, table.Name),
 		TargetObject:   joinObject(project.TargetDatabase, targetTable),
+		KeyColumns:     chooseCDCKeyColumns(table),
 		ApplyBatchSize: spec.ApplyBatchSize,
 	}
+}
+
+func chooseCDCKeyColumns(table SQLServerTable) []string {
+	for _, index := range table.Indexes {
+		if index.PrimaryKey && !index.Filtered && len(index.Columns) > 0 {
+			return append([]string(nil), index.Columns...)
+		}
+	}
+	for _, index := range table.Indexes {
+		if index.Unique && !index.Filtered && len(index.Columns) > 0 {
+			return append([]string(nil), index.Columns...)
+		}
+	}
+	return nil
 }
 
 func renderCDCPlanYAML(sourceClusterID string, project projectMetadata, spec CDCPlanSpec, tables []cdcTrackedTablePlan) string {
@@ -130,6 +146,14 @@ func renderCDCPlanYAML(sourceClusterID string, project projectMetadata, spec CDC
 	for _, table := range tables {
 		fmt.Fprintf(&b, "  - source_object: %s\n", table.SourceObject)
 		fmt.Fprintf(&b, "    target_object: %s\n", table.TargetObject)
+		if len(table.KeyColumns) == 0 {
+			b.WriteString("    key_columns: []\n")
+		} else {
+			b.WriteString("    key_columns:\n")
+			for _, column := range table.KeyColumns {
+				fmt.Fprintf(&b, "      - %s\n", column)
+			}
+		}
 		fmt.Fprintf(&b, "    apply_batch_size: %d\n", table.ApplyBatchSize)
 		b.WriteString("    status: draft\n")
 	}

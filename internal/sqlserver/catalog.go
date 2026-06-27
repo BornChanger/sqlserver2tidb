@@ -129,7 +129,7 @@ ORDER BY s.name, t.name, c.column_id`)
 
 func (reader *CatalogReader) loadIndexes(ctx context.Context, acc *inventoryAccumulator) error {
 	rows, err := reader.db.QueryContext(ctx, `
-SELECT s.name AS schema_name, t.name AS table_name, i.name AS index_name, i.has_filter,
+SELECT s.name AS schema_name, t.name AS table_name, i.name AS index_name, i.is_unique, i.is_primary_key, i.has_filter,
        c.name AS column_name, ic.is_included_column
 FROM sys.indexes AS i
 JOIN sys.tables AS t ON t.object_id = i.object_id
@@ -143,26 +143,37 @@ ORDER BY s.name, t.name, i.name, ic.key_ordinal, ic.index_column_id`)
 	}
 	defer rows.Close()
 
-	indexes := map[string]*gitops.SQLServerIndex{}
+	indexPositions := map[string]int{}
 	for rows.Next() {
 		var schemaName, tableName, indexName string
-		var hasFilter bool
+		var unique, primaryKey, hasFilter bool
 		var columnName sql.NullString
 		var included bool
-		if err := rows.Scan(&schemaName, &tableName, &indexName, &hasFilter, &columnName, &included); err != nil {
+		if err := rows.Scan(&schemaName, &tableName, &indexName, &unique, &primaryKey, &hasFilter, &columnName, &included); err != nil {
 			return fmt.Errorf("scan index: %w", err)
 		}
 		table := acc.ensureTable(schemaName, tableName)
 		key := schemaName + "." + tableName + "." + indexName
-		index := indexes[key]
-		if index == nil {
-			table.Indexes = append(table.Indexes, gitops.SQLServerIndex{Name: indexName, Filtered: hasFilter})
-			index = &table.Indexes[len(table.Indexes)-1]
-			indexes[key] = index
+		indexPosition, ok := indexPositions[key]
+		if !ok {
+			table.Indexes = append(table.Indexes, gitops.SQLServerIndex{
+				Name:       indexName,
+				Unique:     unique,
+				PrimaryKey: primaryKey,
+				Filtered:   hasFilter,
+			})
+			indexPosition = len(table.Indexes) - 1
+			indexPositions[key] = indexPosition
 		}
-		if included && columnName.Valid {
+		index := &table.Indexes[indexPosition]
+		if !columnName.Valid {
+			continue
+		}
+		if included {
 			index.IncludedColumns = append(index.IncludedColumns, columnName.String)
+			continue
 		}
+		index.Columns = append(index.Columns, columnName.String)
 	}
 	return rows.Err()
 }
