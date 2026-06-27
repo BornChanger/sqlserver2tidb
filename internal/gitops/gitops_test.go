@@ -584,6 +584,44 @@ func TestValidateRepoReportsInvalidCDCCheckpointStatus(t *testing.T) {
 	assertContains(t, strings.Join(report.Errors, "\n"), `invalid cluster state clusters/prod-sqlserver-a/state/cdc-checkpoint.yaml: unsupported CDC checkpoint status "replaying"; supported statuses: not_started, planned, running, caught_up, failed`)
 }
 
+func TestValidateRepoReportsInvalidCDCCheckpointUpdatedAt(t *testing.T) {
+	tests := []struct {
+		name      string
+		newValue  string
+		wantError string
+	}{
+		{
+			name:      "missing",
+			newValue:  `updated_at: ""`,
+			wantError: "CDC checkpoint updated_at is required",
+		},
+		{
+			name:      "invalid",
+			newValue:  `updated_at: "not-a-time"`,
+			wantError: "CDC checkpoint updated_at must be RFC3339",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)
+			rel := "clusters/prod-sqlserver-a/state/cdc-checkpoint.yaml"
+			stateYAML := readFile(t, root, rel)
+			stateYAML = replaceTopLevelLineForTest(t, stateYAML, "updated_at", tt.newValue)
+			writeFileForTest(t, root, rel, stateYAML)
+
+			report, err := ValidateRepo(root)
+			if err != nil {
+				t.Fatalf("ValidateRepo() error = %v", err)
+			}
+			if report.Valid {
+				t.Fatal("ValidateRepo() valid = true, want invalid CDC checkpoint updated_at")
+			}
+			assertContains(t, strings.Join(report.Errors, "\n"), "invalid cluster state "+rel+": "+tt.wantError)
+		})
+	}
+}
+
 func TestValidateRepoReportsInvalidWorkerLeasePhase(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)
@@ -4233,6 +4271,20 @@ func writeFileForTest(t *testing.T, root, rel, content string) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func replaceTopLevelLineForTest(t *testing.T, content, key, replacement string) string {
+	t.Helper()
+	prefix := key + ":"
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		if strings.HasPrefix(line, prefix) {
+			lines[i] = replacement
+			return strings.Join(lines, "\n")
+		}
+	}
+	t.Fatalf("top-level key %q not found in content:\n%s", key, content)
+	return content
 }
 
 func createValidationWorkerProject(t *testing.T, root, inventory string) {

@@ -375,6 +375,9 @@ func validateCDCCheckpointMetadataContent(path string, cluster clusterMetadata) 
 	if !isSupportedCDCCheckpointStatus(status) {
 		return fmt.Errorf("unsupported CDC checkpoint status %q; supported statuses: not_started, planned, running, caught_up, failed", status)
 	}
+	if err := validateCDCCheckpointUpdatedAt(path); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -396,6 +399,20 @@ func isSupportedCDCCheckpointStatus(status string) bool {
 	default:
 		return false
 	}
+}
+
+func validateCDCCheckpointUpdatedAt(path string) error {
+	updatedAt, err := readPlanTopLevelScalar(path, "updated_at")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(updatedAt) == "" {
+		return errors.New("CDC checkpoint updated_at is required")
+	}
+	if _, err := time.Parse(time.RFC3339, updatedAt); err != nil {
+		return errors.New("CDC checkpoint updated_at must be RFC3339")
+	}
+	return nil
 }
 
 func validateWorkerLeaseMetadataContent(path string, cluster clusterMetadata) error {
