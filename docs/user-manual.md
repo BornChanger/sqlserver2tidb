@@ -275,7 +275,7 @@ bin/sqlserver2tidb validate-repo --root .
 repository is valid at . (5 dirs, 13 files checked)
 ```
 
-如果缺少必需文件、必需目录、file schema policy 映射，或者 inventory JSON 无法解析，或者 cluster/project 目录名与元数据 ID 不一致，或者 `source-profile.yaml`、cluster state、CDC checkpoint mode/status/updated_at、worker lease phase、active worker lease 必需字段、project state phase/status/updated_at、export/import state phase/status/updated_at、validation status state/updated_at、schema diff、evidence JSON、executor evidence JSON、`plan/migration-plan.yaml`、approval 文件中的 `project_id` / `source_cluster_id` / action / mode / status / payload hash 与项目元数据不一致，或者 export/import/CDC plan 中已有 work item 但缺少执行必需字段，或者 export plan 使用当前 executor 不支持的 `format`，或者 import plan 使用当前 executor 不支持的 `engine`，或者 export chunk / import job / CDC source / validation check 出现重复标识，或者 import job 引用了不存在的 export chunk，或者 import job 的 `source_uri` 与所依赖 export chunk 的 `output_uri` 不一致，或者 export chunk predicate 仍包含 `TODO`，或者 `plan/validation-plan.yaml` 中的 `row_count` / `row-count` 检查项缺少 `id`、`source_object`、`target_object`，或 predicate / target predicate 仍包含 `TODO`，命令会返回非零退出码，并列出问题。空的 draft plan 列表仍然是合法的初始化状态；`phase: idle` 的 worker lease 可以为空闲占位文件，但 `export`、`import`、`cdc` 或 `validation` 这类 active phase 必须包含非空 `holder`、`lease_id`、`expires_at` 和 `renewed_at`，两个时间字段必须是 RFC3339，且 `expires_at` 不能早于 `renewed_at`。示例：
+如果缺少必需文件、必需目录、file schema policy 映射，或者 inventory JSON 无法解析，或者 cluster/project 目录名与元数据 ID 不一致，或者 `source-profile.yaml`、cluster state、CDC checkpoint mode/status/updated_at、worker lease phase、active worker lease 必需字段、project state phase/status/updated_at、export/import state phase/status/updated_at、validation status state/phase/updated_at、schema diff、evidence JSON、executor evidence JSON、`plan/migration-plan.yaml`、approval 文件中的 `project_id` / `source_cluster_id` / action / mode / status / payload hash 与项目元数据不一致，或者 export/import/CDC plan 中已有 work item 但缺少执行必需字段，或者 export plan 使用当前 executor 不支持的 `format`，或者 import plan 使用当前 executor 不支持的 `engine`，或者 export chunk / import job / CDC source / validation check 出现重复标识，或者 import job 引用了不存在的 export chunk，或者 import job 的 `source_uri` 与所依赖 export chunk 的 `output_uri` 不一致，或者 export chunk predicate 仍包含 `TODO`，或者 `plan/validation-plan.yaml` 中的 `row_count` / `row-count` 检查项缺少 `id`、`source_object`、`target_object`，或 predicate / target predicate 仍包含 `TODO`，命令会返回非零退出码，并列出问题。空的 draft plan 列表仍然是合法的初始化状态；`phase: idle` 的 worker lease 可以为空闲占位文件，但 `export`、`import`、`cdc` 或 `validation` 这类 active phase 必须包含非空 `holder`、`lease_id`、`expires_at` 和 `renewed_at`，两个时间字段必须是 RFC3339，且 `expires_at` 不能早于 `renewed_at`。示例：
 
 ```text
 repository validation failed at .:
@@ -400,7 +400,7 @@ clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/
 
 `state/migration-state.yaml` 的 `phase` 只接受 `planning`、`ddl`、`export`、`import`、`cdc`、`validation`、`cutover` 或 `completed`；`status` 只接受 `not_started`、`planned`、`running`、`completed` 或 `failed`；`updated_at` 必须非空并使用 RFC3339。
 `state/export-chunks.yaml` 和 `state/import-jobs.yaml` 如果存在顶层 `phase`，必须分别是 `export` 和 `import`；如果存在顶层 `status`，目前只接受 `planned`；如果存在 `updated_at`，它必须使用 RFC3339。
-`state/validation-status.yaml` 的 `status` 只接受 `pending`、`passed` 或 `failed`；如果存在 `updated_at`，它必须使用 RFC3339。
+`state/validation-status.yaml` 的 `status` 只接受 `pending`、`passed` 或 `failed`；如果存在顶层 `phase`，它必须是 `validation`；如果存在 `updated_at`，它必须使用 RFC3339。
 
 如果 `clusters/<source_cluster_id>/projects/<project_id>/` 已存在，命令会失败，不会覆盖已有项目状态文件。
 

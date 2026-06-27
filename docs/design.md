@@ -231,7 +231,7 @@ clusters/<source_cluster_id>/projects/<project_id>/
 A project represents one independently planned, approved, validated, and cut-over migration unit.
 The project-local `state/migration-state.yaml` phase is restricted to `planning`, `ddl`, `export`, `import`, `cdc`, `validation`, `cutover`, or `completed`; status is restricted to `not_started`, `planned`, `running`, `completed`, or `failed`; `updated_at` must be non-empty RFC3339.
 The project-local `state/export-chunks.yaml` and `state/import-jobs.yaml` phase and status fields are optional during initialization. When present, phase must match `export` and `import` respectively, status must be `planned`, and `updated_at` must be RFC3339.
-The project-local `state/validation-status.yaml` status is restricted to `pending`, `passed`, or `failed`; when present, `updated_at` must be RFC3339.
+The project-local `state/validation-status.yaml` status is restricted to `pending`, `passed`, or `failed`; its optional phase must be `validation`, and when present `updated_at` must be RFC3339.
 
 ## Schema Draft Generation
 
