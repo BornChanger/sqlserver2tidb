@@ -535,20 +535,34 @@ func readImportPlanJobs(path string) ([]dataImportJobState, error) {
 		return nil, fmt.Errorf("read import plan: %w", err)
 	}
 	var jobs []dataImportJobState
+	collectingFields := false
 	for _, raw := range strings.Split(string(data), "\n") {
 		trimmed := strings.TrimSpace(raw)
 		switch {
 		case strings.HasPrefix(trimmed, "- id:"):
+			collectingFields = false
 			jobs = append(jobs, dataImportJobState{
 				ID:     trimYAMLScalar(strings.TrimPrefix(trimmed, "- id:")),
 				Status: "planned",
 			})
 		case strings.HasPrefix(trimmed, "target_object:") && len(jobs) > 0:
+			collectingFields = false
 			jobs[len(jobs)-1].TargetObject = trimYAMLScalar(strings.TrimPrefix(trimmed, "target_object:"))
 		case strings.HasPrefix(trimmed, "source_uri:") && len(jobs) > 0:
+			collectingFields = false
 			jobs[len(jobs)-1].SourceURI = trimYAMLScalar(strings.TrimPrefix(trimmed, "source_uri:"))
 		case strings.HasPrefix(trimmed, "depends_on_export_chunk:") && len(jobs) > 0:
+			collectingFields = false
 			jobs[len(jobs)-1].DependsOnExportChunk = trimYAMLScalar(strings.TrimPrefix(trimmed, "depends_on_export_chunk:"))
+		case strings.HasPrefix(trimmed, "fields:") && len(jobs) > 0:
+			collectingFields = true
+		case collectingFields && strings.HasPrefix(trimmed, "- ") && len(jobs) > 0:
+			field := trimYAMLScalar(strings.TrimPrefix(trimmed, "- "))
+			if field != "" {
+				jobs[len(jobs)-1].Fields = append(jobs[len(jobs)-1].Fields, field)
+			}
+		case trimmed != "":
+			collectingFields = false
 		}
 	}
 	return jobs, nil
@@ -597,6 +611,7 @@ type dataImportJobState struct {
 	SourceURI            string
 	DependsOnExportChunk string
 	Status               string
+	Fields               []string
 }
 
 type cdcPlanSummary struct {

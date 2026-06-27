@@ -40,6 +40,7 @@ func TestInitRepoCreatesGlobalStructure(t *testing.T) {
 
 	importSchema := readFile(t, root, "global/schemas/import-plan.schema.json")
 	assertContains(t, importSchema, `"engine": {"enum": ["sql-insert", "tidb-import-into", "import-into"]}`)
+	assertContains(t, importSchema, `"fields": {`)
 }
 
 func TestCreateClusterCreatesUpstreamSQLServerClusterDirectory(t *testing.T) {
@@ -3726,6 +3727,7 @@ func TestGenerateDataMovementPlansSupportsTiDBImportIntoEngine(t *testing.T) {
 	importPlan := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml")
 	assertContains(t, importPlan, "engine: tidb-import-into")
 	assertContains(t, importPlan, "source_uri: file:///tmp/sqlserver2tidb/full/dbo.orders.000001.csv")
+	assertContains(t, importPlan, "fields:\n      - \"id\"\n      - \"customer_name\"\n      - \"@sqlserver2tidb_null_bitmap\"")
 }
 
 func TestGenerateDataMovementPlansRejectsHTTPPrefixForTiDBImportIntoEngine(t *testing.T) {
@@ -4248,6 +4250,36 @@ func TestPrepareWorkerExecutorBuildsTiDBImportIntoCommandsWhenApprovedHashMatche
 	assertContains(t, first.ShellCommand, "--engine tidb-import-into")
 	assertContains(t, first.ShellCommand, "--job-id import-dbo.orders.000001")
 	assertContains(t, first.ShellCommand, "--target-object app.orders")
+}
+
+func TestPrepareWorkerExecutorPassesImportJobFields(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateSchemaDraftOnly(root))
+	must(t, GenerateDataPlansOnly(root))
+	importPlanRel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml"
+	importPlan := readFile(t, root, importPlanRel)
+	importPlan = strings.Replace(importPlan, "engine: sql-insert", "engine: tidb-import-into", 1)
+	importPlan = strings.Replace(importPlan,
+		"    source_uri: https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full/dbo.orders.000001.csv\n",
+		"    source_uri: https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full/dbo.orders.000001.csv\n    fields:\n      - id\n      - name\n      - \"@sqlserver2tidb_null_bitmap\"\n",
+		1,
+	)
+	writeFileForTest(t, root, importPlanRel, importPlan)
+	setReviewPlanStatus(t, root, "import", "reviewed")
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(import) error = %v", err)
+	}
+	writeStageApproval(t, root, "import", hash)
+
+	spec, err := PrepareWorkerExecutor(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import", WorkerExecutorPrepareSpec{})
+	if err != nil {
+		t.Fatalf("PrepareWorkerExecutor() error = %v", err)
+	}
+	first := spec.Commands[0]
+	assertContains(t, first.ShellCommand, "--fields 'id,name,@sqlserver2tidb_null_bitmap'")
+	assertArgValue(t, first.Args, "--fields", "id,name,@sqlserver2tidb_null_bitmap")
 }
 
 func TestPrepareWorkerExecutorRejectsUnsupportedImportEngine(t *testing.T) {
@@ -5651,6 +5683,19 @@ func assertStringSliceContains(t *testing.T, got []string, want string) {
 		}
 	}
 	t.Fatalf("expected slice to contain %q\nslice:\n%v", want, got)
+}
+
+func assertArgValue(t *testing.T, args []string, name, want string) {
+	t.Helper()
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == name {
+			if args[i+1] != want {
+				t.Fatalf("arg %s = %q, want %q\nargs:\n%v", name, args[i+1], want, args)
+			}
+			return
+		}
+	}
+	t.Fatalf("arg %s not found\nargs:\n%v", name, args)
 }
 
 func assertFindingCode(t *testing.T, findings []CompatibilityFinding, code string) {

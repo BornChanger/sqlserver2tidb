@@ -248,6 +248,28 @@ func TestRunImportDryRunIncludesImportEngine(t *testing.T) {
 	assertOutputContains(t, output, "engine: tidb-import-into")
 }
 
+func TestRunImportDryRunIncludesFields(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"import",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--job-id", "import-dbo.orders.000001",
+		"--target-object", "app.orders",
+		"--source-uri", "s3://migration/prod/full/dbo.orders.000001.csv",
+		"--engine", "tidb-import-into",
+		"--fields", "id,name,@sqlserver2tidb_null_bitmap",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("import dry-run code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	assertOutputContains(t, output, "executor import dry run")
+	assertOutputContains(t, output, "fields: id,name,@sqlserver2tidb_null_bitmap")
+}
+
 func TestExecuteTiDBImportValidatesBatchSizeBeforeSourceURI(t *testing.T) {
 	err := executeTiDBImport(context.Background(), importExecuteSpec{
 		TargetObject:              "app.orders",

@@ -238,7 +238,11 @@ approval_required:
           "id": {"type": "string", "minLength": 1},
           "target_object": {"type": "string", "minLength": 1},
           "source_uri": {"type": "string", "minLength": 1},
-          "depends_on_export_chunk": {"type": "string", "minLength": 1}
+          "depends_on_export_chunk": {"type": "string", "minLength": 1},
+          "fields": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1}
+          }
         },
         "additionalProperties": true
       }

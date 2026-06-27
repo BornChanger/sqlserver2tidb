@@ -8,6 +8,8 @@ import (
 	"strings"
 )
 
+const importIntoNullBitmapField = "@sqlserver2tidb_null_bitmap"
+
 type DataMovementPlanSpec struct {
 	ObjectURIPrefix string
 	ChunkSizeRows   int64
@@ -44,6 +46,7 @@ type dataImportJobPlan struct {
 	TargetObject         string
 	SourceURI            string
 	DependsOnExportChunk string
+	Fields               []string
 }
 
 func GenerateDataMovementPlans(root, sourceClusterID, projectID string, spec DataMovementPlanSpec) (DataMovementPlanResult, error) {
@@ -97,11 +100,16 @@ func GenerateDataMovementPlans(root, sourceClusterID, projectID string, spec Dat
 			for _, table := range schema.Tables {
 				tablePlan := buildDataExportTablePlan(project, database.Name, schema.Name, table, prefixSchema, spec)
 				for _, chunk := range tablePlan.Chunks {
+					fields := []string(nil)
+					if spec.ImportEngine == importEngineTiDBImportInto {
+						fields = buildTiDBImportIntoPlanFields(table.Columns)
+					}
 					jobs = append(jobs, dataImportJobPlan{
 						ID:                   "import-" + chunk.ID,
 						TargetObject:         tablePlan.TargetObject,
 						SourceURI:            chunk.OutputURI,
 						DependsOnExportChunk: chunk.ID,
+						Fields:               fields,
 					})
 				}
 				tables = append(tables, tablePlan)
@@ -205,6 +213,18 @@ func buildDataExportTablePlan(project projectMetadata, databaseName, schemaName 
 	return tablePlan
 }
 
+func buildTiDBImportIntoPlanFields(columns []inventoryColumn) []string {
+	fields := make([]string, 0, len(columns)+1)
+	for _, column := range columns {
+		name := strings.TrimSpace(column.Name)
+		if name != "" {
+			fields = append(fields, name)
+		}
+	}
+	fields = append(fields, importIntoNullBitmapField)
+	return fields
+}
+
 func chunkCountForRows(rowCount, chunkSizeRows int64) int64 {
 	if rowCount <= 0 {
 		return 1
@@ -268,6 +288,12 @@ func renderImportPlanYAML(sourceClusterID, projectID string, spec DataMovementPl
 		fmt.Fprintf(&b, "    target_object: %s\n", job.TargetObject)
 		fmt.Fprintf(&b, "    source_uri: %s\n", job.SourceURI)
 		fmt.Fprintf(&b, "    depends_on_export_chunk: %s\n", job.DependsOnExportChunk)
+		if len(job.Fields) > 0 {
+			b.WriteString("    fields:\n")
+			for _, field := range job.Fields {
+				fmt.Fprintf(&b, "      - %s\n", quoteYAML(field))
+			}
+		}
 	}
 	return b.String()
 }

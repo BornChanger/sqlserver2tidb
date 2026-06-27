@@ -221,6 +221,9 @@ func prepareImportExecutorCommands(projectDir, binary, sourceClusterID, projectI
 		if spec.ImportBatchSize > 0 {
 			args = append(args, "--import-batch-size", strconv.Itoa(spec.ImportBatchSize))
 		}
+		if len(job.Fields) > 0 {
+			args = append(args, "--fields", strings.Join(job.Fields, ","))
+		}
 		commands = append(commands, newWorkerExecutorCommand(binary, job.ID, args))
 	}
 	return commands, nil

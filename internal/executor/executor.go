@@ -637,6 +637,7 @@ func runImport(args []string, stdout, stderr io.Writer) int {
 	dependsOnExportChunk := fs.String("depends-on-export-chunk", "", "upstream export chunk id")
 	targetConnectionStringEnv := fs.String("target-connection-string-env", defaultTargetConnectionStringEnv, "environment variable containing the TiDB/MySQL connection string")
 	importBatchSize := fs.Int("import-batch-size", 1000, "rows to commit per import transaction")
+	fieldsRaw := fs.String("fields", "", "comma-separated TiDB IMPORT INTO field list")
 	execute := fs.Bool("execute", false, "perform the import")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -656,6 +657,11 @@ func runImport(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
+	fields, err := parseImportFields(*fieldsRaw)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
 	if *execute && *importBatchSize <= 0 {
 		fmt.Fprintln(stderr, "executor import: import batch size must be positive")
 		return 1
@@ -667,6 +673,7 @@ func runImport(args []string, stdout, stderr io.Writer) int {
 			SourceURI:                 *sourceURI,
 			TargetConnectionStringEnv: *targetConnectionStringEnv,
 			ImportBatchSize:           *importBatchSize,
+			Fields:                    fields,
 		}); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
@@ -683,6 +690,9 @@ func runImport(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "engine: %s\n", normalizedEngine)
 	fmt.Fprintf(stdout, "target object: %s\n", *targetObject)
 	fmt.Fprintf(stdout, "source uri: %s\n", *sourceURI)
+	if len(fields) > 0 {
+		fmt.Fprintf(stdout, "fields: %s\n", strings.Join(fields, ","))
+	}
 	if strings.TrimSpace(*dependsOnExportChunk) != "" {
 		fmt.Fprintf(stdout, "depends on export chunk: %s\n", *dependsOnExportChunk)
 	}
@@ -996,6 +1006,7 @@ type importExecuteSpec struct {
 	SourceURI                 string
 	TargetConnectionStringEnv string
 	ImportBatchSize           int
+	Fields                    []string
 }
 
 func executeTiDBImport(ctx context.Context, spec importExecuteSpec) error {
@@ -1049,9 +1060,13 @@ func executeTiDBImport(ctx context.Context, spec importExecuteSpec) error {
 }
 
 func executeTiDBImportInto(ctx context.Context, spec importExecuteSpec) error {
-	fields, err := readTiDBImportIntoFieldsFromLocalSource(spec.SourceURI)
-	if err != nil {
-		return fmt.Errorf("executor import: %w", err)
+	fields := spec.Fields
+	if len(fields) == 0 {
+		var err error
+		fields, err = readTiDBImportIntoFieldsFromLocalSource(spec.SourceURI)
+		if err != nil {
+			return fmt.Errorf("executor import: %w", err)
+		}
 	}
 	statement, err := buildTiDBImportIntoStatementWithFields(spec.TargetObject, spec.SourceURI, fields)
 	if err != nil {
@@ -1312,6 +1327,23 @@ func ensureTiDBImportIntoTargetEmpty(ctx context.Context, db *sql.DB, targetObje
 
 func buildTiDBImportIntoPreflightQuery(targetObject string) (string, error) {
 	return buildTiDBCountQuery(targetObject, "")
+}
+
+func parseImportFields(raw string) ([]string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	parts := strings.Split(raw, ",")
+	fields := make([]string, 0, len(parts))
+	for _, part := range parts {
+		field := strings.TrimSpace(part)
+		if field == "" {
+			return nil, fmt.Errorf("executor import: fields contains an empty item")
+		}
+		fields = append(fields, field)
+	}
+	return fields, nil
 }
 
 func buildTiDBImportIntoStatementWithFields(targetObject, sourceURI string, fields []string) (string, error) {
