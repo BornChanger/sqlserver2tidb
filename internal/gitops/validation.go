@@ -423,6 +423,22 @@ func validateProjectContent(root, projectRel string, cluster *clusterMetadata, r
 			}
 		}
 	}
+	evidenceDirRel := filepath.ToSlash(filepath.Join(projectRel, "evidence"))
+	evidenceDir := filepath.Join(root, filepath.FromSlash(evidenceDirRel))
+	if entries, err := os.ReadDir(evidenceDir); err == nil {
+		for _, entry := range entries {
+			name := entry.Name()
+			if entry.IsDir() || !strings.HasPrefix(name, "executor-") || !strings.HasSuffix(name, "-run.json") {
+				continue
+			}
+			stage := strings.TrimSuffix(strings.TrimPrefix(name, "executor-"), "-run.json")
+			rel := filepath.ToSlash(filepath.Join(evidenceDirRel, name))
+			path := filepath.Join(root, filepath.FromSlash(rel))
+			if err := validateExecutorEvidenceContent(path, projectForEvidence, stage); err != nil {
+				report.addError(fmt.Sprintf("invalid executor evidence %s: %v", rel, err))
+			}
+		}
+	}
 
 	migrationPlanRel := filepath.ToSlash(filepath.Join(projectRel, "plan", "migration-plan.yaml"))
 	migrationPlanPath := filepath.Join(root, filepath.FromSlash(migrationPlanRel))
@@ -601,6 +617,42 @@ func validateEvidenceJSONContent(path string, project *projectMetadata) error {
 		return fmt.Errorf("source_cluster_id %q does not match project metadata %q", doc.SourceClusterID, project.SourceClusterID)
 	}
 	return nil
+}
+
+func validateExecutorEvidenceContent(path string, project *projectMetadata, expectedStage string) error {
+	if !isExecutorEvidenceStage(expectedStage) {
+		return fmt.Errorf("unsupported executor evidence stage %q", expectedStage)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read executor evidence: %w", err)
+	}
+	var evidence executorEvidenceSummary
+	if err := json.Unmarshal(data, &evidence); err != nil {
+		return fmt.Errorf("parse executor evidence JSON: %w", err)
+	}
+	if evidence.Stage != expectedStage {
+		return fmt.Errorf("stage %q does not match evidence file stage %q", evidence.Stage, expectedStage)
+	}
+	if project != nil {
+		if evidence.ProjectID != project.ProjectID {
+			return fmt.Errorf("project_id %q does not match project metadata %q", evidence.ProjectID, project.ProjectID)
+		}
+		if evidence.SourceClusterID != project.SourceClusterID {
+			return fmt.Errorf("source_cluster_id %q does not match project metadata %q", evidence.SourceClusterID, project.SourceClusterID)
+		}
+	}
+	status := strings.TrimSpace(evidence.Status)
+	if status == "" {
+		return errors.New("executor evidence status is required")
+	}
+	if !isExecutorEvidenceRunStatus(status) {
+		return fmt.Errorf("executor evidence status %q is unsupported", evidence.Status)
+	}
+	if strings.TrimSpace(evidence.PayloadHash) != "" && !isValidPayloadHash(evidence.PayloadHash) {
+		return fmt.Errorf("payload_hash %q must use sha256:<64 hex chars>", evidence.PayloadHash)
+	}
+	return validateExecutorEvidenceCommands(status, evidence.Commands)
 }
 
 func validateMigrationPlanContent(path string, project projectMetadata) error {

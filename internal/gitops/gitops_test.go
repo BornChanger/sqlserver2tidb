@@ -840,6 +840,56 @@ func TestValidateRepoReportsInvalidEvidenceJSON(t *testing.T) {
 	assertContains(t, strings.Join(report.Errors, "\n"), `invalid evidence clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/import-summary.json: parse evidence JSON`)
 }
 
+func TestValidateRepoReportsExecutorEvidenceMetadataMismatch(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)
+	evidenceRel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-export-run.json"
+	writeFileForTest(t, root, evidenceRel, `{
+  "stage": "export",
+  "status": "succeeded",
+  "project_id": "inventory-db-to-tidb-prod-a",
+  "source_cluster_id": "prod-sqlserver-a",
+  "payload_hash": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "commands": [
+    {
+      "id": "export-1",
+      "args": ["sqlserver2tidb-executor", "export"],
+      "shell_command": "sqlserver2tidb-executor export",
+      "exit_code": 0,
+      "started_at": "2026-06-26T00:00:00Z",
+      "completed_at": "2026-06-26T00:00:01Z",
+      "duration_ms": 1000
+    }
+  ]
+}
+`)
+
+	report, err := ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
+	if report.Valid {
+		t.Fatal("ValidateRepo() valid = true, want executor evidence metadata mismatch")
+	}
+	assertContains(t, strings.Join(report.Errors, "\n"), `invalid executor evidence clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-export-run.json: project_id "inventory-db-to-tidb-prod-a" does not match project metadata "sales-db-to-tidb-prod-a"`)
+}
+
+func TestValidateRepoReportsInvalidExecutorEvidenceJSON(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)
+	evidenceRel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-export-run.json"
+	writeFileForTest(t, root, evidenceRel, "{")
+
+	report, err := ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
+	if report.Valid {
+		t.Fatal("ValidateRepo() valid = true, want invalid executor evidence JSON")
+	}
+	assertContains(t, strings.Join(report.Errors, "\n"), `invalid executor evidence clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-export-run.json: parse executor evidence JSON`)
+}
+
 func TestValidateRepoReportsDataPlanMetadataMismatch(t *testing.T) {
 	tests := []struct {
 		name      string
