@@ -801,11 +801,15 @@ func validateEvidenceJSONContent(path string, project *projectMetadata) error {
 		return fmt.Errorf("read evidence: %w", err)
 	}
 	var doc struct {
+		Status          string `json:"status"`
 		ProjectID       string `json:"project_id"`
 		SourceClusterID string `json:"source_cluster_id"`
 	}
 	if err := json.Unmarshal(data, &doc); err != nil {
 		return fmt.Errorf("parse evidence JSON: %w", err)
+	}
+	if strings.TrimSpace(doc.Status) != "" && !isSupportedEvidenceStatus(doc.Status) {
+		return fmt.Errorf("unsupported evidence status %q; supported statuses: pending, planned, succeeded, failed", doc.Status)
 	}
 	if project == nil {
 		return nil
@@ -817,6 +821,15 @@ func validateEvidenceJSONContent(path string, project *projectMetadata) error {
 		return fmt.Errorf("source_cluster_id %q does not match project metadata %q", doc.SourceClusterID, project.SourceClusterID)
 	}
 	return nil
+}
+
+func isSupportedEvidenceStatus(status string) bool {
+	switch status {
+	case "pending", "planned", "succeeded", "failed":
+		return true
+	default:
+		return false
+	}
 }
 
 func validateExecutorEvidenceContent(path string, project *projectMetadata, expectedStage string) error {

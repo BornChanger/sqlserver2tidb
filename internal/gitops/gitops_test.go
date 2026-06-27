@@ -1133,6 +1133,24 @@ func TestValidateRepoReportsInvalidEvidenceJSON(t *testing.T) {
 	assertContains(t, strings.Join(report.Errors, "\n"), `invalid evidence clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/import-summary.json: parse evidence JSON`)
 }
 
+func TestValidateRepoReportsInvalidEvidenceStatus(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)
+	evidenceRel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/import-summary.json"
+	writeFileForTest(t, root, evidenceRel, `{
+  "status": "ready"
+}`)
+
+	report, err := ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
+	if report.Valid {
+		t.Fatal("ValidateRepo() valid = true, want invalid evidence status")
+	}
+	assertContains(t, strings.Join(report.Errors, "\n"), `invalid evidence clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/import-summary.json: unsupported evidence status "ready"; supported statuses: pending, planned, succeeded, failed`)
+}
+
 func TestValidateRepoReportsExecutorEvidenceMetadataMismatch(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)
