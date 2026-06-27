@@ -3843,6 +3843,8 @@ func TestGenerateCDCPlanWritesProjectCDCPlan(t *testing.T) {
 	assertContains(t, plan, "- customer_name")
 	assertContains(t, plan, "key_columns:")
 	assertContains(t, plan, "- id")
+	assertContains(t, plan, `from_lsn: ""`)
+	assertContains(t, plan, `to_lsn: ""`)
 	assertContains(t, plan, "apply_batch_size: 1000")
 	assertContains(t, plan, "checkpoint_scope: source-cluster")
 	assertContains(t, plan, "checkpoint_file: ../../../state/cdc-checkpoint.yaml")
@@ -4540,10 +4542,29 @@ tracked_tables:
 	assertContains(t, err.Error(), "cdc tracked table sales.dbo.orders key column tenant_id is not present in columns")
 }
 
+func TestPrepareWorkerExecutorRejectsCDCPlanWithoutLSNRange(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateCDCPlanOnly(root))
+	setReviewPlanStatus(t, root, "cdc", "reviewed")
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "cdc")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(cdc) error = %v", err)
+	}
+	writeStageApproval(t, root, "cdc", hash)
+
+	_, err = PrepareWorkerExecutor(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "cdc", WorkerExecutorPrepareSpec{})
+	if err == nil {
+		t.Fatal("PrepareWorkerExecutor() expected missing CDC LSN range error")
+	}
+	assertContains(t, err.Error(), "cdc tracked table sales.dbo.orders from_lsn is required for executor")
+}
+
 func TestPrepareWorkerExecutorBuildsCDCCommandsWhenApprovedHashMatches(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
 	must(t, GenerateCDCPlanOnly(root))
+	setCDCPlanLSNRange(t, root, "0x00000027000001f40001", "0x00000027000001f40002")
 	setReviewPlanStatus(t, root, "cdc", "reviewed")
 	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "cdc")
 	if err != nil {
@@ -4567,15 +4588,20 @@ func TestPrepareWorkerExecutorBuildsCDCCommandsWhenApprovedHashMatches(t *testin
 	assertContains(t, first.ShellCommand, "--target-object app.orders")
 	assertContains(t, first.ShellCommand, "--columns 'id,customer_name'")
 	assertContains(t, first.ShellCommand, "--key-columns id")
+	assertContains(t, first.ShellCommand, "--from-lsn 0x00000027000001f40001")
+	assertContains(t, first.ShellCommand, "--to-lsn 0x00000027000001f40002")
 	assertContains(t, first.ShellCommand, "--apply-batch-size 1000")
 	assertArgValue(t, first.Args, "--columns", "id,customer_name")
 	assertArgValue(t, first.Args, "--key-columns", "id")
+	assertArgValue(t, first.Args, "--from-lsn", "0x00000027000001f40001")
+	assertArgValue(t, first.Args, "--to-lsn", "0x00000027000001f40002")
 }
 
 func TestPrepareWorkerExecutorAddsCDCConnectionStringEnv(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
 	must(t, GenerateCDCPlanOnly(root))
+	setCDCPlanLSNRange(t, root, "0x00000027000001f40001", "0x00000027000001f40002")
 	setReviewPlanStatus(t, root, "cdc", "reviewed")
 	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "cdc")
 	if err != nil {
@@ -5955,6 +5981,18 @@ func setReviewPlanStatus(t *testing.T, root, stage, status string) {
 	updated := strings.Replace(plan, "status: draft", "status: "+status, 1)
 	if updated == plan {
 		t.Fatalf("plan %s does not contain draft status", rel)
+	}
+	writeFileForTest(t, root, rel, updated)
+}
+
+func setCDCPlanLSNRange(t *testing.T, root, fromLSN, toLSN string) {
+	t.Helper()
+	rel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/cdc-plan.yaml"
+	plan := readFile(t, root, rel)
+	updated := strings.Replace(plan, `from_lsn: ""`, "from_lsn: "+fromLSN, 1)
+	updated = strings.Replace(updated, `to_lsn: ""`, "to_lsn: "+toLSN, 1)
+	if updated == plan {
+		t.Fatalf("cdc plan %s does not contain empty LSN placeholders", rel)
 	}
 	writeFileForTest(t, root, rel, updated)
 }

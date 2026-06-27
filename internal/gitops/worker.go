@@ -624,6 +624,8 @@ type cdcTrackedTableState struct {
 	TargetObject   string
 	Columns        []string
 	KeyColumns     []string
+	FromLSN        string
+	ToLSN          string
 	ApplyBatchSize int
 }
 
@@ -666,6 +668,12 @@ func readCDCPlanSummary(path string) (cdcPlanSummary, error) {
 			}
 		case strings.HasPrefix(trimmed, "- ") && listKey == "cdc.key_columns" && len(plan.Tables) > 0:
 			plan.Tables[len(plan.Tables)-1].KeyColumns = append(plan.Tables[len(plan.Tables)-1].KeyColumns, trimYAMLScalar(strings.TrimPrefix(trimmed, "- ")))
+		case strings.HasPrefix(trimmed, "from_lsn:") && len(plan.Tables) > 0:
+			plan.Tables[len(plan.Tables)-1].FromLSN = trimYAMLScalar(strings.TrimPrefix(trimmed, "from_lsn:"))
+			listKey = ""
+		case strings.HasPrefix(trimmed, "to_lsn:") && len(plan.Tables) > 0:
+			plan.Tables[len(plan.Tables)-1].ToLSN = trimYAMLScalar(strings.TrimPrefix(trimmed, "to_lsn:"))
+			listKey = ""
 		case strings.HasPrefix(trimmed, "apply_batch_size:") && len(plan.Tables) > 0:
 			value := trimYAMLScalar(strings.TrimPrefix(trimmed, "apply_batch_size:"))
 			batchSize, err := strconv.Atoi(value)
@@ -684,6 +692,14 @@ func validateCDCPlanSummary(plan cdcPlanSummary) error {
 }
 
 func validateCDCPlanSummaryForExecution(plan cdcPlanSummary, requireKeyColumns bool) error {
+	return validateCDCPlanSummaryForExecutionWithLSN(plan, requireKeyColumns, false)
+}
+
+func validateCDCPlanSummaryForExecutor(plan cdcPlanSummary) error {
+	return validateCDCPlanSummaryForExecutionWithLSN(plan, true, true)
+}
+
+func validateCDCPlanSummaryForExecutionWithLSN(plan cdcPlanSummary, requireKeyColumns, requireLSNRange bool) error {
 	if len(plan.Tables) == 0 {
 		return fmt.Errorf("cdc plan contains no tracked tables")
 	}
@@ -737,6 +753,14 @@ func validateCDCPlanSummaryForExecution(plan cdcPlanSummary, requireKeyColumns b
 				}
 			}
 			seenKeyColumns[normalized] = struct{}{}
+		}
+		if requireLSNRange {
+			if strings.TrimSpace(table.FromLSN) == "" {
+				return fmt.Errorf("cdc tracked table %s from_lsn is required for executor", table.SourceObject)
+			}
+			if strings.TrimSpace(table.ToLSN) == "" {
+				return fmt.Errorf("cdc tracked table %s to_lsn is required for executor", table.SourceObject)
+			}
 		}
 	}
 	return nil

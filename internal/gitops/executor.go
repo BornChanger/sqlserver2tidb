@@ -234,7 +234,7 @@ func prepareCDCExecutorCommands(projectDir, binary, sourceClusterID, projectID s
 	if err != nil {
 		return nil, err
 	}
-	if err := validateCDCPlanSummaryForExecution(plan, true); err != nil {
+	if err := validateCDCPlanSummaryForExecutor(plan); err != nil {
 		return nil, err
 	}
 	sourceConnectionStringEnv := strings.TrimSpace(spec.SourceConnectionStringEnv)
@@ -250,6 +250,8 @@ func prepareCDCExecutorCommands(projectDir, binary, sourceClusterID, projectID s
 			"--target-object", table.TargetObject,
 			"--columns", strings.Join(table.Columns, ","),
 			"--key-columns", strings.Join(table.KeyColumns, ","),
+			"--from-lsn", table.FromLSN,
+			"--to-lsn", table.ToLSN,
 			"--apply-batch-size", strconv.Itoa(table.ApplyBatchSize),
 		}
 		if sourceConnectionStringEnv != "" {

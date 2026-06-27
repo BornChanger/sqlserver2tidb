@@ -26,6 +26,8 @@ type cdcTrackedTablePlan struct {
 	TargetObject   string
 	Columns        []string
 	KeyColumns     []string
+	FromLSN        string
+	ToLSN          string
 	ApplyBatchSize int
 }
 
@@ -176,6 +178,8 @@ func renderCDCPlanYAML(sourceClusterID string, project projectMetadata, spec CDC
 				fmt.Fprintf(&b, "      - %s\n", column)
 			}
 		}
+		fmt.Fprintf(&b, "    from_lsn: %q\n", table.FromLSN)
+		fmt.Fprintf(&b, "    to_lsn: %q\n", table.ToLSN)
 		fmt.Fprintf(&b, "    apply_batch_size: %d\n", table.ApplyBatchSize)
 		b.WriteString("    status: draft\n")
 	}

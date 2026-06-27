@@ -30,6 +30,8 @@
             "type": "array",
             "items": {"type": "string", "minLength": 1}
           },
+          "from_lsn": {"type": "string"},
+          "to_lsn": {"type": "string"},
           "apply_batch_size": {"type": "integer", "minimum": 1},
           "status": {"type": "string"}
         },
