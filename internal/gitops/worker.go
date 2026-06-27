@@ -122,6 +122,10 @@ func RunValidationWorker(root, sourceClusterID, projectID string) (ValidationWor
 		Passed:          true,
 	}
 	projectDir := filepath.Join(root, "clusters", sourceClusterID, "projects", projectID)
+	validationPlanPath := filepath.Join(projectDir, "plan", "validation-plan.yaml")
+	if err := requireExecutablePlanStatus(validationPlanPath, "validation plan"); err != nil {
+		return ValidationWorkerResult{}, err
+	}
 
 	diff, diffErr := readSchemaDiffForValidation(filepath.Join(projectDir, "schema", "schema-diff.json"))
 	if diffErr != nil {
@@ -148,7 +152,6 @@ func RunValidationWorker(root, sourceClusterID, projectID string) (ValidationWor
 	} else {
 		result.addCheck("schema_conversion_report_present", true, "schema/conversion-report.md exists")
 	}
-	validationPlanPath := filepath.Join(projectDir, "plan", "validation-plan.yaml")
 	if info, err := os.Stat(validationPlanPath); err != nil || info.IsDir() {
 		result.addCheck("validation_plan_present", false, "plan/validation-plan.yaml is missing")
 	} else {

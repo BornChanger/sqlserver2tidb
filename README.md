@@ -22,7 +22,7 @@ This MVP provides:
 - Project-scoped row-count validation plan draft generation from SQL Server inventory and project metadata.
 - PR draft generation and a dry-run-by-default GitHub PR creation wrapper.
 - DDL, export, import, CDC, and validation payload hash calculation.
-- Approved metadata-only export/import/CDC worker state write-back.
+- Approved metadata-only export/import/CDC/validation worker state write-back.
 - Dry-run-by-default external executor command generation for approved DDL/export/import/CDC/validation plans.
 - `sqlserver2tidb-executor` adapter for DDL/export/import/CDC and row-count validation work items, including `apply-ddl --execute`, CSV `export --execute` to local file or HTTP(S), CSV `import --execute` from local file or HTTP(S), and `validate-count --execute` paths.
 - Approved validation-only worker execution.
@@ -230,7 +230,7 @@ go run ./cmd/sqlserver2tidb generate-validation-plan \
 
 This writes `plan/validation-plan.yaml` under the project with one `row_count` check per table in scope. The command does not connect to SQL Server or TiDB and does not execute validation.
 
-Compute payload hashes and run reviewed DDL/export/import/CDC actions after the matching approval files are marked approved. `worker-export`, `worker-import`, and `worker-cdc` also require their plan files to be `reviewed` or `approved`; draft export/import/CDC plans are not executable even with approved approval files:
+Compute payload hashes and run reviewed DDL/export/import/CDC actions after the matching approval files are marked approved. `worker-export`, `worker-import`, `worker-cdc`, and `worker-validate` also require their plan files to be `reviewed` or `approved`; draft export/import/CDC/validation plans are not executable even with approved approval files:
 
 ```bash
 go run ./cmd/sqlserver2tidb compute-payload-hash \
@@ -381,7 +381,7 @@ go run ./cmd/sqlserver2tidb compute-payload-hash \
   --stage validation
 ```
 
-After `approvals/validation-approval.yaml` is set to `status: approved` with that hash, run the validation-only worker:
+After `plan/validation-plan.yaml` is reviewed and `approvals/validation-approval.yaml` is set to `status: approved` with that hash, run the validation-only worker:
 
 ```bash
 go run ./cmd/sqlserver2tidb worker-validate \

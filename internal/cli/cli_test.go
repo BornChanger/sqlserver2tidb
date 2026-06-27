@@ -653,6 +653,7 @@ func TestRunWorkerValidateCommand(t *testing.T) {
 	}, &stdout, &stderr); code != 0 {
 		t.Fatalf("generate-schema-draft code = %d, stderr = %s", code, stderr.String())
 	}
+	setCLIReviewPlanStatus(t, root, "validation", "reviewed")
 
 	stdout.Reset()
 	stderr.Reset()

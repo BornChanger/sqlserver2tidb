@@ -37,7 +37,7 @@ LLM 只生成解释、候选方案和文档，不直接执行迁移
 - 基于 SQL Server inventory 和 project metadata 生成项目级 row-count validation plan 草稿。
 - 基于 stage 生成本地 PR draft 文件，并通过 dry-run-by-default wrapper 准备 `gh pr create`。
 - 计算 ddl、export、import、cdc、validation payload hash。
-- 在 approval 通过后执行 metadata-only export/import/CDC worker，把 plan 写成 planned state/evidence。
+- 在 approval 通过后执行 metadata-only export/import/CDC/validation worker，把 plan 写成 planned state/evidence 或 validation 结果。
 - 在 approval 通过后执行 `worker-executor` dry-run，生成外部 DDL/export/import/CDC/validation 执行器命令。
 - 通过 `worker-executor --stage ddl` 或 `sqlserver2tidb-executor apply-ddl` 对 TiDB 执行已 review 的 DDL，通过 `worker-executor --stage validation` 或 `sqlserver2tidb-executor validate-count` 对源/目标对象执行显式行数校验。
 - 在 approval 通过后执行 metadata-only validation worker。
@@ -130,7 +130,7 @@ clusters/<source_cluster_id>/projects/<project_id>/prs/<stage>-pr.md
 
 Worker 是终极形态中的执行器。它从 GitHub repo 拉取已批准 instruction，执行确定性操作，并把状态和证据写回 repo。
 
-当前 MVP 实现了显式指定 project 的 `worker-export`、`worker-import`、`worker-cdc` 和 `worker-validate`。它们都需要 approval 和 payload hash 匹配；`worker-export`、`worker-import` 和 `worker-cdc` 还要求对应 plan 已经是 `reviewed` 或 `approved`。当前还实现了 `worker-executor`，用于在同一 approval/hash gate 后生成外部执行器命令，默认 dry-run。当前还实现了 `worker-reconcile --dry-run` 和 `worker-reconcile --execute-next`；后者会获取源集群级 lease，并执行第一个 ready metadata-only action，且 export、import 或 CDC action 在对应 plan 仍为 `draft` 时会被视为 blocked。加上 `--state-pr-draft` 后，reconcile 单步执行可以生成 state/evidence/lease 写回的 PR body 草稿。`create-worker-state-pr` 可以默认 dry-run 地准备 bot branch、commit、push 和 GitHub PR 命令；如果存在 `evidence/executor-<stage>-run.json`，会一并纳入提交文件列表；dry-run 会提示 PR body 文件列表是否需要刷新，只有显式 `--execute` 时才会刷新 body 并调用本地 `git` 和 `gh`。对于 DDL 这类 executor-only 阶段，`generate-executor-evidence-pr-draft` 可以把 `evidence/executor-ddl-run.json` 转成 PR body，`create-executor-evidence-pr` 可以默认 dry-run 地准备 evidence PR 的 bot branch、commit、push 和 GitHub PR 命令。
+当前 MVP 实现了显式指定 project 的 `worker-export`、`worker-import`、`worker-cdc` 和 `worker-validate`。它们都需要 approval 和 payload hash 匹配；`worker-export`、`worker-import`、`worker-cdc` 和 `worker-validate` 还要求对应 plan 已经是 `reviewed` 或 `approved`。当前还实现了 `worker-executor`，用于在同一 approval/hash gate 后生成外部执行器命令，默认 dry-run。当前还实现了 `worker-reconcile --dry-run` 和 `worker-reconcile --execute-next`；后者会获取源集群级 lease，并执行第一个 ready metadata-only action，且 export、import 或 CDC action 在对应 plan 仍为 `draft` 时会被视为 blocked。加上 `--state-pr-draft` 后，reconcile 单步执行可以生成 state/evidence/lease 写回的 PR body 草稿。`create-worker-state-pr` 可以默认 dry-run 地准备 bot branch、commit、push 和 GitHub PR 命令；如果存在 `evidence/executor-<stage>-run.json`，会一并纳入提交文件列表；dry-run 会提示 PR body 文件列表是否需要刷新，只有显式 `--execute` 时才会刷新 body 并调用本地 `git` 和 `gh`。对于 DDL 这类 executor-only 阶段，`generate-executor-evidence-pr-draft` 可以把 `evidence/executor-ddl-run.json` 转成 PR body，`create-executor-evidence-pr` 可以默认 dry-run 地准备 evidence PR 的 bot branch、commit、push 和 GitHub PR 命令。
 
 ### 3.5 LLM
 
@@ -1139,7 +1139,7 @@ evidence/validation-report.md
 
 LLM 可以解释 mismatch，但 pass/fail 必须由确定性校验结果决定。
 
-当前 MVP 已支持 metadata-only validation worker。它不会连接 SQL Server 或 TiDB，只校验当前仓库里的迁移元数据是否满足进入后续执行的最低条件，包括 schema diff 可解析、DDL 已生成、manual review 已清空、conversion report 存在、validation plan 存在，row-count 检查项的 `id`、`source_object`、`target_object` 已填写，并且 predicate / target predicate 不再包含 `TODO`。真实数据校验目前提供行数校验路径：先用 `generate-validation-plan` 生成 `plan/validation-plan.yaml`，再通过 PR review 补充或确认检查项。validation approval/hash 通过后，`worker-executor --stage validation` 会为 `type: row_count` 或 `type: row-count` 的检查项生成 `sqlserver2tidb-executor validate-count` 命令。
+当前 MVP 已支持 metadata-only validation worker。它不会连接 SQL Server 或 TiDB，只校验当前仓库里的迁移元数据是否满足进入后续执行的最低条件，包括 schema diff 可解析、DDL 已生成、manual review 已清空、conversion report 存在、validation plan 存在，row-count 检查项的 `id`、`source_object`、`target_object` 已填写，并且 predicate / target predicate 不再包含 `TODO`。真实数据校验目前提供行数校验路径：先用 `generate-validation-plan` 生成 `plan/validation-plan.yaml`，再通过 PR review 补充或确认检查项，并把 validation plan 标成 `reviewed` 或 `approved`。validation approval/hash 通过后，`worker-executor --stage validation` 会为 `type: row_count` 或 `type: row-count` 的检查项生成 `sqlserver2tidb-executor validate-count` 命令。
 
 先生成 validation plan 草稿：
 
@@ -1334,7 +1334,7 @@ clusters/<source_cluster_id>/state/worker-lease.yaml
 
 worker lease 是上游 SQL Server 集群级，避免多个 worker 同时操作同一个源集群。`phase: idle` 表示空闲占位；当 phase 是 `export`、`import`、`cdc` 或 `validation` 时，lease 必须带有非空 `holder`、`lease_id`、`project_id`、`expires_at` 和 `renewed_at`，`project_id` 必须引用同一源集群下已存在的项目目录，两个时间字段必须是 RFC3339，且 `expires_at` 不能早于 `renewed_at`，否则 `validate-repo` 会拒绝该仓库状态。
 
-当前 MVP 实现了 `worker-export`、`worker-import`、`worker-cdc` 和 `worker-validate`。它们不是完整 reconcile loop，也不会抢占 worker lease。它们只针对一个显式指定的 project 执行 approval gate、payload hash 校验和 metadata-only 状态写回。
+当前 MVP 实现了 `worker-export`、`worker-import`、`worker-cdc` 和 `worker-validate`。它们不是完整 reconcile loop，也不会抢占 worker lease。它们只针对一个显式指定的 project 执行 approval gate、payload hash 校验和 metadata-only 状态写回，并要求对应 plan 已经是 `reviewed` 或 `approved`。
 
 当前 MVP 也实现了只读扫描：
 
@@ -1756,7 +1756,7 @@ bin/sqlserver2tidb worker-validate \
   --project-id sales-db-to-tidb-prod-a
 ```
 
-该命令先检查 `approvals/validation-approval.yaml`，只有 approval 通过且 payload hash 匹配时才执行 validation checks。执行后写回 `state/validation-status.yaml` 和 `evidence/validation-report.md`。
+该命令先检查 `approvals/validation-approval.yaml`，只有 approval 通过、payload hash 匹配，且 `plan/validation-plan.yaml` 已经是 `reviewed` 或 `approved` 时才执行 validation checks。执行后写回 `state/validation-status.yaml` 和 `evidence/validation-report.md`。
 
 ### 16.17 worker-executor
 
@@ -2053,7 +2053,7 @@ bin/sqlserver2tidb create-executor-evidence-pr \
 15. 执行 `compute-payload-hash --stage export`，把 hash 写入 export approval，approval 通过后运行 `worker-export` 写 planned export state/evidence。
 16. 执行 `compute-payload-hash --stage import`，把 hash 写入 import approval，approval 通过后运行 `worker-import` 写 planned import state/evidence。
 17. 将 `plan/cdc-plan.yaml` 通过 PR review 标成 `reviewed` 或 `approved`，执行 `compute-payload-hash --stage cdc`，把 hash 写入 cdc approval，approval 通过后运行 `worker-cdc` 写 planned CDC state/evidence。
-18. 执行 `compute-payload-hash --stage validation`，把 hash 写入 validation approval。
+18. 将 `plan/validation-plan.yaml` 通过 PR review 标成 `reviewed` 或 `approved`，执行 `compute-payload-hash --stage validation`，把 hash 写入 validation approval。
 19. 执行 `worker-reconcile --dry-run`，确认 ready/blocked action 与预期一致。
 20. 执行 `worker-reconcile --execute-next --holder <agent-id> --state-pr-draft`，用 lease-backed 单步 reconcile 执行第一个 ready metadata-only action，并生成 state PR body。
 21. 执行 `create-worker-state-pr` dry-run 检查 git/gh 命令，再按需执行 `create-worker-state-pr --execute` 创建 state/evidence 写回 PR。

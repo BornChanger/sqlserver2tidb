@@ -4836,6 +4836,44 @@ func TestRunValidationWorkerRequiresApprovedValidationApproval(t *testing.T) {
 	}
 }
 
+func TestRunValidationWorkerRejectsDraftValidationPlan(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, `{
+  "status": "discovered",
+  "databases": [
+    {
+      "name": "sales",
+      "schemas": [
+        {
+          "name": "dbo",
+          "tables": [
+            {
+              "name": "orders",
+              "columns": [
+                {"name": "id", "type": "int"}
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+`)
+	must(t, GenerateSchemaDraftOnly(root))
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "validation")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage() error = %v", err)
+	}
+	writeValidationApproval(t, root, hash)
+
+	_, err = RunValidationWorker(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a")
+	if err == nil {
+		t.Fatal("RunValidationWorker() expected draft plan error")
+	}
+	assertContains(t, err.Error(), `validation plan status is "draft", want reviewed or approved`)
+}
+
 func TestRunValidationWorkerWritesPassedEvidenceWhenApprovedHashMatches(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, `{
@@ -4862,6 +4900,7 @@ func TestRunValidationWorkerWritesPassedEvidenceWhenApprovedHashMatches(t *testi
 }
 `)
 	must(t, GenerateSchemaDraftOnly(root))
+	setReviewPlanStatus(t, root, "validation", "reviewed")
 	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "validation")
 	if err != nil {
 		t.Fatalf("ComputePayloadHashForStage() error = %v", err)
@@ -4916,7 +4955,7 @@ func TestRunValidationWorkerFailsInvalidValidationPlanRowCountCheck(t *testing.T
 }
 `)
 	must(t, GenerateSchemaDraftOnly(root))
-	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/validation-plan.yaml", `status: draft
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/validation-plan.yaml", `status: reviewed
 checks:
   - id: orders-row-count
     type: row_count
@@ -4971,6 +5010,7 @@ func TestRunValidationWorkerWritesFailedEvidenceForManualReviewItems(t *testing.
 }
 `)
 	must(t, GenerateSchemaDraftOnly(root))
+	setReviewPlanStatus(t, root, "validation", "reviewed")
 	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "validation")
 	if err != nil {
 		t.Fatalf("ComputePayloadHashForStage() error = %v", err)
