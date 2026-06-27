@@ -270,6 +270,25 @@ func TestRunImportDryRunIncludesFields(t *testing.T) {
 	assertOutputContains(t, output, "fields: id,name,@sqlserver2tidb_null_bitmap")
 }
 
+func TestRunImportRejectsFieldsForSQLInsert(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"import",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--job-id", "import-dbo.orders.000001",
+		"--target-object", "app.orders",
+		"--source-uri", "file:///tmp/dbo.orders.000001.csv",
+		"--fields", "id,name",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("import dry-run code = 0, want non-zero; stdout = %s", stdout.String())
+	}
+	assertOutputContains(t, stderr.String(), "executor import: fields is only supported with tidb-import-into")
+}
+
 func TestExecuteTiDBImportValidatesBatchSizeBeforeSourceURI(t *testing.T) {
 	err := executeTiDBImport(context.Background(), importExecuteSpec{
 		TargetObject:              "app.orders",

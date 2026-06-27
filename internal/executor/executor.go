@@ -662,6 +662,10 @@ func runImport(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
+	if len(fields) > 0 && normalizedEngine != importEngineTiDBImportInto {
+		fmt.Fprintln(stderr, "executor import: fields is only supported with tidb-import-into")
+		return 1
+	}
 	if *execute && *importBatchSize <= 0 {
 		fmt.Fprintln(stderr, "executor import: import batch size must be positive")
 		return 1
