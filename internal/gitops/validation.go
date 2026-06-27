@@ -1243,6 +1243,12 @@ func validateApprovalMetadataContent(path string, project projectMetadata, expec
 		if len(approval.ApprovedBy) == 0 {
 			return errors.New("approved approval requires at least one approved_by reviewer")
 		}
+		if strings.TrimSpace(approval.ApprovedAt) == "" {
+			return errors.New("approved approval requires approved_at")
+		}
+		if _, err := time.Parse(time.RFC3339, approval.ApprovedAt); err != nil {
+			return errors.New("approval approved_at must be RFC3339")
+		}
 	}
 	return nil
 }

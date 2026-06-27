@@ -42,6 +42,7 @@ type approvalMetadata struct {
 	Status      string
 	PayloadHash string
 	ApprovedBy  []string
+	ApprovedAt  string
 }
 
 var validationPayloadFiles = []string{
@@ -373,6 +374,8 @@ func readApprovalMetadata(path string) (approvalMetadata, error) {
 			approval.Status = value
 		case "payload_hash":
 			approval.PayloadHash = value
+		case "approved_at":
+			approval.ApprovedAt = value
 		case "approved_by":
 			listKey = "approved_by"
 			if value == "[]" {
