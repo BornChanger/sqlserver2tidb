@@ -577,6 +577,63 @@ func TestValidateRepoReportsMigrationPlanMetadataMismatch(t *testing.T) {
 	}
 }
 
+func TestValidateRepoReportsProjectStateMetadataMismatch(t *testing.T) {
+	tests := []struct {
+		name      string
+		rel       string
+		oldValue  string
+		newValue  string
+		wantError string
+	}{
+		{
+			name:      "migration_state_project_id",
+			rel:       "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/migration-state.yaml",
+			oldValue:  "project_id: sales-db-to-tidb-prod-a",
+			newValue:  "project_id: inventory-db-to-tidb-prod-a",
+			wantError: `invalid state file clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/migration-state.yaml: project_id "inventory-db-to-tidb-prod-a" does not match project metadata "sales-db-to-tidb-prod-a"`,
+		},
+		{
+			name:      "export_chunks_source_cluster_id",
+			rel:       "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/export-chunks.yaml",
+			oldValue:  "source_cluster_id: prod-sqlserver-a",
+			newValue:  "source_cluster_id: prod-sqlserver-b",
+			wantError: `invalid state file clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/export-chunks.yaml: source_cluster_id "prod-sqlserver-b" does not match project metadata "prod-sqlserver-a"`,
+		},
+		{
+			name:      "import_jobs_project_id",
+			rel:       "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/import-jobs.yaml",
+			oldValue:  "project_id: sales-db-to-tidb-prod-a",
+			newValue:  "project_id: inventory-db-to-tidb-prod-a",
+			wantError: `invalid state file clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/import-jobs.yaml: project_id "inventory-db-to-tidb-prod-a" does not match project metadata "sales-db-to-tidb-prod-a"`,
+		},
+		{
+			name:      "validation_status_source_cluster_id",
+			rel:       "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/validation-status.yaml",
+			oldValue:  "source_cluster_id: prod-sqlserver-a",
+			newValue:  "source_cluster_id: prod-sqlserver-b",
+			wantError: `invalid state file clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/validation-status.yaml: source_cluster_id "prod-sqlserver-b" does not match project metadata "prod-sqlserver-a"`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)
+			stateYAML := readFile(t, root, tt.rel)
+			stateYAML = strings.Replace(stateYAML, tt.oldValue, tt.newValue, 1)
+			writeFileForTest(t, root, tt.rel, stateYAML)
+
+			report, err := ValidateRepo(root)
+			if err != nil {
+				t.Fatalf("ValidateRepo() error = %v", err)
+			}
+			if report.Valid {
+				t.Fatal("ValidateRepo() valid = true, want project state metadata mismatch")
+			}
+			assertContains(t, strings.Join(report.Errors, "\n"), tt.wantError)
+		})
+	}
+}
+
 func TestValidateRepoReportsMissingRequiredGlobalFile(t *testing.T) {
 	root := t.TempDir()
 	must(t, InitRepo(root))

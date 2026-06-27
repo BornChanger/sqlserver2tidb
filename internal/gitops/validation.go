@@ -105,6 +105,13 @@ var requiredProjectDirs = []string{
 	"approvals",
 }
 
+var projectStateFiles = []string{
+	"state/migration-state.yaml",
+	"state/export-chunks.yaml",
+	"state/import-jobs.yaml",
+	"state/validation-status.yaml",
+}
+
 func ValidateRepo(root string) (ValidationReport, error) {
 	report := ValidationReport{Valid: true}
 	if err := report.checkDir(root, "."); err != nil {
@@ -350,6 +357,15 @@ func validateProjectContent(root, projectRel string, report *ValidationReport) {
 				report.addError(fmt.Sprintf("invalid migration plan %s: %v", migrationPlanRel, err))
 			}
 		}
+		for _, stateRel := range projectStateFiles {
+			rel := filepath.ToSlash(filepath.Join(projectRel, stateRel))
+			path := filepath.Join(root, filepath.FromSlash(rel))
+			if info, err := os.Stat(path); err == nil && !info.IsDir() {
+				if err := validateProjectOwnedYAMLContent(path, projectMeta); err != nil {
+					report.addError(fmt.Sprintf("invalid state file %s: %v", rel, err))
+				}
+			}
+		}
 	}
 
 	exportPlanRel := filepath.ToSlash(filepath.Join(projectRel, "plan", "export-plan.yaml"))
@@ -486,6 +502,26 @@ func validateMigrationPlanContent(path string, project projectMetadata) error {
 	}
 	if mode != project.Mode {
 		return fmt.Errorf("mode %q does not match project metadata %q", mode, project.Mode)
+	}
+
+	return nil
+}
+
+func validateProjectOwnedYAMLContent(path string, project projectMetadata) error {
+	projectID, err := readPlanTopLevelScalar(path, "project_id")
+	if err != nil {
+		return err
+	}
+	if projectID != project.ProjectID {
+		return fmt.Errorf("project_id %q does not match project metadata %q", projectID, project.ProjectID)
+	}
+
+	sourceClusterID, err := readPlanTopLevelScalar(path, "source_cluster_id")
+	if err != nil {
+		return err
+	}
+	if sourceClusterID != project.SourceClusterID {
+		return fmt.Errorf("source_cluster_id %q does not match project metadata %q", sourceClusterID, project.SourceClusterID)
 	}
 
 	return nil
