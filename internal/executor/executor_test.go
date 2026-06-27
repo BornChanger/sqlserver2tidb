@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -226,6 +227,27 @@ func TestRunImportExecuteRequiresPositiveImportBatchSize(t *testing.T) {
 	assertOutputContains(t, stderr.String(), "executor import: import batch size must be positive")
 }
 
+func TestRunImportDryRunIncludesImportEngine(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"import",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--job-id", "import-dbo.orders.000001",
+		"--target-object", "app.orders",
+		"--source-uri", "file:///tmp/dbo.orders.000001.csv",
+		"--engine", "tidb-import-into",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("import dry-run code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	assertOutputContains(t, output, "executor import dry run")
+	assertOutputContains(t, output, "engine: tidb-import-into")
+}
+
 func TestExecuteTiDBImportValidatesBatchSizeBeforeSourceURI(t *testing.T) {
 	err := executeTiDBImport(context.Background(), importExecuteSpec{
 		TargetObject:              "app.orders",
@@ -434,6 +456,54 @@ func TestBuildTiDBInsertStatementQuotesObjectAndColumns(t *testing.T) {
 	want := "INSERT INTO `app`.`orders` (`id`, `order``name`) VALUES (?, ?)"
 	if stmt != want {
 		t.Fatalf("buildTiDBInsertStatement() = %q, want %q", stmt, want)
+	}
+}
+
+func TestBuildTiDBImportIntoStatementQuotesObjectAndUsesCSVHeaderSkip(t *testing.T) {
+	stmt, err := buildTiDBImportIntoStatement("app.orders", "file:///tmp/dbo.orders.000001.csv")
+	if err != nil {
+		t.Fatalf("buildTiDBImportIntoStatement() error = %v", err)
+	}
+
+	want := "IMPORT INTO `app`.`orders` FROM '/tmp/dbo.orders.000001.csv' FORMAT 'csv' WITH skip_rows=1"
+	if stmt != want {
+		t.Fatalf("buildTiDBImportIntoStatement() = %q, want %q", stmt, want)
+	}
+}
+
+func TestBuildTiDBImportIntoStatementSkipsInternalNullBitmapField(t *testing.T) {
+	stmt, err := buildTiDBImportIntoStatementWithFields("app.orders", "file:///tmp/dbo.orders.000001.csv", []string{"id", "name", "@sqlserver2tidb_null_bitmap"})
+	if err != nil {
+		t.Fatalf("buildTiDBImportIntoStatementWithFields() error = %v", err)
+	}
+
+	want := "IMPORT INTO `app`.`orders` (`id`, `name`, @sqlserver2tidb_null_bitmap) FROM '/tmp/dbo.orders.000001.csv' FORMAT 'csv' WITH skip_rows=1"
+	if stmt != want {
+		t.Fatalf("buildTiDBImportIntoStatementWithFields() = %q, want %q", stmt, want)
+	}
+}
+
+func TestBuildTiDBImportIntoStatementRejectsHTTPSource(t *testing.T) {
+	_, err := buildTiDBImportIntoStatement("app.orders", "https://object-store.example/dbo.orders.000001.csv")
+	if err == nil {
+		t.Fatal("buildTiDBImportIntoStatement() error = nil, want unsupported source error")
+	}
+	assertOutputContains(t, err.Error(), "IMPORT INTO source URI scheme https is not supported")
+}
+
+func TestReadTiDBImportIntoFieldsFromLocalSourceSkipsNullBitmap(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "orders.csv")
+	if err := os.WriteFile(path, []byte("id,name,__sqlserver2tidb_null_bitmap\n1,Ada,0\n"), 0o644); err != nil {
+		t.Fatalf("write CSV fixture: %v", err)
+	}
+
+	fields, err := readTiDBImportIntoFieldsFromLocalSource("file://" + path)
+	if err != nil {
+		t.Fatalf("readTiDBImportIntoFieldsFromLocalSource() error = %v", err)
+	}
+	want := []string{"id", "name", "@sqlserver2tidb_null_bitmap"}
+	if !reflect.DeepEqual(fields, want) {
+		t.Fatalf("readTiDBImportIntoFieldsFromLocalSource() = %v, want %v", fields, want)
 	}
 }
 

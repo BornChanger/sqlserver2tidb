@@ -190,9 +190,9 @@ func prepareImportExecutorCommands(projectDir, binary, sourceClusterID, projectI
 	if err != nil {
 		return nil, err
 	}
-	engine = strings.ToLower(strings.TrimSpace(engine))
-	if engine != "" && engine != "sql-insert" {
-		return nil, fmt.Errorf("import engine %s is not supported by sqlserver2tidb-executor; supported engine: sql-insert", engine)
+	engine = normalizeImportEngine(engine)
+	if err := validateSupportedImportEngine(engine); err != nil {
+		return nil, err
 	}
 	jobs, err := readImportPlanJobs(planPath)
 	if err != nil {
@@ -210,6 +210,7 @@ func prepareImportExecutorCommands(projectDir, binary, sourceClusterID, projectI
 			"--source-cluster-id", sourceClusterID,
 			"--project-id", projectID,
 			"--job-id", job.ID,
+			"--engine", engine,
 			"--target-object", job.TargetObject,
 			"--source-uri", job.SourceURI,
 			"--depends-on-export-chunk", job.DependsOnExportChunk,

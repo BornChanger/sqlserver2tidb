@@ -60,10 +60,10 @@ func GenerateDataMovementPlans(root, sourceClusterID, projectID string, spec Dat
 	if spec.ExportFormat != "csv" {
 		return DataMovementPlanResult{}, fmt.Errorf("export format %s is not supported by sqlserver2tidb-executor; supported format: csv", spec.ExportFormat)
 	}
-	if spec.ImportEngine != "sql-insert" {
-		return DataMovementPlanResult{}, fmt.Errorf("import engine %s is not supported by sqlserver2tidb-executor; supported engine: sql-insert", spec.ImportEngine)
+	if err := validateSupportedImportEngine(spec.ImportEngine); err != nil {
+		return DataMovementPlanResult{}, err
 	}
-	if err := validateExecutableObjectURIPrefix(spec.ObjectURIPrefix); err != nil {
+	if err := validateExecutableObjectURIPrefix(spec.ObjectURIPrefix, spec.ImportEngine); err != nil {
 		return DataMovementPlanResult{}, err
 	}
 
@@ -142,25 +142,34 @@ func normalizeDataMovementPlanSpec(spec DataMovementPlanSpec) DataMovementPlanSp
 	if spec.ExportFormat == "" {
 		spec.ExportFormat = "csv"
 	}
-	spec.ImportEngine = strings.ToLower(strings.TrimSpace(spec.ImportEngine))
-	if spec.ImportEngine == "" {
-		spec.ImportEngine = "sql-insert"
-	}
+	spec.ImportEngine = normalizeImportEngine(spec.ImportEngine)
 	return spec
 }
 
-func validateExecutableObjectURIPrefix(prefix string) error {
+func validateExecutableObjectURIPrefix(prefix, importEngine string) error {
 	parsed, err := url.Parse(prefix)
 	if err != nil {
 		return fmt.Errorf("parse object URI prefix: %w", err)
 	}
-	switch parsed.Scheme {
-	case "file", "http", "https":
-		return nil
-	case "":
-		return fmt.Errorf("object URI prefix must use file://, http://, or https://")
+	switch normalizeImportEngine(importEngine) {
+	case importEngineTiDBImportInto:
+		switch parsed.Scheme {
+		case "file", "s3", "gs":
+			return nil
+		case "":
+			return fmt.Errorf("object URI prefix must use file://, s3://, or gs:// for tidb-import-into")
+		default:
+			return fmt.Errorf("object URI prefix scheme %s is not supported by tidb-import-into; supported schemes: file, s3, gs", parsed.Scheme)
+		}
 	default:
-		return fmt.Errorf("object URI prefix scheme %s is not supported by sqlserver2tidb-executor; supported schemes: file, http, https", parsed.Scheme)
+		switch parsed.Scheme {
+		case "file", "http", "https":
+			return nil
+		case "":
+			return fmt.Errorf("object URI prefix must use file://, http://, or https://")
+		default:
+			return fmt.Errorf("object URI prefix scheme %s is not supported by sqlserver2tidb-executor; supported schemes: file, http, https", parsed.Scheme)
+		}
 	}
 }
 

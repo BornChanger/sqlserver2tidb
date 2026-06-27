@@ -1330,9 +1330,8 @@ func validateImportPlanContent(path string) error {
 	if err != nil {
 		return err
 	}
-	engine = strings.ToLower(strings.TrimSpace(engine))
-	if engine != "" && engine != "sql-insert" {
-		return fmt.Errorf("import engine %s is not supported by sqlserver2tidb-executor; supported engine: sql-insert", engine)
+	if err := validateSupportedImportEngine(engine); err != nil {
+		return err
 	}
 	jobs, err := readImportPlanJobs(path)
 	if err != nil {

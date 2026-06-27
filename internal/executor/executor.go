@@ -25,7 +25,27 @@ import (
 const defaultSourceConnectionStringEnv = "SQLSERVER2TIDB_SOURCE_CONNECTION_STRING"
 const defaultTargetConnectionStringEnv = "SQLSERVER2TIDB_TARGET_CONNECTION_STRING"
 
+const (
+	importEngineSQLInsert      = "sql-insert"
+	importEngineTiDBImportInto = "tidb-import-into"
+	importEngineImportInto     = "import-into"
+)
+
 var csvHTTPClient = &http.Client{Timeout: 10 * time.Minute}
+
+func normalizeImportEngine(engine string) (string, error) {
+	engine = strings.ToLower(strings.TrimSpace(engine))
+	switch engine {
+	case "":
+		return importEngineSQLInsert, nil
+	case importEngineSQLInsert:
+		return importEngineSQLInsert, nil
+	case importEngineTiDBImportInto, importEngineImportInto:
+		return importEngineTiDBImportInto, nil
+	default:
+		return "", fmt.Errorf("executor import: import engine %s is not supported; supported engines: %s, %s", engine, importEngineSQLInsert, importEngineTiDBImportInto)
+	}
+}
 
 func Run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
@@ -611,6 +631,7 @@ func runImport(args []string, stdout, stderr io.Writer) int {
 	sourceClusterID := fs.String("source-cluster-id", "", "upstream SQL Server cluster id")
 	projectID := fs.String("project-id", "", "migration project id")
 	jobID := fs.String("job-id", "", "import job id")
+	engine := fs.String("engine", importEngineSQLInsert, "import engine: sql-insert or tidb-import-into")
 	targetObject := fs.String("target-object", "", "target object")
 	sourceURI := fs.String("source-uri", "", "import source URI")
 	dependsOnExportChunk := fs.String("depends-on-export-chunk", "", "upstream export chunk id")
@@ -630,12 +651,18 @@ func runImport(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
+	normalizedEngine, err := normalizeImportEngine(*engine)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
 	if *execute && *importBatchSize <= 0 {
 		fmt.Fprintln(stderr, "executor import: import batch size must be positive")
 		return 1
 	}
 	if *execute {
 		if err := executeTiDBImport(context.Background(), importExecuteSpec{
+			ImportEngine:              normalizedEngine,
 			TargetObject:              *targetObject,
 			SourceURI:                 *sourceURI,
 			TargetConnectionStringEnv: *targetConnectionStringEnv,
@@ -653,6 +680,7 @@ func runImport(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "source cluster: %s\n", *sourceClusterID)
 	fmt.Fprintf(stdout, "project: %s\n", *projectID)
 	fmt.Fprintf(stdout, "job id: %s\n", *jobID)
+	fmt.Fprintf(stdout, "engine: %s\n", normalizedEngine)
 	fmt.Fprintf(stdout, "target object: %s\n", *targetObject)
 	fmt.Fprintf(stdout, "source uri: %s\n", *sourceURI)
 	if strings.TrimSpace(*dependsOnExportChunk) != "" {
@@ -963,6 +991,7 @@ func normalizeSQLScalar(value any) string {
 }
 
 type importExecuteSpec struct {
+	ImportEngine              string
 	TargetObject              string
 	SourceURI                 string
 	TargetConnectionStringEnv string
@@ -970,6 +999,13 @@ type importExecuteSpec struct {
 }
 
 func executeTiDBImport(ctx context.Context, spec importExecuteSpec) error {
+	engine, err := normalizeImportEngine(spec.ImportEngine)
+	if err != nil {
+		return err
+	}
+	if engine == importEngineTiDBImportInto {
+		return executeTiDBImportInto(ctx, spec)
+	}
 	if spec.ImportBatchSize <= 0 {
 		return fmt.Errorf("executor import: import batch size must be positive")
 	}
@@ -1010,6 +1046,37 @@ func executeTiDBImport(ctx context.Context, spec importExecuteSpec) error {
 	defer db.Close()
 
 	return insertCSVImportRows(ctx, db, insertSQL, reader, spec.ImportBatchSize)
+}
+
+func executeTiDBImportInto(ctx context.Context, spec importExecuteSpec) error {
+	fields, err := readTiDBImportIntoFieldsFromLocalSource(spec.SourceURI)
+	if err != nil {
+		return fmt.Errorf("executor import: %w", err)
+	}
+	statement, err := buildTiDBImportIntoStatementWithFields(spec.TargetObject, spec.SourceURI, fields)
+	if err != nil {
+		return fmt.Errorf("executor import: %w", err)
+	}
+
+	envName := strings.TrimSpace(spec.TargetConnectionStringEnv)
+	if envName == "" {
+		envName = defaultTargetConnectionStringEnv
+	}
+	connectionString := strings.TrimSpace(os.Getenv(envName))
+	if connectionString == "" {
+		return fmt.Errorf("executor import: target connection string env %s is not set", envName)
+	}
+
+	db, err := sql.Open("mysql", connectionString)
+	if err != nil {
+		return fmt.Errorf("executor import: open TiDB connection: %w", err)
+	}
+	defer db.Close()
+
+	if _, err := db.ExecContext(ctx, statement); err != nil {
+		return fmt.Errorf("executor import: execute TiDB IMPORT INTO: %w", err)
+	}
+	return nil
 }
 
 func openCSVImportFile(sourceURI string) (io.ReadCloser, error) {
@@ -1194,17 +1261,9 @@ func readCSVImportRecords(r io.Reader) ([]string, [][]string, error) {
 }
 
 func buildTiDBInsertStatement(targetObject string, columns []string) (string, error) {
-	parts := strings.Split(strings.TrimSpace(targetObject), ".")
-	if len(parts) != 1 && len(parts) != 2 {
-		return "", fmt.Errorf("target object must be table or database.table")
-	}
-	quotedObject := make([]string, 0, len(parts))
-	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			return "", fmt.Errorf("target object contains an empty identifier")
-		}
-		quotedObject = append(quotedObject, quoteTiDBIdentifier(part))
+	quotedTargetObject, err := quoteTiDBObjectName(targetObject)
+	if err != nil {
+		return "", err
 	}
 	if len(columns) == 0 {
 		return "", fmt.Errorf("CSV header must contain at least one column")
@@ -1221,10 +1280,178 @@ func buildTiDBInsertStatement(targetObject string, columns []string) (string, er
 	}
 
 	return fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)",
-		strings.Join(quotedObject, "."),
+		quotedTargetObject,
 		strings.Join(quotedColumns, ", "),
 		strings.Join(placeholders, ", "),
 	), nil
+}
+
+func buildTiDBImportIntoStatement(targetObject, sourceURI string) (string, error) {
+	return buildTiDBImportIntoStatementWithFields(targetObject, sourceURI, nil)
+}
+
+func buildTiDBImportIntoStatementWithFields(targetObject, sourceURI string, fields []string) (string, error) {
+	quotedTargetObject, err := quoteTiDBObjectName(targetObject)
+	if err != nil {
+		return "", err
+	}
+	fileLocation, err := normalizeTiDBImportIntoFileLocation(sourceURI)
+	if err != nil {
+		return "", err
+	}
+	fieldList, err := buildTiDBImportIntoFieldList(fields)
+	if err != nil {
+		return "", err
+	}
+	target := quotedTargetObject
+	if fieldList != "" {
+		target += " " + fieldList
+	}
+	return fmt.Sprintf("IMPORT INTO %s FROM %s FORMAT 'csv' WITH skip_rows=1",
+		target,
+		quoteTiDBStringLiteral(fileLocation),
+	), nil
+}
+
+func buildTiDBImportIntoFieldList(fields []string) (string, error) {
+	if len(fields) == 0 {
+		return "", nil
+	}
+	quoted := make([]string, 0, len(fields))
+	seenColumns := make(map[string]struct{}, len(fields))
+	for _, field := range fields {
+		field = strings.TrimSpace(field)
+		if field == "" {
+			return "", fmt.Errorf("IMPORT INTO field list contains an empty field")
+		}
+		if strings.HasPrefix(field, "@") {
+			quoted = append(quoted, field)
+			continue
+		}
+		normalizedColumn := strings.ToLower(field)
+		if _, ok := seenColumns[normalizedColumn]; ok {
+			return "", fmt.Errorf("CSV header contains duplicate column name %q", field)
+		}
+		seenColumns[normalizedColumn] = struct{}{}
+		quoted = append(quoted, quoteTiDBIdentifier(field))
+	}
+	return "(" + strings.Join(quoted, ", ") + ")", nil
+}
+
+func readTiDBImportIntoFieldsFromLocalSource(sourceURI string) ([]string, error) {
+	sourceURI = strings.TrimSpace(sourceURI)
+	if sourceURI == "" {
+		return nil, fmt.Errorf("IMPORT INTO source URI is required")
+	}
+	parsed, err := url.Parse(sourceURI)
+	if err != nil {
+		return nil, fmt.Errorf("parse IMPORT INTO source URI: %w", err)
+	}
+	var path string
+	switch parsed.Scheme {
+	case "":
+		path = sourceURI
+	case "file":
+		if parsed.Host != "" && parsed.Host != "localhost" {
+			return nil, fmt.Errorf("file source URI host must be empty or localhost")
+		}
+		if strings.TrimSpace(parsed.Path) == "" {
+			return nil, fmt.Errorf("file source URI path is required")
+		}
+		path = filepath.Clean(parsed.Path)
+	case "s3", "gs":
+		return nil, nil
+	default:
+		return nil, fmt.Errorf("IMPORT INTO source URI scheme %s is not supported; supported schemes: file, s3, gs, or local path", parsed.Scheme)
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("read IMPORT INTO CSV header: %w", err)
+	}
+	defer file.Close()
+
+	reader := csv.NewReader(file)
+	columns, err := reader.Read()
+	if err != nil {
+		return nil, fmt.Errorf("read IMPORT INTO CSV header: %w", err)
+	}
+	return buildTiDBImportIntoFieldsFromCSVHeader(columns)
+}
+
+func buildTiDBImportIntoFieldsFromCSVHeader(columns []string) ([]string, error) {
+	if len(columns) == 0 {
+		return nil, fmt.Errorf("CSV header must contain at least one column")
+	}
+	fields := make([]string, 0, len(columns))
+	seenColumns := make(map[string]struct{}, len(columns))
+	for i, column := range columns {
+		column = strings.TrimSpace(column)
+		if column == "" {
+			return nil, fmt.Errorf("CSV header contains an empty column name")
+		}
+		if column == csvNullBitmapColumn {
+			if i != len(columns)-1 {
+				return nil, fmt.Errorf("CSV header contains reserved column name %q outside the final null bitmap position", csvNullBitmapColumn)
+			}
+			fields = append(fields, "@sqlserver2tidb_null_bitmap")
+			continue
+		}
+		normalizedColumn := strings.ToLower(column)
+		if _, ok := seenColumns[normalizedColumn]; ok {
+			return nil, fmt.Errorf("CSV header contains duplicate column name %q", column)
+		}
+		seenColumns[normalizedColumn] = struct{}{}
+		fields = append(fields, column)
+	}
+	return fields, nil
+}
+
+func quoteTiDBObjectName(targetObject string) (string, error) {
+	parts := strings.Split(strings.TrimSpace(targetObject), ".")
+	if len(parts) != 1 && len(parts) != 2 {
+		return "", fmt.Errorf("target object must be table or database.table")
+	}
+	quoted := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return "", fmt.Errorf("target object contains an empty identifier")
+		}
+		quoted = append(quoted, quoteTiDBIdentifier(part))
+	}
+	return strings.Join(quoted, "."), nil
+}
+
+func normalizeTiDBImportIntoFileLocation(sourceURI string) (string, error) {
+	sourceURI = strings.TrimSpace(sourceURI)
+	if sourceURI == "" {
+		return "", fmt.Errorf("IMPORT INTO source URI is required")
+	}
+	parsed, err := url.Parse(sourceURI)
+	if err != nil {
+		return "", fmt.Errorf("parse IMPORT INTO source URI: %w", err)
+	}
+	switch parsed.Scheme {
+	case "":
+		return sourceURI, nil
+	case "file":
+		if parsed.Host != "" && parsed.Host != "localhost" {
+			return "", fmt.Errorf("file source URI host must be empty or localhost")
+		}
+		if strings.TrimSpace(parsed.Path) == "" {
+			return "", fmt.Errorf("file source URI path is required")
+		}
+		return filepath.Clean(parsed.Path), nil
+	case "s3", "gs":
+		return parsed.String(), nil
+	default:
+		return "", fmt.Errorf("IMPORT INTO source URI scheme %s is not supported; supported schemes: file, s3, gs, or local path", parsed.Scheme)
+	}
+}
+
+func quoteTiDBStringLiteral(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
 }
 
 func buildSQLServerCountQuery(sourceObject, predicate string) (string, error) {

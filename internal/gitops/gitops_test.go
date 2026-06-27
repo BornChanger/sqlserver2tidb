@@ -2167,7 +2167,7 @@ func TestValidateRepoReportsUnsupportedImportEngine(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
 	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml", `status: reviewed
-engine: import-into
+engine: lightning
 jobs:
   - id: import-dbo.orders.000001
     target_object: app.orders
@@ -2182,7 +2182,24 @@ jobs:
 	if report.Valid {
 		t.Fatalf("ValidateRepo() valid = true, want false")
 	}
-	assertContains(t, strings.Join(report.Errors, "\n"), "invalid import plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml: import engine import-into is not supported by sqlserver2tidb-executor")
+	assertContains(t, strings.Join(report.Errors, "\n"), "invalid import plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml: import engine lightning is not supported by sqlserver2tidb-executor")
+}
+
+func TestValidateRepoAcceptsTiDBImportIntoEngine(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	importPlanRel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml"
+	importPlan := readFile(t, root, importPlanRel)
+	importPlan = strings.Replace(importPlan, "engine: sql-insert", "engine: tidb-import-into", 1)
+	writeFileForTest(t, root, importPlanRel, importPlan)
+
+	report, err := ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
+	if !report.Valid {
+		t.Fatalf("ValidateRepo() valid = false, errors = %v", report.Errors)
+	}
 }
 
 func TestValidateRepoReportsDuplicateImportJobID(t *testing.T) {
@@ -3679,12 +3696,49 @@ func TestGenerateDataMovementPlansRejectsUnsupportedImportEngine(t *testing.T) {
 		ObjectURIPrefix: "https://object-store.example/migration/prod/full",
 		ChunkSizeRows:   1000000,
 		ExportFormat:    "csv",
-		ImportEngine:    "import-into",
+		ImportEngine:    "lightning",
 	})
 	if err == nil {
 		t.Fatal("GenerateDataMovementPlans() expected unsupported import engine error")
 	}
-	assertContains(t, err.Error(), "import engine import-into is not supported by sqlserver2tidb-executor")
+	assertContains(t, err.Error(), "import engine lightning is not supported by sqlserver2tidb-executor")
+}
+
+func TestGenerateDataMovementPlansSupportsTiDBImportIntoEngine(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+
+	result, err := GenerateDataMovementPlans(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", DataMovementPlanSpec{
+		ObjectURIPrefix: "file:///tmp/sqlserver2tidb/full",
+		ChunkSizeRows:   1000000,
+		ExportFormat:    "csv",
+		ImportEngine:    "tidb-import-into",
+	})
+	if err != nil {
+		t.Fatalf("GenerateDataMovementPlans() error = %v", err)
+	}
+	if result.ImportJobs != 3 {
+		t.Fatalf("ImportJobs = %d, want 3", result.ImportJobs)
+	}
+	importPlan := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml")
+	assertContains(t, importPlan, "engine: tidb-import-into")
+	assertContains(t, importPlan, "source_uri: file:///tmp/sqlserver2tidb/full/dbo.orders.000001.csv")
+}
+
+func TestGenerateDataMovementPlansRejectsHTTPPrefixForTiDBImportIntoEngine(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+
+	_, err := GenerateDataMovementPlans(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", DataMovementPlanSpec{
+		ObjectURIPrefix: "https://object-store.example/migration/prod/full",
+		ChunkSizeRows:   1000000,
+		ExportFormat:    "csv",
+		ImportEngine:    "tidb-import-into",
+	})
+	if err == nil {
+		t.Fatal("GenerateDataMovementPlans() expected HTTP prefix error for tidb-import-into")
+	}
+	assertContains(t, err.Error(), "object URI prefix scheme https is not supported by tidb-import-into")
 }
 
 func TestGenerateDataMovementPlansRejectsUnsupportedObjectURIScheme(t *testing.T) {
@@ -4163,6 +4217,36 @@ func TestPrepareWorkerExecutorBuildsImportCommandsWhenApprovedHashMatches(t *tes
 	assertContains(t, first.ShellCommand, "--depends-on-export-chunk dbo.orders.000001")
 }
 
+func TestPrepareWorkerExecutorBuildsTiDBImportIntoCommandsWhenApprovedHashMatches(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateSchemaDraftOnly(root))
+	must(t, GenerateDataPlansOnly(root))
+	importPlanRel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml"
+	importPlan := readFile(t, root, importPlanRel)
+	importPlan = strings.Replace(importPlan, "engine: sql-insert", "engine: tidb-import-into", 1)
+	writeFileForTest(t, root, importPlanRel, importPlan)
+	setReviewPlanStatus(t, root, "import", "reviewed")
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(import) error = %v", err)
+	}
+	writeStageApproval(t, root, "import", hash)
+
+	spec, err := PrepareWorkerExecutor(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import", WorkerExecutorPrepareSpec{})
+	if err != nil {
+		t.Fatalf("PrepareWorkerExecutor() error = %v", err)
+	}
+	if spec.Stage != "import" || spec.PayloadHash != hash || len(spec.Commands) != 3 {
+		t.Fatalf("executor spec = %+v, want import with 3 commands and hash %s", spec, hash)
+	}
+	first := spec.Commands[0]
+	assertContains(t, first.ShellCommand, "sqlserver2tidb-executor import")
+	assertContains(t, first.ShellCommand, "--engine tidb-import-into")
+	assertContains(t, first.ShellCommand, "--job-id import-dbo.orders.000001")
+	assertContains(t, first.ShellCommand, "--target-object app.orders")
+}
+
 func TestPrepareWorkerExecutorRejectsUnsupportedImportEngine(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
@@ -4170,7 +4254,7 @@ func TestPrepareWorkerExecutorRejectsUnsupportedImportEngine(t *testing.T) {
 	must(t, GenerateDataPlansOnly(root))
 	importPlanRel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml"
 	importPlan := readFile(t, root, importPlanRel)
-	importPlan = strings.Replace(importPlan, "engine: sql-insert", "engine: import-into", 1)
+	importPlan = strings.Replace(importPlan, "engine: sql-insert", "engine: lightning", 1)
 	writeFileForTest(t, root, importPlanRel, importPlan)
 	setReviewPlanStatus(t, root, "import", "reviewed")
 	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import")
@@ -4183,7 +4267,7 @@ func TestPrepareWorkerExecutorRejectsUnsupportedImportEngine(t *testing.T) {
 	if err == nil {
 		t.Fatal("PrepareWorkerExecutor() expected unsupported import engine error")
 	}
-	assertContains(t, err.Error(), "import engine import-into is not supported by sqlserver2tidb-executor")
+	assertContains(t, err.Error(), "import engine lightning is not supported by sqlserver2tidb-executor")
 }
 
 func TestPrepareWorkerExecutorAddsImportConnectionStringEnvAndBatchSize(t *testing.T) {

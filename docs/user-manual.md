@@ -52,7 +52,7 @@ LLM 只生成解释、候选方案和文档，不直接执行迁移
 - 生成核心 JSON Schema 文件。
 - 单元测试和 CLI smoke test。
 
-当前 CLI 在执行 `discover-sqlserver --connection-string-env ...` 时会连接 SQL Server，并且只读取 catalog metadata。`sqlserver2tidb-executor apply-ddl --execute` 可以显式连接 TiDB，执行已 review 且不含 `TODO` 的 DDL 文件。`sqlserver2tidb-executor export --execute` 也可以显式连接 SQL Server，把一个已审批的导出 work item 写成本地 `file://` CSV 或 HTTP(S) CSV，例如对象存储预签名 URL；CSV 会带内部 `__sqlserver2tidb_null_bitmap` 尾列，用来保留 SQL NULL。`sqlserver2tidb-executor import --execute` 可以显式连接 TiDB，把本地 `file://` CSV 或 HTTP(S) CSV 逐行写入目标表，并在识别该内部尾列时恢复 NULL。`sqlserver2tidb-executor validate-count --execute` 可以显式同时连接 SQL Server 和 TiDB，对一个源/目标对象做 `COUNT(*)` 对比；`sqlserver2tidb-executor validate-query --execute` 可以执行已 review 的源端/目标端 SQL 标量查询并比较结果，用于 `checksum`、`sampled_hash` 和 `business_sql` 检查项。除此之外，它不会执行原生 `s3://` 对象存储 IO、TiDB Lightning、`IMPORT INTO`、CDC、切流、自动 checksum 生成或分桶 sampled hash 策略。`discover-sqlserver --dry-run` 只输出计划，不打开数据库连接，也不写 inventory 文件。`analyze-compatibility`、`generate-schema-draft`、`generate-data-plans`、`generate-cdc-plan`、`generate-validation-plan`、`generate-pr-draft`、`create-pr` 的默认 dry-run、`create-worker-state-pr` 的默认 dry-run、`create-executor-evidence-pr` 的默认 dry-run、`worker-executor` 的默认 dry-run、`sqlserver2tidb-executor` 的默认 dry-run、`compute-payload-hash`、`worker-export`、`worker-import`、`worker-cdc`、`worker-validate`、`worker-reconcile --dry-run` 和 `worker-reconcile --execute-next` 只读取并写回或汇报 GitHub metadata 文件。`worker-reconcile --state-pr-draft` 和 `generate-executor-evidence-pr-draft` 只生成 Markdown PR body，不调用 GitHub。`create-pr --execute` 会调用本地 `gh pr create`；`create-worker-state-pr --execute` 和 `create-executor-evidence-pr --execute` 会调用本地 `git` 和 `gh`；`sqlserver2tidb-executor cdc --execute` 当前会返回 not implemented。
+当前 CLI 在执行 `discover-sqlserver --connection-string-env ...` 时会连接 SQL Server，并且只读取 catalog metadata。`sqlserver2tidb-executor apply-ddl --execute` 可以显式连接 TiDB，执行已 review 且不含 `TODO` 的 DDL 文件。`sqlserver2tidb-executor export --execute` 也可以显式连接 SQL Server，把一个已审批的导出 work item 写成本地 `file://` CSV 或 HTTP(S) CSV，例如对象存储预签名 URL；CSV 会带内部 `__sqlserver2tidb_null_bitmap` 尾列，用来保留 SQL NULL。`sqlserver2tidb-executor import --execute` 可以显式连接 TiDB；默认 `--engine sql-insert` 会把本地 `file://` CSV 或 HTTP(S) CSV 逐行写入目标表，并在识别该内部尾列时恢复 NULL；显式 `--engine tidb-import-into` 会执行 TiDB `IMPORT INTO ... FROM FILE`，支持本地路径、`file://`、`s3://`、`gs://` file location，本地/file CSV 会读取 header 并把内部尾列映射成 TiDB user variable 以跳过写入。`sqlserver2tidb-executor validate-count --execute` 可以显式同时连接 SQL Server 和 TiDB，对一个源/目标对象做 `COUNT(*)` 对比；`sqlserver2tidb-executor validate-query --execute` 可以执行已 review 的源端/目标端 SQL 标量查询并比较结果，用于 `checksum`、`sampled_hash` 和 `business_sql` 检查项。除此之外，它不会执行原生对象存储 export IO、TiDB Lightning、CDC、切流、自动 checksum 生成或分桶 sampled hash 策略。`discover-sqlserver --dry-run` 只输出计划，不打开数据库连接，也不写 inventory 文件。`analyze-compatibility`、`generate-schema-draft`、`generate-data-plans`、`generate-cdc-plan`、`generate-validation-plan`、`generate-pr-draft`、`create-pr` 的默认 dry-run、`create-worker-state-pr` 的默认 dry-run、`create-executor-evidence-pr` 的默认 dry-run、`worker-executor` 的默认 dry-run、`sqlserver2tidb-executor` 的默认 dry-run、`compute-payload-hash`、`worker-export`、`worker-import`、`worker-cdc`、`worker-validate`、`worker-reconcile --dry-run` 和 `worker-reconcile --execute-next` 只读取并写回或汇报 GitHub metadata 文件。`worker-reconcile --state-pr-draft` 和 `generate-executor-evidence-pr-draft` 只生成 Markdown PR body，不调用 GitHub。`create-pr --execute` 会调用本地 `gh pr create`；`create-worker-state-pr --execute` 和 `create-executor-evidence-pr --execute` 会调用本地 `git` 和 `gh`；`sqlserver2tidb-executor cdc --execute` 当前会返回 not implemented。
 
 ### 2.2 终极目标
 
@@ -776,7 +776,7 @@ bin/sqlserver2tidb generate-data-plans \
 - 只处理 `project.yaml` 中指定的 source database 和 source schemas。
 - 根据 inventory 中的 `row_count` 和 `--chunk-size-rows` 估算 export chunk 数。
 - 为每个 export chunk 生成对应 import job。
-- 只生成当前内置 executor 支持的计划：`--export-format csv`、`--import-engine sql-insert`，以及 `file://`、`http://`、`https://` URI 前缀。
+- 只生成当前内置 executor 支持的计划：`--export-format csv`；默认 `--import-engine sql-insert` 支持 `file://`、`http://`、`https://` URI 前缀；显式 `--import-engine tidb-import-into` 支持 `file://`、`s3://`、`gs://` URI 前缀。
 - 单 schema project 默认保留原表名；多 schema project 会用 `<schema>_<table>` 作为目标表名。
 - 单 chunk 表会生成 `1 = 1` predicate；需要拆成多个 chunk 的表仍会先写成 `TODO` split predicate，必须由 DBA 或 operator 根据主键、唯一键、时间列或分桶策略 review；approval 后 `worker-export` 和 `worker-executor --stage export` 会拒绝仍包含 `TODO` 的 predicate。
 - 不连接 SQL Server，不连接 TiDB，不读取业务数据，不写对象存储，也不执行 `IMPORT INTO`。
@@ -1522,7 +1522,7 @@ clusters/<source_cluster_id>/cluster.yaml
 
 ### 15.4 当前能直接迁移数据吗？
 
-当前 MVP 可以只读连接 SQL Server catalog 生成 inventory，可以从 inventory 生成 TiDB DDL 草稿、全量导出/导入计划草稿、CDC 计划草稿和 validation plan 草稿，并执行 metadata-only export/import/CDC/validation worker。`worker-executor` 可以在 approval/hash gate 后生成外部执行器命令；当前 export 只接受 `format: csv`，import 只接受 `engine: sql-insert`，避免把 Parquet、Lightning 或 `IMPORT INTO` 这类未来路径误交给内置 executor。`sqlserver2tidb-executor` 当前已经可以解析这些 work item 并 dry-run 输出上下文。`apply-ddl --execute` 支持把已 review 且不含 `TODO` 的 DDL 文件执行到 TiDB。`export --execute` 支持 SQL Server 到本地 `file://` CSV 或 HTTP(S) CSV 的最小真实导出路径，并通过内部 null bitmap 尾列保留 SQL NULL，但还不支持原生 `s3://` 客户端或 Parquet。`import --execute` 支持本地 `file://` CSV 或 HTTP(S) CSV 到 TiDB 的流式逐行 insert 路径，会识别并排除内部 null bitmap 尾列，并用 `--import-batch-size` 分批提交事务，但还不支持 Lightning 或 `IMPORT INTO`。`worker-executor --stage validation` 可以在 validation approval/hash gate 后生成 `validate-count` 和 `validate-query` 命令，`validate-count --execute` 支持单对象 SQL Server/TiDB 行数对比，`validate-query --execute` 支持已 review 的 checksum、sampled-hash 和 business-SQL scalar-query 结果对比。`generate-validation-plan` 可以显式生成 exact-numeric checksum/sample-hash scalar-query 草稿。`cdc --execute` 仍显式返回 not implemented，不会回放 CDC。通用行级 digest、生产级分桶策略和大规模校验引擎仍是后续能力。
+当前 MVP 可以只读连接 SQL Server catalog 生成 inventory，可以从 inventory 生成 TiDB DDL 草稿、全量导出/导入计划草稿、CDC 计划草稿和 validation plan 草稿，并执行 metadata-only export/import/CDC/validation worker。`worker-executor` 可以在 approval/hash gate 后生成外部执行器命令；当前 export 只接受 `format: csv`，import 接受 `engine: sql-insert` 和 `engine: tidb-import-into`。`sqlserver2tidb-executor` 当前已经可以解析这些 work item 并 dry-run 输出上下文。`apply-ddl --execute` 支持把已 review 且不含 `TODO` 的 DDL 文件执行到 TiDB。`export --execute` 支持 SQL Server 到本地 `file://` CSV 或 HTTP(S) CSV 的最小真实导出路径，并通过内部 null bitmap 尾列保留 SQL NULL，但还不支持原生 `s3://` 客户端或 Parquet。`import --execute` 的默认 `sql-insert` 支持本地 `file://` CSV 或 HTTP(S) CSV 到 TiDB 的流式逐行 insert 路径，会识别并排除内部 null bitmap 尾列，并用 `--import-batch-size` 分批提交事务；`tidb-import-into` 会执行 TiDB `IMPORT INTO ... FROM FILE`，支持本地路径、`file://`、`s3://`、`gs://`，其中本地/file CSV 会读取 header 并跳过内部 null bitmap 尾列。`worker-executor --stage validation` 可以在 validation approval/hash gate 后生成 `validate-count` 和 `validate-query` 命令，`validate-count --execute` 支持单对象 SQL Server/TiDB 行数对比，`validate-query --execute` 支持已 review 的 checksum、sampled-hash 和 business-SQL scalar-query 结果对比。`generate-validation-plan` 可以显式生成 exact-numeric checksum/sample-hash scalar-query 草稿。`cdc --execute` 仍显式返回 not implemented，不会回放 CDC。通用行级 digest、生产级分桶策略和大规模校验引擎仍是后续能力。
 
 ### 15.5 可以把 LLM 接进来吗？
 
@@ -1634,7 +1634,7 @@ bin/sqlserver2tidb generate-data-plans \
   --import-engine sql-insert
 ```
 
-该命令读取源集群 inventory 和项目 metadata，写回项目目录下的 `plan/export-plan.yaml` 和 `plan/import-plan.yaml`。它只生成当前内置 executor 支持的 CSV/sql-insert 草稿，`--object-uri-prefix` 必须使用 `file://`、`http://` 或 `https://` 前缀；不连接 SQL Server 或 TiDB，不执行导出或导入。`--chunk-size-rows` 默认是 `1000000`，`--export-format` 默认是 `csv`，`--import-engine` 默认是 `sql-insert`。
+该命令读取源集群 inventory 和项目 metadata，写回项目目录下的 `plan/export-plan.yaml` 和 `plan/import-plan.yaml`。它只生成当前内置 executor 支持的 CSV 草稿。默认 `--import-engine sql-insert` 时，`--object-uri-prefix` 必须使用 `file://`、`http://` 或 `https://` 前缀；显式 `--import-engine tidb-import-into` 时，`--object-uri-prefix` 必须使用 `file://`、`s3://` 或 `gs://` 前缀，以匹配 TiDB `IMPORT INTO ... FROM FILE` 支持的 file location。不连接 SQL Server 或 TiDB，不执行导出或导入。`--chunk-size-rows` 默认是 `1000000`，`--export-format` 默认是 `csv`，`--import-engine` 默认是 `sql-insert`。
 
 ### 16.9 generate-cdc-plan
 
@@ -1815,7 +1815,7 @@ bin/sqlserver2tidb worker-executor \
   --target-connection-string-env SQLSERVER2TIDB_TARGET_CONNECTION_STRING
 ```
 
-该命令支持 `ddl`、`export`、`import`、`cdc` 和 `validation`。它复用对应 stage 的 approval/hash gate，只有 approval 通过、payload hash 匹配，且 DDL 的 `schema/schema-diff.json` 已经是 `reviewed`，或 export/import/CDC/validation plan 已经是 `reviewed` 或 `approved` 时才生成执行器命令。默认外部 binary 是 `sqlserver2tidb-executor`，可以通过 `--executor-binary` 覆盖。`--source-connection-string-env`、`--target-connection-string-env` 和 `--import-batch-size` 会被渲染进生成的 executor 命令，不写入 GitHub metadata。默认 dry-run 只打印命令；只有加 `--execute` 才会调用外部 binary，并在 executor 子命令后自动注入 `--execute`，让随仓库提供的 executor 离开 dry-run 模式。执行模式会写回 `evidence/executor-<stage>-run.json`，记录 payload hash、每条命令、输出、exit code、每条命令的开始/结束时间和耗时；如果某条命令失败，会先写 failed evidence，再返回非零退出码。`ddl` stage 会为 `schema/tidb-ddl/*.sql` 生成 `apply-ddl` 命令；审批后的 export/import/CDC plan 如果没有任何 work item，会直接失败；export chunk predicate 如果仍包含 `TODO` 也会失败；export plan 只有 `format: csv` 才会生成当前 executor 命令，import plan 只有 `engine: sql-insert` 才会生成当前 executor 命令；`validation` stage 会为 `row_count` 检查生成 `validate-count` 命令，为 `checksum`、`sampled_hash` 和 `business_sql` 检查生成 `validate-query` 命令，如果审批后的 validation plan 没有任何支持的 row-count、checksum、sampled-hash 或 business-SQL 检查，也会直接失败。当前随仓库提供的 `sqlserver2tidb-executor apply-ddl --execute` 可以把已 review DDL 执行到 TiDB；`export --execute` 支持 SQL Server 到本地 `file://` CSV 或 HTTP(S) CSV，并写入内部 null bitmap 尾列；`import --execute` 支持本地 `file://` CSV 或 HTTP(S) CSV 到 TiDB 的流式逐行 insert，并识别该尾列恢复 NULL；`validate-query --execute` 支持单行单列 SQL 标量结果对比；`cdc --execute` 仍返回 not implemented。
+该命令支持 `ddl`、`export`、`import`、`cdc` 和 `validation`。它复用对应 stage 的 approval/hash gate，只有 approval 通过、payload hash 匹配，且 DDL 的 `schema/schema-diff.json` 已经是 `reviewed`，或 export/import/CDC/validation plan 已经是 `reviewed` 或 `approved` 时才生成执行器命令。默认外部 binary 是 `sqlserver2tidb-executor`，可以通过 `--executor-binary` 覆盖。`--source-connection-string-env`、`--target-connection-string-env` 和 `--import-batch-size` 会被渲染进生成的 executor 命令，不写入 GitHub metadata。默认 dry-run 只打印命令；只有加 `--execute` 才会调用外部 binary，并在 executor 子命令后自动注入 `--execute`，让随仓库提供的 executor 离开 dry-run 模式。执行模式会写回 `evidence/executor-<stage>-run.json`，记录 payload hash、每条命令、输出、exit code、每条命令的开始/结束时间和耗时；如果某条命令失败，会先写 failed evidence，再返回非零退出码。`ddl` stage 会为 `schema/tidb-ddl/*.sql` 生成 `apply-ddl` 命令；审批后的 export/import/CDC plan 如果没有任何 work item，会直接失败；export chunk predicate 如果仍包含 `TODO` 也会失败；export plan 只有 `format: csv` 才会生成当前 executor 命令，import plan 只有 `engine: sql-insert` 或 `engine: tidb-import-into` 才会生成当前 executor 命令；`validation` stage 会为 `row_count` 检查生成 `validate-count` 命令，为 `checksum`、`sampled_hash` 和 `business_sql` 检查生成 `validate-query` 命令，如果审批后的 validation plan 没有任何支持的 row-count、checksum、sampled-hash 或 business-SQL 检查，也会直接失败。当前随仓库提供的 `sqlserver2tidb-executor apply-ddl --execute` 可以把已 review DDL 执行到 TiDB；`export --execute` 支持 SQL Server 到本地 `file://` CSV 或 HTTP(S) CSV，并写入内部 null bitmap 尾列；`import --execute --engine sql-insert` 支持本地 `file://` CSV 或 HTTP(S) CSV 到 TiDB 的流式逐行 insert，并识别该尾列恢复 NULL；`import --execute --engine tidb-import-into` 支持 TiDB `IMPORT INTO ... FROM FILE`，要求目标表已存在且为空，file location 为本地路径、`file://`、`s3://` 或 `gs://`；`validate-query --execute` 支持单行单列 SQL 标量结果对比；`cdc --execute` 仍返回 not implemented。
 
 ### 16.18 sqlserver2tidb-executor
 
@@ -1903,7 +1903,23 @@ bin/sqlserver2tidb-executor import \
   --import-batch-size 1000
 ```
 
-也可以用 `--target-connection-string-env <ENV_NAME>` 指定其他环境变量。当前实现读取 CSV header 作为目标列名；如果 header 最后一列是内部 `__sqlserver2tidb_null_bitmap`，import 会把该列从目标列中排除，并根据 bitmap 把对应字段恢复为 NULL。随后它流式读取 CSV 行，并按 `--import-batch-size` 分批事务提交 `INSERT`。它不调用 TiDB Lightning 或 `IMPORT INTO`。
+也可以用 `--target-connection-string-env <ENV_NAME>` 指定其他环境变量。默认 `--engine sql-insert` 会读取 CSV header 作为目标列名；如果 header 最后一列是内部 `__sqlserver2tidb_null_bitmap`，import 会把该列从目标列中排除，并根据 bitmap 把对应字段恢复为 NULL。随后它流式读取 CSV 行，并按 `--import-batch-size` 分批事务提交 `INSERT`。
+
+使用 TiDB 原生 `IMPORT INTO`：
+
+```bash
+bin/sqlserver2tidb-executor import \
+  --execute \
+  --engine tidb-import-into \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --job-id import-dbo.orders.000001 \
+  --target-object app.orders \
+  --source-uri file:///tmp/sqlserver2tidb/dbo.orders.000001.csv
+```
+
+`tidb-import-into` 会执行形如 `IMPORT INTO app.orders FROM '<fileLocation>' FORMAT 'csv' WITH skip_rows=1` 的 TiDB SQL。根据 TiDB 官方文档，目标表必须已经存在且为空，执行过程不支持事务回滚；详见 https://docs.pingcap.com/tidb/stable/sql-statement-import-into/ 。当前实现支持本地路径、`file://`、`s3://`、`gs://` file location。对于本地路径和 `file://`，executor 会读取 CSV header，并把内部 `__sqlserver2tidb_null_bitmap` 尾列映射到 TiDB user variable 以跳过该字段；对于 `s3://` 和 `gs://`，当前不会远程读取 header，因此文件字段必须已经与目标表列顺序匹配。
 
 行数校验 dry-run：
 
@@ -1976,7 +1992,7 @@ bin/sqlserver2tidb-executor cdc \
   --apply-batch-size 1000
 ```
 
-当前 binary 默认只做参数解析和 dry-run 输出。`export --execute` 会连接 SQL Server，并把 CSV 写到本地 `file://` 或 HTTP(S) URL；它会在 header 尾部增加内部 `__sqlserver2tidb_null_bitmap` 列，用来保留每行 NULL 位置。它不会使用原生 S3/GCS/Azure Blob SDK，也不会生成 Parquet。`import --execute` 会连接 TiDB，并从本地 `file://` 或 HTTP(S) CSV 流式逐行插入，按 batch size 分批提交；如果 CSV 带内部 null bitmap 尾列，会恢复 NULL 并不把该内部列写入目标表。它不会调用 Lightning 或 `IMPORT INTO`。`validate-count --execute` 会连接 SQL Server 和 TiDB，比较单对象 `COUNT(*)`。`validate-query --execute` 会连接 SQL Server 和 TiDB，比较已 review 的单行单列标量查询结果，并在成功输出里带上 `check-id`。`cdc --execute` 会返回 not implemented，用来防止误执行尚未实现的 CDC 路径。
+当前 binary 默认只做参数解析和 dry-run 输出。`export --execute` 会连接 SQL Server，并把 CSV 写到本地 `file://` 或 HTTP(S) URL；它会在 header 尾部增加内部 `__sqlserver2tidb_null_bitmap` 列，用来保留每行 NULL 位置。它不会使用原生 S3/GCS/Azure Blob SDK，也不会生成 Parquet。`import --execute --engine sql-insert` 会连接 TiDB，并从本地 `file://` 或 HTTP(S) CSV 流式逐行插入，按 batch size 分批提交；如果 CSV 带内部 null bitmap 尾列，会恢复 NULL 并不把该内部列写入目标表。`import --execute --engine tidb-import-into` 会连接 TiDB 并执行 `IMPORT INTO ... FROM FILE`，支持本地路径、`file://`、`s3://`、`gs://`，其中本地/file CSV 会读取 header 并跳过内部 null bitmap 尾列。它不会调用 Lightning。`validate-count --execute` 会连接 SQL Server 和 TiDB，比较单对象 `COUNT(*)`。`validate-query --execute` 会连接 SQL Server 和 TiDB，比较已 review 的单行单列标量查询结果，并在成功输出里带上 `check-id`。`cdc --execute` 会返回 not implemented，用来防止误执行尚未实现的 CDC 路径。
 
 ### 16.19 worker-reconcile
 
