@@ -65,6 +65,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runValidateCount(args[1:], stdout, stderr)
 	case "validate-query":
 		return runValidateQuery(args[1:], stdout, stderr)
+	case "cdc-lsn":
+		return runCDCLSN(args[1:], stdout, stderr)
 	case "cdc":
 		return runCDC(args[1:], stdout, stderr)
 	case "version", "-v", "--version":
@@ -78,6 +80,136 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		printUsage(stderr)
 		return 2
 	}
+}
+
+func runCDCLSN(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("cdc-lsn", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	root := fs.String("root", ".", "repository root")
+	sourceClusterID := fs.String("source-cluster-id", "", "upstream SQL Server cluster id")
+	projectID := fs.String("project-id", "", "migration project id")
+	sourceObject := fs.String("source-object", "", "optional source object used to derive the CDC capture instance")
+	sourceConnectionStringEnv := fs.String("source-connection-string-env", defaultSourceConnectionStringEnv, "environment variable containing the SQL Server CDC connection string")
+	execute := fs.Bool("execute", false, "query SQL Server CDC min/max LSNs")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if err := requireFields("executor cdc-lsn",
+		field{"source cluster id", *sourceClusterID},
+		field{"project id", *projectID},
+	); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+
+	captureInstance := ""
+	if strings.TrimSpace(*sourceObject) != "" {
+		var err error
+		captureInstance, err = sqlServerCDCCaptureInstance(*sourceObject)
+		if err != nil {
+			fmt.Fprintf(stderr, "executor cdc-lsn: %v\n", err)
+			return 1
+		}
+	}
+
+	if *execute {
+		bounds, err := queryCDCLSNBoundsFunc(context.Background(), cdcLSNQuerySpec{
+			SourceObject:              *sourceObject,
+			SourceConnectionStringEnv: *sourceConnectionStringEnv,
+		})
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		maxLSN, err := formatSQLServerCDCLSN(bounds.MaxLSN, "max LSN")
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		minLSN := ""
+		if len(bounds.MinLSN) > 0 {
+			minLSN, err = formatSQLServerCDCLSN(bounds.MinLSN, "min LSN")
+			if err != nil {
+				fmt.Fprintln(stderr, err)
+				return 1
+			}
+		}
+		fmt.Fprintln(stdout, "executor cdc-lsn completed")
+		if strings.TrimSpace(*sourceObject) != "" {
+			fmt.Fprintf(stdout, "source object: %s\n", strings.TrimSpace(*sourceObject))
+		}
+		if strings.TrimSpace(bounds.CaptureInstance) != "" {
+			fmt.Fprintf(stdout, "capture instance: %s\n", bounds.CaptureInstance)
+		}
+		if minLSN != "" {
+			fmt.Fprintf(stdout, "min_lsn: %s\n", minLSN)
+		}
+		fmt.Fprintf(stdout, "max_lsn: %s\n", maxLSN)
+		return 0
+	}
+
+	fmt.Fprintln(stdout, "executor cdc-lsn dry run")
+	fmt.Fprintf(stdout, "root: %s\n", *root)
+	fmt.Fprintf(stdout, "source cluster: %s\n", *sourceClusterID)
+	fmt.Fprintf(stdout, "project: %s\n", *projectID)
+	if strings.TrimSpace(*sourceObject) != "" {
+		fmt.Fprintf(stdout, "source object: %s\n", strings.TrimSpace(*sourceObject))
+		fmt.Fprintf(stdout, "capture instance: %s\n", captureInstance)
+	}
+	fmt.Fprintln(stdout, "No SQL Server CDC LSN query will be executed.")
+	return 0
+}
+
+type cdcLSNQuerySpec struct {
+	SourceObject              string
+	SourceConnectionStringEnv string
+}
+
+type cdcLSNBounds struct {
+	CaptureInstance string
+	MinLSN          []byte
+	MaxLSN          []byte
+}
+
+var queryCDCLSNBoundsFunc = querySQLServerCDCLSNBounds
+
+func querySQLServerCDCLSNBounds(ctx context.Context, spec cdcLSNQuerySpec) (cdcLSNBounds, error) {
+	envName := strings.TrimSpace(spec.SourceConnectionStringEnv)
+	if envName == "" {
+		envName = defaultSourceConnectionStringEnv
+	}
+	connectionString := strings.TrimSpace(os.Getenv(envName))
+	if connectionString == "" {
+		return cdcLSNBounds{}, fmt.Errorf("executor cdc-lsn: source connection string env %s is not set", envName)
+	}
+
+	db, err := sql.Open("sqlserver", connectionString)
+	if err != nil {
+		return cdcLSNBounds{}, fmt.Errorf("executor cdc-lsn: open SQL Server connection: %w", err)
+	}
+	defer db.Close()
+
+	maxQuery, err := buildSQLServerCDCMaxLSNQuery(spec.SourceObject)
+	if err != nil {
+		return cdcLSNBounds{}, fmt.Errorf("executor cdc-lsn: %w", err)
+	}
+	var maxLSN []byte
+	if err := db.QueryRowContext(ctx, maxQuery).Scan(&maxLSN); err != nil {
+		return cdcLSNBounds{}, fmt.Errorf("executor cdc-lsn: query max LSN: %w", err)
+	}
+
+	bounds := cdcLSNBounds{MaxLSN: maxLSN}
+	if strings.TrimSpace(spec.SourceObject) != "" {
+		minQuery, captureInstance, err := buildSQLServerCDCMinLSNQuery(spec.SourceObject)
+		if err != nil {
+			return cdcLSNBounds{}, fmt.Errorf("executor cdc-lsn: %w", err)
+		}
+		bounds.CaptureInstance = captureInstance
+		if err := db.QueryRowContext(ctx, minQuery, sql.Named("capture_instance", captureInstance)).Scan(&bounds.MinLSN); err != nil {
+			return cdcLSNBounds{}, fmt.Errorf("executor cdc-lsn: query min LSN: %w", err)
+		}
+	}
+	return bounds, nil
 }
 
 func runApplyDDL(args []string, stdout, stderr io.Writer) int {
@@ -2034,14 +2166,9 @@ func cdcKeyValues(columns []string, values []any, keyColumns []string) ([]any, e
 }
 
 func buildSQLServerCDCChangesQuery(sourceObject string, columns []string) (string, error) {
-	parts := strings.Split(strings.TrimSpace(sourceObject), ".")
-	if len(parts) != 2 && len(parts) != 3 {
-		return "", fmt.Errorf("source object must be schema.table or database.schema.table")
-	}
-	for _, part := range parts {
-		if strings.TrimSpace(part) == "" {
-			return "", fmt.Errorf("source object contains an empty identifier")
-		}
+	parts, err := sqlServerCDCObjectParts(sourceObject)
+	if err != nil {
+		return "", err
 	}
 	if len(columns) == 0 {
 		return "", fmt.Errorf("CDC captured columns must contain at least one column")
@@ -2085,6 +2212,66 @@ func buildSQLServerCDCChangesQuery(sourceObject string, columns []string) (strin
 		quoteSQLServerIdentifier("__$start_lsn"),
 		quoteSQLServerIdentifier("__$seqval"),
 	), nil
+}
+
+func buildSQLServerCDCMaxLSNQuery(sourceObject string) (string, error) {
+	if strings.TrimSpace(sourceObject) == "" {
+		return "SELECT sys.fn_cdc_get_max_lsn()", nil
+	}
+	parts, err := sqlServerCDCObjectParts(sourceObject)
+	if err != nil {
+		return "", err
+	}
+	if len(parts) == 3 {
+		return fmt.Sprintf("SELECT %s.%s.%s()",
+			quoteSQLServerIdentifier(strings.TrimSpace(parts[0])),
+			quoteSQLServerIdentifier("sys"),
+			quoteSQLServerIdentifier("fn_cdc_get_max_lsn"),
+		), nil
+	}
+	return "SELECT sys.fn_cdc_get_max_lsn()", nil
+}
+
+func buildSQLServerCDCMinLSNQuery(sourceObject string) (string, string, error) {
+	parts, err := sqlServerCDCObjectParts(sourceObject)
+	if err != nil {
+		return "", "", err
+	}
+	captureInstance, err := sqlServerCDCCaptureInstance(sourceObject)
+	if err != nil {
+		return "", "", err
+	}
+	if len(parts) == 3 {
+		return fmt.Sprintf("SELECT %s.%s.%s(@capture_instance)",
+			quoteSQLServerIdentifier(strings.TrimSpace(parts[0])),
+			quoteSQLServerIdentifier("sys"),
+			quoteSQLServerIdentifier("fn_cdc_get_min_lsn"),
+		), captureInstance, nil
+	}
+	return "SELECT sys.fn_cdc_get_min_lsn(@capture_instance)", captureInstance, nil
+}
+
+func sqlServerCDCCaptureInstance(sourceObject string) (string, error) {
+	parts, err := sqlServerCDCObjectParts(sourceObject)
+	if err != nil {
+		return "", err
+	}
+	schemaName := strings.TrimSpace(parts[len(parts)-2])
+	tableName := strings.TrimSpace(parts[len(parts)-1])
+	return schemaName + "_" + tableName, nil
+}
+
+func sqlServerCDCObjectParts(sourceObject string) ([]string, error) {
+	parts := strings.Split(strings.TrimSpace(sourceObject), ".")
+	if len(parts) != 2 && len(parts) != 3 {
+		return nil, fmt.Errorf("source object must be schema.table or database.schema.table")
+	}
+	for _, part := range parts {
+		if strings.TrimSpace(part) == "" {
+			return nil, fmt.Errorf("source object contains an empty identifier")
+		}
+	}
+	return parts, nil
 }
 
 func readSQLServerCDCChangeRows(rows exportRows, capturedColumns []string) ([]cdcChangeRow, error) {
@@ -2222,6 +2409,13 @@ func parseSQLServerCDCLSN(raw, label string) ([]byte, error) {
 	return decoded, nil
 }
 
+func formatSQLServerCDCLSN(value []byte, label string) (string, error) {
+	if len(value) != 10 {
+		return "", fmt.Errorf("executor cdc-lsn: %s must be a 10-byte value", label)
+	}
+	return "0x" + hex.EncodeToString(value), nil
+}
+
 type field struct {
 	name  string
 	value string
@@ -2251,6 +2445,7 @@ Usage:
   sqlserver2tidb-executor validate-count --execute --source-connection-string-env SQLSERVER2TIDB_SOURCE_CONNECTION_STRING --target-connection-string-env SQLSERVER2TIDB_TARGET_CONNECTION_STRING --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --source-object sales.dbo.orders --target-object app.orders
   sqlserver2tidb-executor validate-query --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --check-id orders-total --source-sql "SELECT SUM(total) FROM sales.dbo.orders" --target-sql "SELECT SUM(total) FROM app.orders"
   sqlserver2tidb-executor validate-query --execute --source-connection-string-env SQLSERVER2TIDB_SOURCE_CONNECTION_STRING --target-connection-string-env SQLSERVER2TIDB_TARGET_CONNECTION_STRING --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --check-id orders-total --source-sql "SELECT SUM(total) FROM sales.dbo.orders" --target-sql "SELECT SUM(total) FROM app.orders"
+  sqlserver2tidb-executor cdc-lsn --execute --source-connection-string-env SQLSERVER2TIDB_SOURCE_CONNECTION_STRING --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --source-object sales.dbo.orders
   sqlserver2tidb-executor cdc --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --source-object sales.dbo.orders --target-object app.orders --columns id,customer_name --key-columns id --from-lsn 0x00000027000001f40001 --to-lsn 0x00000027000001f40002 --apply-batch-size 1000
 `)
 }

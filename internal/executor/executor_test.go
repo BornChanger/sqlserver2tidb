@@ -762,6 +762,85 @@ func TestRunCDCDryRunCommand(t *testing.T) {
 	assertOutputContains(t, output, "No CDC reader or TiDB apply worker will be started.")
 }
 
+func TestRunCDCLSNDryRunCommand(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"cdc-lsn",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--source-object", "sales.dbo.orders",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("cdc-lsn code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	assertOutputContains(t, output, "executor cdc-lsn dry run")
+	assertOutputContains(t, output, "source cluster: prod-sqlserver-a")
+	assertOutputContains(t, output, "project: sales-db-to-tidb-prod-a")
+	assertOutputContains(t, output, "source object: sales.dbo.orders")
+	assertOutputContains(t, output, "capture instance: dbo_orders")
+	assertOutputContains(t, output, "No SQL Server CDC LSN query will be executed.")
+}
+
+func TestRunCDCLSNExecutePrintsMinAndMaxLSN(t *testing.T) {
+	oldQuery := queryCDCLSNBoundsFunc
+	t.Cleanup(func() {
+		queryCDCLSNBoundsFunc = oldQuery
+	})
+	queryCDCLSNBoundsFunc = func(_ context.Context, spec cdcLSNQuerySpec) (cdcLSNBounds, error) {
+		if spec.SourceObject != "sales.dbo.orders" {
+			t.Fatalf("source object = %s, want sales.dbo.orders", spec.SourceObject)
+		}
+		if spec.SourceConnectionStringEnv != "SQLSERVER_CDC_TEST_DSN" {
+			t.Fatalf("source env = %s, want SQLSERVER_CDC_TEST_DSN", spec.SourceConnectionStringEnv)
+		}
+		return cdcLSNBounds{
+			CaptureInstance: "dbo_orders",
+			MinLSN:          []byte{0x00, 0x00, 0x00, 0x27, 0x00, 0x00, 0x01, 0xf4, 0x00, 0x01},
+			MaxLSN:          []byte{0x00, 0x00, 0x00, 0x27, 0x00, 0x00, 0x01, 0xf4, 0x00, 0x03},
+		}, nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{
+		"cdc-lsn",
+		"--execute",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--source-object", "sales.dbo.orders",
+		"--source-connection-string-env", "SQLSERVER_CDC_TEST_DSN",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("cdc-lsn execute code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	assertOutputContains(t, output, "executor cdc-lsn completed")
+	assertOutputContains(t, output, "source object: sales.dbo.orders")
+	assertOutputContains(t, output, "capture instance: dbo_orders")
+	assertOutputContains(t, output, "min_lsn: 0x00000027000001f40001")
+	assertOutputContains(t, output, "max_lsn: 0x00000027000001f40003")
+}
+
+func TestRunCDCLSNExecuteRequiresSourceConnectionStringEnv(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"cdc-lsn",
+		"--execute",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--source-connection-string-env", "MISSING_SQLSERVER_CDC_DSN",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatal("cdc-lsn execute code = 0, want missing source env error")
+	}
+	assertOutputContains(t, stderr.String(), "executor cdc-lsn: source connection string env MISSING_SQLSERVER_CDC_DSN is not set")
+}
+
 func TestRunCDCExecuteRequiresLSNRange(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 
@@ -960,6 +1039,43 @@ func TestParseSQLServerCDCLSN(t *testing.T) {
 		t.Fatal("parseSQLServerCDCLSN() error = nil, want length error")
 	}
 	assertOutputContains(t, err.Error(), "executor cdc: from LSN must be a 10-byte hex value")
+}
+
+func TestFormatSQLServerCDCLSN(t *testing.T) {
+	got, err := formatSQLServerCDCLSN([]byte{0x00, 0x00, 0x00, 0x27, 0x00, 0x00, 0x01, 0xf4, 0x00, 0x03}, "max LSN")
+	if err != nil {
+		t.Fatalf("formatSQLServerCDCLSN() error = %v", err)
+	}
+	if got != "0x00000027000001f40003" {
+		t.Fatalf("formatSQLServerCDCLSN() = %q, want 10-byte hex", got)
+	}
+
+	_, err = formatSQLServerCDCLSN([]byte{0x12}, "max LSN")
+	if err == nil {
+		t.Fatal("formatSQLServerCDCLSN() error = nil, want length error")
+	}
+	assertOutputContains(t, err.Error(), "executor cdc-lsn: max LSN must be a 10-byte value")
+}
+
+func TestBuildSQLServerCDCLSNQueries(t *testing.T) {
+	maxQuery, err := buildSQLServerCDCMaxLSNQuery("sales.dbo.orders")
+	if err != nil {
+		t.Fatalf("buildSQLServerCDCMaxLSNQuery() error = %v", err)
+	}
+	if maxQuery != "SELECT [sales].[sys].[fn_cdc_get_max_lsn]()" {
+		t.Fatalf("max query = %q", maxQuery)
+	}
+
+	minQuery, captureInstance, err := buildSQLServerCDCMinLSNQuery("sales.dbo.orders")
+	if err != nil {
+		t.Fatalf("buildSQLServerCDCMinLSNQuery() error = %v", err)
+	}
+	if minQuery != "SELECT [sales].[sys].[fn_cdc_get_min_lsn](@capture_instance)" {
+		t.Fatalf("min query = %q", minQuery)
+	}
+	if captureInstance != "dbo_orders" {
+		t.Fatalf("capture instance = %q, want dbo_orders", captureInstance)
+	}
 }
 
 func TestApplySQLServerCDCChangesQueriesRangeAndAppliesRows(t *testing.T) {
