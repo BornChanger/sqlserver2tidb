@@ -4202,6 +4202,7 @@ func TestRunImportWorkerWritesPlannedStateWhenApprovedHashMatches(t *testing.T) 
 	createValidationWorkerProject(t, root, dataWorkerInventory())
 	must(t, GenerateSchemaDraftOnly(root))
 	must(t, GenerateDataPlansOnly(root))
+	setReviewPlanStatus(t, root, "import", "reviewed")
 	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import")
 	if err != nil {
 		t.Fatalf("ComputePayloadHashForStage(import) error = %v", err)
@@ -4233,9 +4234,28 @@ func TestRunImportWorkerWritesPlannedStateWhenApprovedHashMatches(t *testing.T) 
 	assertContains(t, evidence, `"payload_hash": "`+hash+`"`)
 }
 
+func TestRunImportWorkerRejectsDraftImportPlan(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateSchemaDraftOnly(root))
+	must(t, GenerateDataPlansOnly(root))
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(import) error = %v", err)
+	}
+	writeStageApproval(t, root, "import", hash)
+
+	_, err = RunImportWorker(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a")
+	if err == nil {
+		t.Fatal("RunImportWorker() expected draft plan error")
+	}
+	assertContains(t, err.Error(), `import plan status is "draft", want reviewed or approved`)
+}
+
 func TestRunImportWorkerRejectsEmptyImportPlan(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
+	setReviewPlanStatus(t, root, "import", "reviewed")
 	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import")
 	if err != nil {
 		t.Fatalf("ComputePayloadHashForStage(import) error = %v", err)

@@ -130,7 +130,7 @@ clusters/<source_cluster_id>/projects/<project_id>/prs/<stage>-pr.md
 
 Worker 是终极形态中的执行器。它从 GitHub repo 拉取已批准 instruction，执行确定性操作，并把状态和证据写回 repo。
 
-当前 MVP 实现了显式指定 project 的 `worker-export`、`worker-import`、`worker-cdc` 和 `worker-validate`。它们都需要 approval 和 payload hash 匹配；`worker-export` 还要求 export plan 已经是 `reviewed` 或 `approved`。当前还实现了 `worker-executor`，用于在同一 approval/hash gate 后生成外部执行器命令，默认 dry-run。当前还实现了 `worker-reconcile --dry-run` 和 `worker-reconcile --execute-next`；后者会获取源集群级 lease，并执行第一个 ready metadata-only action，且 export action 在 export plan 仍为 `draft` 时会被视为 blocked。加上 `--state-pr-draft` 后，reconcile 单步执行可以生成 state/evidence/lease 写回的 PR body 草稿。`create-worker-state-pr` 可以默认 dry-run 地准备 bot branch、commit、push 和 GitHub PR 命令；如果存在 `evidence/executor-<stage>-run.json`，会一并纳入提交文件列表；dry-run 会提示 PR body 文件列表是否需要刷新，只有显式 `--execute` 时才会刷新 body 并调用本地 `git` 和 `gh`。对于 DDL 这类 executor-only 阶段，`generate-executor-evidence-pr-draft` 可以把 `evidence/executor-ddl-run.json` 转成 PR body，`create-executor-evidence-pr` 可以默认 dry-run 地准备 evidence PR 的 bot branch、commit、push 和 GitHub PR 命令。
+当前 MVP 实现了显式指定 project 的 `worker-export`、`worker-import`、`worker-cdc` 和 `worker-validate`。它们都需要 approval 和 payload hash 匹配；`worker-export` 和 `worker-import` 还要求对应 plan 已经是 `reviewed` 或 `approved`。当前还实现了 `worker-executor`，用于在同一 approval/hash gate 后生成外部执行器命令，默认 dry-run。当前还实现了 `worker-reconcile --dry-run` 和 `worker-reconcile --execute-next`；后者会获取源集群级 lease，并执行第一个 ready metadata-only action，且 export action 在 export plan 仍为 `draft` 时会被视为 blocked。加上 `--state-pr-draft` 后，reconcile 单步执行可以生成 state/evidence/lease 写回的 PR body 草稿。`create-worker-state-pr` 可以默认 dry-run 地准备 bot branch、commit、push 和 GitHub PR 命令；如果存在 `evidence/executor-<stage>-run.json`，会一并纳入提交文件列表；dry-run 会提示 PR body 文件列表是否需要刷新，只有显式 `--execute` 时才会刷新 body 并调用本地 `git` 和 `gh`。对于 DDL 这类 executor-only 阶段，`generate-executor-evidence-pr-draft` 可以把 `evidence/executor-ddl-run.json` 转成 PR body，`create-executor-evidence-pr` 可以默认 dry-run 地准备 evidence PR 的 bot branch、commit、push 和 GitHub PR 命令。
 
 ### 3.5 LLM
 
@@ -898,7 +898,7 @@ checks:
 state/export-chunks.yaml
 ```
 
-当前 MVP 的 `worker-export` 只在 export approval 和 payload hash 匹配、且 `plan/export-plan.yaml` 的 status 已经是 `reviewed` 或 `approved` 后，把 `plan/export-plan.yaml` 写成 planned 状态和 evidence。它会拒绝 draft export plan，也会拒绝仍包含 `TODO` predicate 的 export chunk。它不执行导出、不连接 SQL Server、不写对象存储。
+当前 MVP 的 `worker-export` 只在 export approval 和 payload hash 匹配、且 `plan/export-plan.yaml` 的 status 已经是 `reviewed` 或 `approved` 后，把 `plan/export-plan.yaml` 写成 planned 状态和 evidence。它会拒绝 draft export plan，也会拒绝仍包含 `TODO` predicate 的 export chunk。`worker-import` 同样要求 `plan/import-plan.yaml` 的 status 已经是 `reviewed` 或 `approved`。它们不执行导出/导入、不连接 SQL Server 或 TiDB、不写对象存储。
 
 先计算 export payload hash：
 

@@ -116,7 +116,7 @@ The current export/import worker implementations are metadata-only. They do not 
 - at least one `approved_by` entry
 - `payload_hash` matching the current stage payload
 
-The export worker also requires `plan/export-plan.yaml` to have `status: reviewed` or `status: approved`; `status: draft` is not executable even when an approval file has been edited to approved.
+The export and import workers also require their plan files to have `status: reviewed` or `status: approved`; `status: draft` is not executable even when an approval file has been edited to approved.
 
 The export payload hash covers:
 
@@ -130,7 +130,7 @@ The import payload hash covers:
 - `plan/export-plan.yaml`
 - `plan/import-plan.yaml`
 
-The export worker reads a reviewed or approved `plan/export-plan.yaml` and writes planned chunk state to `state/export-chunks.yaml`, plus `evidence/precheck.json`. The import worker reads `plan/import-plan.yaml` and writes planned import job state to `state/import-jobs.yaml`, plus `evidence/import-summary.json`. Export and import workers fail fast when the approved plan has no work items or required work-item fields are missing.
+The export worker reads a reviewed or approved `plan/export-plan.yaml` and writes planned chunk state to `state/export-chunks.yaml`, plus `evidence/precheck.json`. The import worker reads a reviewed or approved `plan/import-plan.yaml` and writes planned import job state to `state/import-jobs.yaml`, plus `evidence/import-summary.json`. Export and import workers fail fast when the approved plan has no work items or required work-item fields are missing.
 
 These workers establish the approval and state write-back contract for future real executors. They intentionally mark reviewed items as `planned`; they do not mark chunks as exported or jobs as imported.
 

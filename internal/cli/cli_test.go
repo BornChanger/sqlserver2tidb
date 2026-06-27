@@ -832,6 +832,7 @@ func TestRunWorkerExportAndImportCommands(t *testing.T) {
 	assertExists(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/export-chunks.yaml")
 	assertExists(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/precheck.json")
 
+	setCLIReviewPlanStatus(t, root, "import", "reviewed")
 	stdout.Reset()
 	stderr.Reset()
 	code = Run([]string{

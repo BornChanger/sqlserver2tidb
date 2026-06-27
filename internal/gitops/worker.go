@@ -232,6 +232,11 @@ func runDataWorker(root, sourceClusterID, projectID, stage string) (DataWorkerRe
 			return DataWorkerResult{}, err
 		}
 	}
+	if stage == "import" {
+		if err := requireExecutablePlanStatus(filepath.Join(projectDir, "plan", "import-plan.yaml"), "import plan"); err != nil {
+			return DataWorkerResult{}, err
+		}
+	}
 	result := DataWorkerResult{
 		SourceClusterID: sourceClusterID,
 		ProjectID:       projectID,
