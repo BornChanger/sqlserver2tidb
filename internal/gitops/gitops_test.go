@@ -525,6 +525,47 @@ func TestValidateRepoReportsClusterStateMetadataMismatch(t *testing.T) {
 	}
 }
 
+func TestValidateRepoReportsCDCCheckpointModeMismatch(t *testing.T) {
+	tests := []struct {
+		name      string
+		oldValue  string
+		newValue  string
+		wantError string
+	}{
+		{
+			name:      "capture_mode",
+			oldValue:  "capture_mode: sqlserver-cdc",
+			newValue:  "capture_mode: debezium",
+			wantError: `invalid cluster state clusters/prod-sqlserver-a/state/cdc-checkpoint.yaml: capture_mode "debezium" does not match cluster cdc mode "sqlserver-cdc"`,
+		},
+		{
+			name:      "mode",
+			oldValue:  "capture_mode: sqlserver-cdc",
+			newValue:  "mode: debezium",
+			wantError: `invalid cluster state clusters/prod-sqlserver-a/state/cdc-checkpoint.yaml: mode "debezium" does not match cluster cdc mode "sqlserver-cdc"`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)
+			rel := "clusters/prod-sqlserver-a/state/cdc-checkpoint.yaml"
+			stateYAML := readFile(t, root, rel)
+			stateYAML = strings.Replace(stateYAML, tt.oldValue, tt.newValue, 1)
+			writeFileForTest(t, root, rel, stateYAML)
+
+			report, err := ValidateRepo(root)
+			if err != nil {
+				t.Fatalf("ValidateRepo() error = %v", err)
+			}
+			if report.Valid {
+				t.Fatal("ValidateRepo() valid = true, want CDC checkpoint mode mismatch")
+			}
+			assertContains(t, strings.Join(report.Errors, "\n"), tt.wantError)
+		})
+	}
+}
+
 func TestValidateRepoReportsInvalidWorkerLeasePhase(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)

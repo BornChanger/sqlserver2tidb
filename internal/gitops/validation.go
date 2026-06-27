@@ -285,9 +285,12 @@ func validateClusterDir(root, clusterRel string, report *ValidationReport) {
 				path := filepath.Join(root, filepath.FromSlash(rel))
 				if info, err := os.Stat(path); err == nil && !info.IsDir() {
 					var err error
-					if stateRel == "state/worker-lease.yaml" {
+					switch stateRel {
+					case "state/cdc-checkpoint.yaml":
+						err = validateCDCCheckpointMetadataContent(path, meta)
+					case "state/worker-lease.yaml":
 						err = validateWorkerLeaseMetadataContent(path, meta)
-					} else {
+					default:
 						err = validateSourceClusterOwnedYAMLContent(path, meta)
 					}
 					if err != nil {
@@ -351,6 +354,27 @@ func validateSourceClusterOwnedYAMLContent(path string, cluster clusterMetadata)
 	}
 	if sourceClusterID != cluster.ClusterID {
 		return fmt.Errorf("source_cluster_id %q does not match cluster metadata %q", sourceClusterID, cluster.ClusterID)
+	}
+	return nil
+}
+
+func validateCDCCheckpointMetadataContent(path string, cluster clusterMetadata) error {
+	if err := validateSourceClusterOwnedYAMLContent(path, cluster); err != nil {
+		return err
+	}
+	if err := validateCDCCheckpointMode(path, "capture_mode", cluster); err != nil {
+		return err
+	}
+	return validateCDCCheckpointMode(path, "mode", cluster)
+}
+
+func validateCDCCheckpointMode(path, key string, cluster clusterMetadata) error {
+	mode, err := readPlanTopLevelScalar(path, key)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(mode) != "" && mode != cluster.CDCMode {
+		return fmt.Errorf("%s %q does not match cluster cdc mode %q", key, mode, cluster.CDCMode)
 	}
 	return nil
 }
