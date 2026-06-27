@@ -275,7 +275,7 @@ bin/sqlserver2tidb validate-repo --root .
 repository is valid at . (5 dirs, 13 files checked)
 ```
 
-如果缺少必需文件、必需目录、file schema policy 映射，或者 inventory JSON 无法解析，或者 cluster/project 目录名与元数据 ID 不一致，或者 `source-profile.yaml`、cluster state、worker lease phase、active worker lease 必需字段、project state、schema diff、evidence JSON、executor evidence JSON、`plan/migration-plan.yaml`、approval 文件中的 `project_id` / `source_cluster_id` / action / mode / status / payload hash 与项目元数据不一致，或者 export/import/CDC plan 中已有 work item 但缺少执行必需字段，或者 export plan 使用当前 executor 不支持的 `format`，或者 import plan 使用当前 executor 不支持的 `engine`，或者 export chunk / import job / CDC source / validation check 出现重复标识，或者 import job 引用了不存在的 export chunk，或者 import job 的 `source_uri` 与所依赖 export chunk 的 `output_uri` 不一致，或者 export chunk predicate 仍包含 `TODO`，或者 `plan/validation-plan.yaml` 中的 `row_count` / `row-count` 检查项缺少 `id`、`source_object`、`target_object`，或 predicate / target predicate 仍包含 `TODO`，命令会返回非零退出码，并列出问题。空的 draft plan 列表仍然是合法的初始化状态；`phase: idle` 的 worker lease 可以为空闲占位文件，但 `export`、`import`、`cdc` 或 `validation` 这类 active phase 必须包含非空 `holder`、`lease_id`、`expires_at` 和 `renewed_at`。示例：
+如果缺少必需文件、必需目录、file schema policy 映射，或者 inventory JSON 无法解析，或者 cluster/project 目录名与元数据 ID 不一致，或者 `source-profile.yaml`、cluster state、worker lease phase、active worker lease 必需字段、project state、schema diff、evidence JSON、executor evidence JSON、`plan/migration-plan.yaml`、approval 文件中的 `project_id` / `source_cluster_id` / action / mode / status / payload hash 与项目元数据不一致，或者 export/import/CDC plan 中已有 work item 但缺少执行必需字段，或者 export plan 使用当前 executor 不支持的 `format`，或者 import plan 使用当前 executor 不支持的 `engine`，或者 export chunk / import job / CDC source / validation check 出现重复标识，或者 import job 引用了不存在的 export chunk，或者 import job 的 `source_uri` 与所依赖 export chunk 的 `output_uri` 不一致，或者 export chunk predicate 仍包含 `TODO`，或者 `plan/validation-plan.yaml` 中的 `row_count` / `row-count` 检查项缺少 `id`、`source_object`、`target_object`，或 predicate / target predicate 仍包含 `TODO`，命令会返回非零退出码，并列出问题。空的 draft plan 列表仍然是合法的初始化状态；`phase: idle` 的 worker lease 可以为空闲占位文件，但 `export`、`import`、`cdc` 或 `validation` 这类 active phase 必须包含非空 `holder`、`lease_id`、`expires_at` 和 `renewed_at`，两个时间字段必须是 RFC3339，且 `expires_at` 不能早于 `renewed_at`。示例：
 
 ```text
 repository validation failed at .:
@@ -1326,7 +1326,7 @@ worker lease：
 clusters/<source_cluster_id>/state/worker-lease.yaml
 ```
 
-worker lease 是上游 SQL Server 集群级，避免多个 worker 同时操作同一个源集群。`phase: idle` 表示空闲占位；当 phase 是 `export`、`import`、`cdc` 或 `validation` 时，lease 必须带有非空 `holder`、`lease_id`、`expires_at` 和 `renewed_at`，否则 `validate-repo` 会拒绝该仓库状态。
+worker lease 是上游 SQL Server 集群级，避免多个 worker 同时操作同一个源集群。`phase: idle` 表示空闲占位；当 phase 是 `export`、`import`、`cdc` 或 `validation` 时，lease 必须带有非空 `holder`、`lease_id`、`expires_at` 和 `renewed_at`，两个时间字段必须是 RFC3339，且 `expires_at` 不能早于 `renewed_at`，否则 `validate-repo` 会拒绝该仓库状态。
 
 当前 MVP 实现了 `worker-export`、`worker-import`、`worker-cdc` 和 `worker-validate`。它们不是完整 reconcile loop，也不会抢占 worker lease。它们只针对一个显式指定的 project 执行 approval gate、payload hash 校验和 metadata-only 状态写回。
 
@@ -1958,7 +1958,7 @@ bin/sqlserver2tidb worker-reconcile \
 
 `--dry-run` 扫描所有 source cluster 和 project，对 `ddl`、`export`、`import`、`cdc`、`validation` 计算 ready/blocked 状态，并为 ready action 输出对应命令。`ddl` 的命令是 `worker-executor --stage ddl`；其他 metadata-only stage 会输出对应的单项目 worker 命令。它不执行 worker，不获取 worker lease，不写 state/evidence，也不创建 GitHub PR。
 
-`--execute-next` 只会选择第一个 ready metadata-only action，也就是 `export`、`import`、`cdc` 或 `validation`，获取或续租 source-cluster 级 worker lease，然后执行对应 metadata-only worker。`ddl` 是 executor-only action，需要显式通过 `worker-executor --stage ddl` 执行。`--holder` 必填，`--lease-ttl` 默认是 `15m`。该模式会写 `state/worker-lease.yaml` 和被选中 worker 对应的 state/evidence 文件；active lease 会包含 `holder`、`lease_id`、`phase`、`project_id`、`expires_at` 和 `renewed_at`。
+`--execute-next` 只会选择第一个 ready metadata-only action，也就是 `export`、`import`、`cdc` 或 `validation`，获取或续租 source-cluster 级 worker lease，然后执行对应 metadata-only worker。`ddl` 是 executor-only action，需要显式通过 `worker-executor --stage ddl` 执行。`--holder` 必填，`--lease-ttl` 默认是 `15m`。该模式会写 `state/worker-lease.yaml` 和被选中 worker 对应的 state/evidence 文件；active lease 会包含 `holder`、`lease_id`、`phase`、`project_id`、`expires_at` 和 `renewed_at`，时间字段使用 RFC3339。
 
 `--state-pr-draft` 在 `--execute-next` 模式下生效。启用后，命令会额外生成项目级 PR body：
 
