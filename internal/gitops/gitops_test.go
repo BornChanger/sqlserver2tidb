@@ -543,6 +543,66 @@ func TestValidateRepoReportsInvalidWorkerLeasePhase(t *testing.T) {
 	assertContains(t, strings.Join(report.Errors, "\n"), `invalid cluster state clusters/prod-sqlserver-a/state/worker-lease.yaml: unsupported worker lease phase "running"; supported phases: idle, export, import, cdc, validation`)
 }
 
+func TestValidateRepoReportsIncompleteActiveWorkerLease(t *testing.T) {
+	tests := []struct {
+		name      string
+		oldValue  string
+		newValue  string
+		wantError string
+	}{
+		{
+			name:      "holder",
+			oldValue:  "holder: agent-a",
+			newValue:  `holder: ""`,
+			wantError: "active worker lease requires holder",
+		},
+		{
+			name:      "lease_id",
+			oldValue:  "lease_id: lease-1",
+			newValue:  `lease_id: ""`,
+			wantError: "active worker lease requires lease_id",
+		},
+		{
+			name:      "expires_at",
+			oldValue:  `expires_at: "2026-06-26T00:15:00Z"`,
+			newValue:  `expires_at: ""`,
+			wantError: "active worker lease requires expires_at",
+		},
+		{
+			name:      "renewed_at",
+			oldValue:  `renewed_at: "2026-06-26T00:00:00Z"`,
+			newValue:  `renewed_at: ""`,
+			wantError: "active worker lease requires renewed_at",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)
+			leaseRel := "clusters/prod-sqlserver-a/state/worker-lease.yaml"
+			leaseYAML := `source_cluster_id: prod-sqlserver-a
+holder: agent-a
+lease_id: lease-1
+phase: export
+project_id: sales-db-to-tidb-prod-a
+expires_at: "2026-06-26T00:15:00Z"
+renewed_at: "2026-06-26T00:00:00Z"
+`
+			leaseYAML = strings.Replace(leaseYAML, tt.oldValue, tt.newValue, 1)
+			writeFileForTest(t, root, leaseRel, leaseYAML)
+
+			report, err := ValidateRepo(root)
+			if err != nil {
+				t.Fatalf("ValidateRepo() error = %v", err)
+			}
+			if report.Valid {
+				t.Fatal("ValidateRepo() valid = true, want incomplete active worker lease")
+			}
+			assertContains(t, strings.Join(report.Errors, "\n"), "invalid cluster state "+leaseRel+": "+tt.wantError)
+		})
+	}
+}
+
 func TestValidateRepoReportsInvalidInventoryJSON(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)

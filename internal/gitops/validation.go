@@ -365,6 +365,32 @@ func validateWorkerLeaseMetadataContent(path string, cluster clusterMetadata) er
 	if !isSupportedWorkerLeasePhase(phase) {
 		return fmt.Errorf("unsupported worker lease phase %q; supported phases: idle, export, import, cdc, validation", phase)
 	}
+	if phase == "idle" {
+		return nil
+	}
+	if err := requireWorkerLeaseScalar(path, "holder"); err != nil {
+		return err
+	}
+	if err := requireWorkerLeaseScalar(path, "lease_id"); err != nil {
+		return err
+	}
+	if err := requireWorkerLeaseScalar(path, "expires_at"); err != nil {
+		return err
+	}
+	if err := requireWorkerLeaseScalar(path, "renewed_at"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func requireWorkerLeaseScalar(path, key string) error {
+	value, err := readPlanTopLevelScalar(path, key)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(value) == "" {
+		return fmt.Errorf("active worker lease requires %s", key)
+	}
 	return nil
 }
 
