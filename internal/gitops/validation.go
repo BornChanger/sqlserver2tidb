@@ -602,6 +602,14 @@ func validateApprovalMetadataContent(path string, project projectMetadata, expec
 	if !isSupportedApprovalStatus(approval.Status) {
 		return fmt.Errorf("unsupported approval status %q; supported statuses: pending, approved, rejected", approval.Status)
 	}
+	if approval.Status == "approved" {
+		if strings.TrimSpace(approval.PayloadHash) == "" {
+			return errors.New("approved approval requires payload_hash")
+		}
+		if len(approval.ApprovedBy) == 0 {
+			return errors.New("approved approval requires at least one approved_by reviewer")
+		}
+	}
 	return nil
 }
 

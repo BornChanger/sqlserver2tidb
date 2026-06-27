@@ -734,6 +734,43 @@ func TestValidateRepoReportsApprovalMetadataMismatch(t *testing.T) {
 	}
 }
 
+func TestValidateRepoReportsApprovedApprovalWithoutPayloadHash(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)
+	approvalRel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/approvals/export-approval.yaml"
+	approvalYAML := readFile(t, root, approvalRel)
+	approvalYAML = strings.Replace(approvalYAML, "status: pending", "status: approved", 1)
+	writeFileForTest(t, root, approvalRel, approvalYAML)
+
+	report, err := ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
+	if report.Valid {
+		t.Fatal("ValidateRepo() valid = true, want approved approval without payload hash")
+	}
+	assertContains(t, strings.Join(report.Errors, "\n"), `invalid approval clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/approvals/export-approval.yaml: approved approval requires payload_hash`)
+}
+
+func TestValidateRepoReportsApprovedApprovalWithoutReviewer(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)
+	approvalRel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/approvals/export-approval.yaml"
+	approvalYAML := readFile(t, root, approvalRel)
+	approvalYAML = strings.Replace(approvalYAML, `payload_hash: ""`, "payload_hash: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", 1)
+	approvalYAML = strings.Replace(approvalYAML, "status: pending", "status: approved", 1)
+	writeFileForTest(t, root, approvalRel, approvalYAML)
+
+	report, err := ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
+	if report.Valid {
+		t.Fatal("ValidateRepo() valid = true, want approved approval without reviewer")
+	}
+	assertContains(t, strings.Join(report.Errors, "\n"), `invalid approval clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/approvals/export-approval.yaml: approved approval requires at least one approved_by reviewer`)
+}
+
 func TestValidateRepoReportsMissingRequiredGlobalFile(t *testing.T) {
 	root := t.TempDir()
 	must(t, InitRepo(root))
