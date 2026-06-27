@@ -1919,7 +1919,7 @@ bin/sqlserver2tidb-executor import \
   --source-uri file:///tmp/sqlserver2tidb/dbo.orders.000001.csv
 ```
 
-`tidb-import-into` 会执行形如 `IMPORT INTO app.orders FROM '<fileLocation>' FORMAT 'csv' WITH skip_rows=1` 的 TiDB SQL。根据 TiDB 官方文档，目标表必须已经存在且为空，执行过程不支持事务回滚；详见 https://docs.pingcap.com/tidb/stable/sql-statement-import-into/ 。当前实现支持本地路径、`file://`、`s3://`、`gs://` file location。对于本地路径和 `file://`，executor 会读取 CSV header，并把内部 `__sqlserver2tidb_null_bitmap` 尾列映射到 TiDB user variable 以跳过该字段；对于 `s3://` 和 `gs://`，当前不会远程读取 header，因此文件字段必须已经与目标表列顺序匹配。
+`tidb-import-into` 会执行形如 `IMPORT INTO app.orders FROM '<fileLocation>' FORMAT 'csv' WITH skip_rows=1` 的 TiDB SQL。根据 TiDB 官方文档，目标表必须已经存在且为空，执行过程不支持事务回滚；详见 https://docs.pingcap.com/tidb/stable/sql-statement-import-into/ 。当前实现支持本地路径、`file://`、`s3://`、`gs://` file location。执行 `IMPORT INTO` 前，executor 会先对目标表执行带引用保护的 `COUNT(*)` 预检；如果目标表不存在、无查询权限或行数非 0，会在发起 `IMPORT INTO` 前失败。该预检不能替代导入期间禁止并发 DDL/DML 的操作要求。对于本地路径和 `file://`，executor 会读取 CSV header，并把内部 `__sqlserver2tidb_null_bitmap` 尾列映射到 TiDB user variable 以跳过该字段；对于 `s3://` 和 `gs://`，当前不会远程读取 header，因此文件字段必须已经与目标表列顺序匹配。
 
 行数校验 dry-run：
 
@@ -1992,7 +1992,7 @@ bin/sqlserver2tidb-executor cdc \
   --apply-batch-size 1000
 ```
 
-当前 binary 默认只做参数解析和 dry-run 输出。`export --execute` 会连接 SQL Server，并把 CSV 写到本地 `file://` 或 HTTP(S) URL；它会在 header 尾部增加内部 `__sqlserver2tidb_null_bitmap` 列，用来保留每行 NULL 位置。它不会使用原生 S3/GCS/Azure Blob SDK，也不会生成 Parquet。`import --execute --engine sql-insert` 会连接 TiDB，并从本地 `file://` 或 HTTP(S) CSV 流式逐行插入，按 batch size 分批提交；如果 CSV 带内部 null bitmap 尾列，会恢复 NULL 并不把该内部列写入目标表。`import --execute --engine tidb-import-into` 会连接 TiDB 并执行 `IMPORT INTO ... FROM FILE`，支持本地路径、`file://`、`s3://`、`gs://`，其中本地/file CSV 会读取 header 并跳过内部 null bitmap 尾列。它不会调用 Lightning。`validate-count --execute` 会连接 SQL Server 和 TiDB，比较单对象 `COUNT(*)`。`validate-query --execute` 会连接 SQL Server 和 TiDB，比较已 review 的单行单列标量查询结果，并在成功输出里带上 `check-id`。`cdc --execute` 会返回 not implemented，用来防止误执行尚未实现的 CDC 路径。
+当前 binary 默认只做参数解析和 dry-run 输出。`export --execute` 会连接 SQL Server，并把 CSV 写到本地 `file://` 或 HTTP(S) URL；它会在 header 尾部增加内部 `__sqlserver2tidb_null_bitmap` 列，用来保留每行 NULL 位置。它不会使用原生 S3/GCS/Azure Blob SDK，也不会生成 Parquet。`import --execute --engine sql-insert` 会连接 TiDB，并从本地 `file://` 或 HTTP(S) CSV 流式逐行插入，按 batch size 分批提交；如果 CSV 带内部 null bitmap 尾列，会恢复 NULL 并不把该内部列写入目标表。`import --execute --engine tidb-import-into` 会连接 TiDB，先用 `COUNT(*)` 预检目标表为空，再执行 `IMPORT INTO ... FROM FILE`，支持本地路径、`file://`、`s3://`、`gs://`，其中本地/file CSV 会读取 header 并跳过内部 null bitmap 尾列。它不会调用 Lightning。`validate-count --execute` 会连接 SQL Server 和 TiDB，比较单对象 `COUNT(*)`。`validate-query --execute` 会连接 SQL Server 和 TiDB，比较已 review 的单行单列标量查询结果，并在成功输出里带上 `check-id`。`cdc --execute` 会返回 not implemented，用来防止误执行尚未实现的 CDC 路径。
 
 ### 16.19 worker-reconcile
 

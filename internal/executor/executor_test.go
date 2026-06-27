@@ -483,6 +483,18 @@ func TestBuildTiDBImportIntoStatementSkipsInternalNullBitmapField(t *testing.T) 
 	}
 }
 
+func TestBuildTiDBImportIntoPreflightQueryQuotesObject(t *testing.T) {
+	query, err := buildTiDBImportIntoPreflightQuery("app.orders")
+	if err != nil {
+		t.Fatalf("buildTiDBImportIntoPreflightQuery() error = %v", err)
+	}
+
+	want := "SELECT COUNT(*) FROM `app`.`orders`"
+	if query != want {
+		t.Fatalf("buildTiDBImportIntoPreflightQuery() = %q, want %q", query, want)
+	}
+}
+
 func TestBuildTiDBImportIntoStatementRejectsHTTPSource(t *testing.T) {
 	_, err := buildTiDBImportIntoStatement("app.orders", "https://object-store.example/dbo.orders.000001.csv")
 	if err == nil {

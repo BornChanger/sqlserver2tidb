@@ -1073,6 +1073,10 @@ func executeTiDBImportInto(ctx context.Context, spec importExecuteSpec) error {
 	}
 	defer db.Close()
 
+	if err := ensureTiDBImportIntoTargetEmpty(ctx, db, spec.TargetObject); err != nil {
+		return fmt.Errorf("executor import: %w", err)
+	}
+
 	if _, err := db.ExecContext(ctx, statement); err != nil {
 		return fmt.Errorf("executor import: execute TiDB IMPORT INTO: %w", err)
 	}
@@ -1288,6 +1292,26 @@ func buildTiDBInsertStatement(targetObject string, columns []string) (string, er
 
 func buildTiDBImportIntoStatement(targetObject, sourceURI string) (string, error) {
 	return buildTiDBImportIntoStatementWithFields(targetObject, sourceURI, nil)
+}
+
+func ensureTiDBImportIntoTargetEmpty(ctx context.Context, db *sql.DB, targetObject string) error {
+	query, err := buildTiDBImportIntoPreflightQuery(targetObject)
+	if err != nil {
+		return err
+	}
+
+	var count int64
+	if err := db.QueryRowContext(ctx, query).Scan(&count); err != nil {
+		return fmt.Errorf("preflight target table row count: %w", err)
+	}
+	if count != 0 {
+		return fmt.Errorf("preflight target table is not empty: %s has %d rows", targetObject, count)
+	}
+	return nil
+}
+
+func buildTiDBImportIntoPreflightQuery(targetObject string) (string, error) {
+	return buildTiDBCountQuery(targetObject, "")
 }
 
 func buildTiDBImportIntoStatementWithFields(targetObject, sourceURI string, fields []string) (string, error) {
