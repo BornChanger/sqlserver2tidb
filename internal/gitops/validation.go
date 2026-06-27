@@ -880,6 +880,10 @@ func validateProjectStateContent(path, stateRel string, project projectMetadata)
 	switch stateRel {
 	case "state/migration-state.yaml":
 		return validateMigrationStateContent(path)
+	case "state/export-chunks.yaml":
+		return validateOptionalDataStatePhase(path, "export state", "export")
+	case "state/import-jobs.yaml":
+		return validateOptionalDataStatePhase(path, "import state", "import")
 	case "state/validation-status.yaml":
 		return validateValidationStatusStateContent(path)
 	default:
@@ -897,6 +901,17 @@ func validateMigrationStateContent(path string) error {
 	}
 	if err := validateMigrationStateUpdatedAt(path); err != nil {
 		return err
+	}
+	return nil
+}
+
+func validateOptionalDataStatePhase(path, label, expectedPhase string) error {
+	phase, err := readPlanTopLevelScalar(path, "phase")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(phase) != "" && phase != expectedPhase {
+		return fmt.Errorf("%s phase %q does not match expected phase %q", label, phase, expectedPhase)
 	}
 	return nil
 }

@@ -1329,6 +1329,49 @@ func TestValidateRepoReportsInvalidValidationStatusUpdatedAt(t *testing.T) {
 	assertContains(t, strings.Join(report.Errors, "\n"), `invalid state file clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/validation-status.yaml: validation status updated_at must be RFC3339`)
 }
 
+func TestValidateRepoReportsInvalidDataStatePhase(t *testing.T) {
+	tests := []struct {
+		name      string
+		rel       string
+		listLine  string
+		newPhase  string
+		wantError string
+	}{
+		{
+			name:      "export_chunks",
+			rel:       "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/export-chunks.yaml",
+			listLine:  "chunks: []",
+			newPhase:  "phase: import",
+			wantError: `invalid state file clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/export-chunks.yaml: export state phase "import" does not match expected phase "export"`,
+		},
+		{
+			name:      "import_jobs",
+			rel:       "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/import-jobs.yaml",
+			listLine:  "jobs: []",
+			newPhase:  "phase: export",
+			wantError: `invalid state file clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/import-jobs.yaml: import state phase "export" does not match expected phase "import"`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)
+			stateYAML := readFile(t, root, tt.rel)
+			stateYAML = strings.Replace(stateYAML, tt.listLine, tt.newPhase+"\n"+tt.listLine, 1)
+			writeFileForTest(t, root, tt.rel, stateYAML)
+
+			report, err := ValidateRepo(root)
+			if err != nil {
+				t.Fatalf("ValidateRepo() error = %v", err)
+			}
+			if report.Valid {
+				t.Fatal("ValidateRepo() valid = true, want invalid data state phase")
+			}
+			assertContains(t, strings.Join(report.Errors, "\n"), tt.wantError)
+		})
+	}
+}
+
 func TestValidateRepoReportsApprovalMetadataMismatch(t *testing.T) {
 	tests := []struct {
 		name      string
