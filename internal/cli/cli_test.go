@@ -1401,6 +1401,7 @@ func TestRunWorkerExecutorDDLDryRunCommand(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("generate-schema-draft code = %d, stderr = %s", code, stderr.String())
 	}
+	setCLISchemaDiffStatus(t, root, "reviewed")
 
 	stdout.Reset()
 	stderr.Reset()
@@ -2045,6 +2046,23 @@ func setCLIReviewPlanStatus(t *testing.T, root, stage, status string) {
 	updated := strings.Replace(plan, "status: draft", "status: "+status, 1)
 	if updated == plan {
 		t.Fatalf("plan %s does not contain draft status", path)
+	}
+	if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func setCLISchemaDiffStatus(t *testing.T, root, status string) {
+	t.Helper()
+	path := filepath.Join(root, "clusters", "prod-sqlserver-a", "projects", "sales-db-to-tidb-prod-a", "schema", "schema-diff.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	diff := string(data)
+	updated := strings.Replace(diff, `"status": "draft-generated"`, `"status": "`+status+`"`, 1)
+	if updated == diff {
+		t.Fatalf("schema diff %s does not contain draft-generated status", path)
 	}
 	if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
 		t.Fatal(err)

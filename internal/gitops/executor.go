@@ -54,6 +54,10 @@ func PrepareWorkerExecutor(root, sourceClusterID, projectID, stage string, spec 
 
 	projectDir := filepath.Join(root, "clusters", sourceClusterID, "projects", projectID)
 	switch stage {
+	case "ddl":
+		if err := requireReviewedSchemaDiff(filepath.Join(projectDir, "schema", "schema-diff.json")); err != nil {
+			return WorkerExecutorSpec{}, err
+		}
 	case "export", "import", "cdc", "validation":
 		planPath := filepath.Join(projectDir, "plan", stage+"-plan.yaml")
 		if err := requireExecutablePlanStatus(planPath, stage+" plan"); err != nil {
@@ -126,6 +130,17 @@ func prepareDDLExecutorCommands(projectDir, binary, sourceClusterID, projectID s
 		commands = append(commands, newWorkerExecutorCommand(binary, file.ProjectRel, args))
 	}
 	return commands, nil
+}
+
+func requireReviewedSchemaDiff(path string) error {
+	diff, err := readSchemaDiffForValidation(path)
+	if err != nil {
+		return err
+	}
+	if diff.Status != "reviewed" {
+		return fmt.Errorf("schema diff status is %q, want reviewed", diff.Status)
+	}
+	return nil
 }
 
 func prepareExportExecutorCommands(projectDir, binary, sourceClusterID, projectID string, spec WorkerExecutorPrepareSpec) ([]WorkerExecutorCommand, error) {

@@ -4056,10 +4056,28 @@ func TestPrepareWorkerExecutorRejectsNegativeImportBatchSize(t *testing.T) {
 	assertContains(t, err.Error(), "import batch size must be non-negative")
 }
 
+func TestPrepareWorkerExecutorRejectsUnreviewedSchemaDiff(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateSchemaDraftOnly(root))
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "ddl")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(ddl) error = %v", err)
+	}
+	writeStageApproval(t, root, "ddl", hash)
+
+	_, err = PrepareWorkerExecutor(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "ddl", WorkerExecutorPrepareSpec{})
+	if err == nil {
+		t.Fatal("PrepareWorkerExecutor() expected unreviewed schema diff error")
+	}
+	assertContains(t, err.Error(), `schema diff status is "draft-generated", want reviewed`)
+}
+
 func TestPrepareWorkerExecutorBuildsDDLCommand(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
 	must(t, GenerateSchemaDraftOnly(root))
+	setSchemaDiffStatus(t, root, "reviewed")
 	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "ddl")
 	if err != nil {
 		t.Fatalf("ComputePayloadHashForStage(ddl) error = %v", err)
@@ -5234,6 +5252,17 @@ func setReviewPlanStatus(t *testing.T, root, stage, status string) {
 	updated := strings.Replace(plan, "status: draft", "status: "+status, 1)
 	if updated == plan {
 		t.Fatalf("plan %s does not contain draft status", rel)
+	}
+	writeFileForTest(t, root, rel, updated)
+}
+
+func setSchemaDiffStatus(t *testing.T, root, status string) {
+	t.Helper()
+	rel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/schema/schema-diff.json"
+	diff := readFile(t, root, rel)
+	updated := strings.Replace(diff, `"status": "draft-generated"`, `"status": "`+status+`"`, 1)
+	if updated == diff {
+		t.Fatalf("schema diff %s does not contain draft-generated status", rel)
 	}
 	writeFileForTest(t, root, rel, updated)
 }
