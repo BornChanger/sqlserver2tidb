@@ -724,6 +724,30 @@ renewed_at: "2026-06-26T00:00:00Z"
 	}
 }
 
+func TestValidateRepoReportsUnknownActiveWorkerLeaseProject(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)
+	leaseRel := "clusters/prod-sqlserver-a/state/worker-lease.yaml"
+	leaseYAML := `source_cluster_id: prod-sqlserver-a
+holder: agent-a
+lease_id: lease-1
+phase: export
+project_id: missing-project
+expires_at: "2026-06-26T00:15:00Z"
+renewed_at: "2026-06-26T00:00:00Z"
+`
+	writeFileForTest(t, root, leaseRel, leaseYAML)
+
+	report, err := ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
+	if report.Valid {
+		t.Fatal("ValidateRepo() valid = true, want unknown active worker lease project")
+	}
+	assertContains(t, strings.Join(report.Errors, "\n"), `invalid cluster state clusters/prod-sqlserver-a/state/worker-lease.yaml: active worker lease project_id "missing-project" does not reference an existing project directory`)
+}
+
 func TestValidateRepoReportsInvalidActiveWorkerLeaseTimes(t *testing.T) {
 	tests := []struct {
 		name      string

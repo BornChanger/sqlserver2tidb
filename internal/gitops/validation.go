@@ -452,7 +452,11 @@ func validateWorkerLeaseMetadataContent(path string, cluster clusterMetadata) er
 	if err := requireWorkerLeaseScalar(path, "lease_id"); err != nil {
 		return err
 	}
-	if err := requireWorkerLeaseScalar(path, "project_id"); err != nil {
+	projectID, err := requireWorkerLeaseProjectID(path)
+	if err != nil {
+		return err
+	}
+	if err := validateWorkerLeaseProjectDir(path, projectID); err != nil {
 		return err
 	}
 	expiresAt, err := requireWorkerLeaseTime(path, "expires_at")
@@ -465,6 +469,36 @@ func validateWorkerLeaseMetadataContent(path string, cluster clusterMetadata) er
 	}
 	if expiresAt.Before(renewedAt) {
 		return errors.New("active worker lease expires_at must not be before renewed_at")
+	}
+	return nil
+}
+
+func requireWorkerLeaseProjectID(path string) (string, error) {
+	projectID, err := readPlanTopLevelScalar(path, "project_id")
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(projectID) == "" {
+		return "", errors.New("active worker lease requires project_id")
+	}
+	if !idPattern.MatchString(projectID) {
+		return "", fmt.Errorf("active worker lease project_id %q is invalid", projectID)
+	}
+	return projectID, nil
+}
+
+func validateWorkerLeaseProjectDir(path, projectID string) error {
+	clusterDir := filepath.Dir(filepath.Dir(path))
+	projectDir := filepath.Join(clusterDir, "projects", projectID)
+	info, err := os.Stat(projectDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("active worker lease project_id %q does not reference an existing project directory", projectID)
+		}
+		return fmt.Errorf("stat active worker lease project_id %q: %w", projectID, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("active worker lease project_id %q does not reference an existing project directory", projectID)
 	}
 	return nil
 }
