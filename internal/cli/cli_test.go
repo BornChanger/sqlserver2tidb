@@ -1239,6 +1239,32 @@ func TestRunWorkerExecutorCDCExecuteRecordsAppliedChangesInEvidence(t *testing.T
 	if !strings.Contains(checkpoint, "applied_changes: 2") {
 		t.Fatalf("cdc checkpoint = %q, want applied changes", checkpoint)
 	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = Run([]string{
+		"prepare-cdc-range",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--to-lsn", "0x00000000000000000003",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("prepare-cdc-range code = %d, stderr = %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "cdc range prepared for sales-db-to-tidb-prod-a") {
+		t.Fatalf("prepare-cdc-range stdout = %q, want completed message", stdout.String())
+	}
+	plan := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/cdc-plan.yaml")
+	if !strings.Contains(plan, "status: draft") {
+		t.Fatalf("cdc plan = %q, want draft status", plan)
+	}
+	if !strings.Contains(plan, "from_lsn: 0x00000000000000000002") {
+		t.Fatalf("cdc plan = %q, want checkpoint to_lsn as next from_lsn", plan)
+	}
+	if !strings.Contains(plan, "to_lsn: 0x00000000000000000003") {
+		t.Fatalf("cdc plan = %q, want new to_lsn", plan)
+	}
 }
 
 func TestRunGenerateCDCPlanAndWorkerCDCCommands(t *testing.T) {

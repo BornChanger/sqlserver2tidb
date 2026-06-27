@@ -219,6 +219,18 @@ go run ./cmd/sqlserver2tidb generate-cdc-plan \
 
 This writes `plan/cdc-plan.yaml` under the project. The command records tracked source/target table pairs, captured CDC columns, target apply key columns, and checkpoint policy. Captured columns come from discovered non-computed SQL Server table columns. It chooses key columns from the discovered SQL Server primary key first, then from a non-filtered unique index; tables without such an index produce an empty `key_columns` list that must be reviewed before execution. It does not start SQL Server CDC, Debezium, Kafka, or TiDB apply.
 
+Prepare an explicit CDC LSN range for review:
+
+```bash
+go run ./cmd/sqlserver2tidb prepare-cdc-range \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --to-lsn 0x00000027000001f40003
+```
+
+This rewrites `plan/cdc-plan.yaml` and resets the plan and tracked table statuses to `draft`, so the new range must go through review and approval before execution. For tables that already have entries in `state/cdc-checkpoint.yaml`, the next `from_lsn` is the checkpoint `to_lsn`. For the first range, pass `--from-lsn` explicitly. The command does not connect to SQL Server or discover the current max LSN.
+
 Generate a project-scoped validation draft plan from the current SQL Server inventory and project metadata:
 
 ```bash
@@ -308,7 +320,7 @@ go run ./cmd/sqlserver2tidb advance-cdc-checkpoint \
   --status running
 ```
 
-This validates `evidence/executor-cdc-run.json` against the current approval, payload hash, and reviewed CDC plan, requires succeeded CDC executor commands with `cdc_applied_changes`, verifies command source/target/LSN values match the current plan, and rewrites `clusters/<source_cluster_id>/state/cdc-checkpoint.yaml` with one checkpoint snapshot per applied table. Use `--status caught_up` only when the reviewed LSN range is known to represent catch-up. The command does not choose the next LSN range, query SQL Server min/max LSNs, or run a long-lived CDC loop.
+This validates `evidence/executor-cdc-run.json` against the current approval, payload hash, and reviewed CDC plan, requires succeeded CDC executor commands with `cdc_applied_changes`, verifies command source/target/LSN values match the current plan, and rewrites `clusters/<source_cluster_id>/state/cdc-checkpoint.yaml` with one checkpoint snapshot per applied table. Use `--status caught_up` only when the reviewed LSN range is known to represent catch-up. The command does not query SQL Server min/max LSNs or run a long-lived CDC loop; use `prepare-cdc-range` to derive the next plan range from the committed checkpoint and an operator-provided `--to-lsn`.
 
 Preview ready and blocked worker actions across the repository:
 

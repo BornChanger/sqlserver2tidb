@@ -5192,6 +5192,81 @@ func TestAdvanceCDCCheckpointFromExecutorEvidenceWritesCheckpointSnapshot(t *tes
 	assertContains(t, checkpoint, `completed_at: "2026-01-02T03:04:06Z"`)
 }
 
+func TestPrepareCDCPlanRangeUsesCheckpointAsNextFromLSN(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateCDCPlanOnly(root))
+	setReviewPlanStatus(t, root, "cdc", "reviewed")
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/state/cdc-checkpoint.yaml", `source_cluster_id: prod-sqlserver-a
+phase: cdc
+status: running
+project_id: sales-db-to-tidb-prod-a
+payload_hash: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+mode: sqlserver-cdc
+checkpoint_scope: source-cluster
+checkpoints:
+  - source_object: sales.dbo.orders
+    target_object: app.orders
+    from_lsn: 0x00000027000001f40001
+    to_lsn: 0x00000027000001f40002
+    applied_changes: 2
+    completed_at: "2026-01-02T03:04:06Z"
+updated_at: "2026-01-02T03:04:07Z"
+`)
+
+	result, err := PrepareCDCPlanRange(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", CDCPlanRangeSpec{
+		ToLSN: "0x00000027000001f40003",
+	})
+	if err != nil {
+		t.Fatalf("PrepareCDCPlanRange() error = %v", err)
+	}
+	if result.UpdatedTables != 1 || result.PlanFile != "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/cdc-plan.yaml" {
+		t.Fatalf("PrepareCDCPlanRange() result = %+v, want one updated table and cdc plan path", result)
+	}
+
+	plan := readFile(t, root, result.PlanFile)
+	assertContains(t, plan, "status: draft")
+	assertContains(t, plan, "source_object: sales.dbo.orders")
+	assertContains(t, plan, "from_lsn: 0x00000027000001f40002")
+	assertContains(t, plan, "to_lsn: 0x00000027000001f40003")
+}
+
+func TestPrepareCDCPlanRangeUsesInitialFromLSNWhenCheckpointEntryMissing(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateCDCPlanOnly(root))
+
+	result, err := PrepareCDCPlanRange(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", CDCPlanRangeSpec{
+		FromLSN: "0x00000027000001f40001",
+		ToLSN:   "0x00000027000001f40002",
+	})
+	if err != nil {
+		t.Fatalf("PrepareCDCPlanRange() error = %v", err)
+	}
+	if result.UpdatedTables != 1 {
+		t.Fatalf("UpdatedTables = %d, want 1", result.UpdatedTables)
+	}
+	plan := readFile(t, root, result.PlanFile)
+	assertContains(t, plan, "from_lsn: 0x00000027000001f40001")
+	assertContains(t, plan, "to_lsn: 0x00000027000001f40002")
+}
+
+func TestPrepareCDCPlanRangeRequiresInitialFromLSNWithoutCheckpointEntry(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateCDCPlanOnly(root))
+
+	_, err := PrepareCDCPlanRange(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", CDCPlanRangeSpec{
+		ToLSN: "0x00000027000001f40002",
+	})
+	if err == nil {
+		t.Fatal("PrepareCDCPlanRange() error = nil, want missing initial from_lsn error")
+	}
+	if !strings.Contains(err.Error(), "pass --from-lsn for initial range") {
+		t.Fatalf("PrepareCDCPlanRange() error = %v, want missing initial from_lsn guidance", err)
+	}
+}
+
 func TestRunCDCWorkerRejectsEmptyCDCPlan(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())

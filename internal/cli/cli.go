@@ -39,6 +39,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runGenerateDataPlans(args[1:], stdout, stderr)
 	case "generate-cdc-plan":
 		return runGenerateCDCPlan(args[1:], stdout, stderr)
+	case "prepare-cdc-range":
+		return runPrepareCDCRange(args[1:], stdout, stderr)
 	case "generate-validation-plan":
 		return runGenerateValidationPlan(args[1:], stdout, stderr)
 	case "generate-pr-draft":
@@ -293,6 +295,31 @@ func runGenerateCDCPlan(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "cdc plan generated for %s under source cluster %s\n", result.ProjectID, result.SourceClusterID)
 	fmt.Fprintf(stdout, "mode: %s\n", result.Mode)
 	fmt.Fprintf(stdout, "tracked tables: %d\n", result.Tables)
+	fmt.Fprintf(stdout, "wrote %s\n", "plan/cdc-plan.yaml")
+	return 0
+}
+
+func runPrepareCDCRange(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("prepare-cdc-range", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	root := fs.String("root", ".", "repository root")
+	sourceClusterID := fs.String("source-cluster-id", "", "upstream SQL Server cluster id")
+	projectID := fs.String("project-id", "", "migration project id")
+	fromLSN := fs.String("from-lsn", "", "initial CDC from LSN for tables without checkpoint state")
+	toLSN := fs.String("to-lsn", "", "CDC to LSN for the next reviewed range")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	result, err := gitops.PrepareCDCPlanRange(*root, *sourceClusterID, *projectID, gitops.CDCPlanRangeSpec{
+		FromLSN: *fromLSN,
+		ToLSN:   *toLSN,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "prepare cdc range: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "cdc range prepared for %s\n", result.ProjectID)
+	fmt.Fprintf(stdout, "updated tables: %d\n", result.UpdatedTables)
 	fmt.Fprintf(stdout, "wrote %s\n", "plan/cdc-plan.yaml")
 	return 0
 }
@@ -1012,6 +1039,7 @@ Usage:
   sqlserver2tidb generate-schema-draft --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
   sqlserver2tidb generate-data-plans --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --object-uri-prefix https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full
   sqlserver2tidb generate-cdc-plan --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
+  sqlserver2tidb prepare-cdc-range --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --to-lsn 0x00000027000001f40003
   sqlserver2tidb generate-validation-plan --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
   sqlserver2tidb generate-pr-draft --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage schema
   sqlserver2tidb create-pr --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage schema
