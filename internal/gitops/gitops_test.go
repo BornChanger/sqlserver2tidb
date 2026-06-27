@@ -1106,6 +1106,52 @@ func TestValidateRepoReportsInvalidSchemaDiffGeneratedAt(t *testing.T) {
 	assertContains(t, strings.Join(report.Errors, "\n"), `invalid schema diff clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/schema/schema-diff.json: schema diff generated_at must be RFC3339`)
 }
 
+func TestValidateRepoReportsInvalidSchemaDiffSummaryCounts(t *testing.T) {
+	tests := []struct {
+		name      string
+		field     string
+		wantError string
+	}{
+		{
+			name:      "tables",
+			field:     "tables",
+			wantError: "schema diff summary.tables must be non-negative",
+		},
+		{
+			name:      "columns",
+			field:     "columns",
+			wantError: "schema diff summary.columns must be non-negative",
+		},
+		{
+			name:      "manual_review_items",
+			field:     "manual_review_items",
+			wantError: "schema diff summary.manual_review_items must be non-negative",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)
+			diffRel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/schema/schema-diff.json"
+			writeFileForTest(t, root, diffRel, fmt.Sprintf(`{
+  "status": "draft-generated",
+  "summary": {
+    "%s": -1
+  }
+}`, tt.field))
+
+			report, err := ValidateRepo(root)
+			if err != nil {
+				t.Fatalf("ValidateRepo() error = %v", err)
+			}
+			if report.Valid {
+				t.Fatal("ValidateRepo() valid = true, want invalid schema diff summary count")
+			}
+			assertContains(t, strings.Join(report.Errors, "\n"), `invalid schema diff clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/schema/schema-diff.json: `+tt.wantError)
+		})
+	}
+}
+
 func TestValidateRepoReportsEvidenceMetadataMismatch(t *testing.T) {
 	tests := []struct {
 		name      string

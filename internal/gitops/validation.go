@@ -781,6 +781,11 @@ func validateSchemaDiffContent(path string, project *projectMetadata) error {
 		GeneratedAt     string `json:"generated_at"`
 		ProjectID       string `json:"project_id"`
 		SourceClusterID string `json:"source_cluster_id"`
+		Summary         struct {
+			Tables            int `json:"tables"`
+			Columns           int `json:"columns"`
+			ManualReviewItems int `json:"manual_review_items"`
+		} `json:"summary"`
 	}
 	if err := json.Unmarshal(data, &doc); err != nil {
 		return fmt.Errorf("parse schema diff JSON: %w", err)
@@ -792,6 +797,15 @@ func validateSchemaDiffContent(path string, project *projectMetadata) error {
 		if _, err := time.Parse(time.RFC3339, doc.GeneratedAt); err != nil {
 			return errors.New("schema diff generated_at must be RFC3339")
 		}
+	}
+	if doc.Summary.Tables < 0 {
+		return errors.New("schema diff summary.tables must be non-negative")
+	}
+	if doc.Summary.Columns < 0 {
+		return errors.New("schema diff summary.columns must be non-negative")
+	}
+	if doc.Summary.ManualReviewItems < 0 {
+		return errors.New("schema diff summary.manual_review_items must be non-negative")
 	}
 	if project == nil {
 		return nil
