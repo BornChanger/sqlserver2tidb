@@ -327,7 +327,7 @@ go run ./cmd/sqlserver2tidb create-worker-state-pr \
   --stage export
 ```
 
-This is a dry-run by default. It requires the state PR draft and state/evidence/lease files to exist, includes `evidence/executor-<stage>-run.json` when present, then prints deterministic `git switch`, `git add`, `git commit`, `git push`, and `gh pr create` commands. Dry-run reports whether the PR body needs a file-list refresh; `--execute` refreshes that body before commit and then runs the commands locally.
+This is a dry-run by default. It requires the state PR draft and state/evidence/lease files to exist, validates and includes `evidence/executor-<stage>-run.json` when present, then prints deterministic `git switch`, `git add`, `git commit`, `git push`, and `gh pr create` commands. Optional executor evidence must pass the same approval, payload hash, reviewed instruction, and command-structure checks used by executor evidence PRs. Dry-run reports whether the PR body needs a file-list refresh; `--execute` refreshes that body before commit and then runs the commands locally.
 
 Generate and prepare a PR for executor-only evidence such as DDL apply evidence:
 

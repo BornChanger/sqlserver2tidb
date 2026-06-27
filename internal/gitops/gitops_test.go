@@ -4799,11 +4799,7 @@ func TestPrepareWorkerStatePRCreateIncludesExecutorEvidenceWhenPresent(t *testin
 		})
 		return err
 	}())
-	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-export-run.json", `{
-  "stage": "export",
-  "status": "succeeded"
-}
-`)
+	writeExportExecutorEvidenceForTest(t, root, hash)
 
 	spec, err := PrepareWorkerStatePRCreate(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
 	if err != nil {
@@ -4811,6 +4807,40 @@ func TestPrepareWorkerStatePRCreateIncludesExecutorEvidenceWhenPresent(t *testin
 	}
 	assertStringSliceContains(t, spec.Files, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-export-run.json")
 	assertContains(t, spec.ShellCommands[1], "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-export-run.json")
+}
+
+func TestPrepareWorkerStatePRCreateRejectsStaleExecutorEvidence(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateDataPlansOnly(root))
+	reviewExportPlanPredicates(t, root)
+	setReviewPlanStatus(t, root, "export", "reviewed")
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(export) error = %v", err)
+	}
+	writeStageApproval(t, root, "export", hash)
+	must(t, func() error {
+		_, err := ExecuteNextWorkerReconcile(root, WorkerReconcileExecuteSpec{
+			Holder:        "agent-a",
+			CreatePRDraft: true,
+		})
+		return err
+	}())
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-export-run.json", `{
+  "stage": "export",
+  "status": "succeeded",
+  "project_id": "sales-db-to-tidb-prod-a",
+  "source_cluster_id": "prod-sqlserver-a",
+  "payload_hash": "stale"
+}
+`)
+
+	_, err = PrepareWorkerStatePRCreate(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
+	if err == nil {
+		t.Fatal("PrepareWorkerStatePRCreate() expected stale executor evidence error")
+	}
+	assertContains(t, err.Error(), "executor evidence payload hash stale does not match current approved payload hash")
 }
 
 func TestPrepareWorkerStatePRCreatePlansBodyRefreshForExecutorEvidence(t *testing.T) {
@@ -4837,11 +4867,7 @@ func TestPrepareWorkerStatePRCreatePlansBodyRefreshForExecutorEvidence(t *testin
 	if strings.Contains(bodyBefore, executorEvidence) {
 		t.Fatalf("state PR body unexpectedly contains executor evidence before it exists")
 	}
-	writeFileForTest(t, root, executorEvidence, `{
-  "stage": "export",
-  "status": "succeeded"
-}
-`)
+	writeExportExecutorEvidenceForTest(t, root, hash)
 
 	spec, err := PrepareWorkerStatePRCreate(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
 	if err != nil {
@@ -5327,6 +5353,30 @@ func setSchemaDiffStatus(t *testing.T, root, status string) {
 		t.Fatalf("schema diff %s does not contain draft-generated status", rel)
 	}
 	writeFileForTest(t, root, rel, updated)
+}
+
+func writeExportExecutorEvidenceForTest(t *testing.T, root, payloadHash string) {
+	t.Helper()
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-export-run.json", `{
+  "stage": "export",
+  "status": "succeeded",
+  "project_id": "sales-db-to-tidb-prod-a",
+  "source_cluster_id": "prod-sqlserver-a",
+  "payload_hash": "`+payloadHash+`",
+  "commands": [
+    {
+      "id": "export:dbo.orders:chunk-0001",
+      "args": ["sqlserver2tidb-executor", "export", "--execute"],
+      "shell_command": "sqlserver2tidb-executor export --execute",
+      "exit_code": 0,
+      "output": "exported\n",
+      "started_at": "2026-01-02T03:04:05Z",
+      "completed_at": "2026-01-02T03:04:06Z",
+      "duration_ms": 1000
+    }
+  ]
+}
+`)
 }
 
 func GenerateCDCPlanOnly(root string) error {

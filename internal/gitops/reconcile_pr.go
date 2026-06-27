@@ -89,6 +89,10 @@ func PrepareWorkerStatePRCreate(root, sourceClusterID, projectID, stage string) 
 		return WorkerStatePRCreateSpec{}, fmt.Errorf("read worker state PR draft %s: %w", bodyFile, err)
 	}
 
+	if err := validateWorkerStateExecutorEvidenceIfPresent(root, sourceClusterID, projectID, stage); err != nil {
+		return WorkerStatePRCreateSpec{}, err
+	}
+
 	files := workerStateCommitFiles(root, sourceClusterID, projectID, stage, bodyFile)
 	for _, file := range files {
 		path := filepath.Join(root, filepath.FromSlash(file))
@@ -143,6 +147,25 @@ func RefreshWorkerStatePRBody(root string, spec WorkerStatePRCreateSpec) error {
 	path := filepath.Join(root, filepath.FromSlash(spec.BodyFile))
 	if err := os.WriteFile(path, []byte(spec.BodyFileContent), 0o644); err != nil {
 		return fmt.Errorf("write worker state PR draft %s: %w", spec.BodyFile, err)
+	}
+	return nil
+}
+
+func validateWorkerStateExecutorEvidenceIfPresent(root, sourceClusterID, projectID, stage string) error {
+	evidenceFile := executorEvidenceFile(sourceClusterID, projectID, stage)
+	path := filepath.Join(root, filepath.FromSlash(evidenceFile))
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat executor evidence %s: %w", evidenceFile, err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("executor evidence %s is a directory", evidenceFile)
+	}
+	if _, err := loadExecutorEvidencePRContext(root, sourceClusterID, projectID, stage); err != nil {
+		return fmt.Errorf("invalid executor evidence %s: %w", evidenceFile, err)
 	}
 	return nil
 }

@@ -49,7 +49,7 @@ The wrapper does not merge PRs, approve PRs, bypass branch protection, or inspec
 
 - requires `clusters/<source_cluster_id>/projects/<project_id>/prs/reconcile-<stage>-state-pr.md`;
 - requires the worker-written state/evidence files and source-cluster `state/worker-lease.yaml`;
-- includes `evidence/executor-<stage>-run.json` when executor run evidence exists;
+- validates and includes `evidence/executor-<stage>-run.json` when executor run evidence exists, using the same approval, payload hash, reviewed instruction, status, command ID, args, exit-code, and timing checks as executor evidence PRs;
 - includes source-cluster `state/cdc-checkpoint.yaml` for CDC state PRs;
 - reports stale PR body file lists during dry-run and refreshes the body before commit in `--execute` mode;
 - reconstructs deterministic `git switch`, `git add`, `git commit`, `git push`, and `gh pr create` commands;

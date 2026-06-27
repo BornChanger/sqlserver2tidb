@@ -1688,7 +1688,8 @@ func TestRunWorkerReconcileExecuteNextCommand(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("compute-payload-hash export code = %d, stderr = %s", code, stderr.String())
 	}
-	writeCLIStageApproval(t, root, "export", parsePayloadHash(t, stdout.String()))
+	exportPayloadHash := parsePayloadHash(t, stdout.String())
+	writeCLIStageApproval(t, root, "export", exportPayloadHash)
 
 	stdout.Reset()
 	stderr.Reset()
@@ -1733,7 +1734,22 @@ func TestRunWorkerReconcileExecuteNextCommand(t *testing.T) {
 	executorEvidenceRel := filepath.Join("clusters", "prod-sqlserver-a", "projects", "sales-db-to-tidb-prod-a", "evidence", "executor-export-run.json")
 	if err := os.WriteFile(filepath.Join(root, executorEvidenceRel), []byte(`{
   "stage": "export",
-  "status": "succeeded"
+  "status": "succeeded",
+  "project_id": "sales-db-to-tidb-prod-a",
+  "source_cluster_id": "prod-sqlserver-a",
+  "payload_hash": "`+exportPayloadHash+`",
+  "commands": [
+    {
+      "id": "export:dbo.orders:chunk-0001",
+      "args": ["sqlserver2tidb-executor", "export", "--execute"],
+      "shell_command": "sqlserver2tidb-executor export --execute",
+      "exit_code": 0,
+      "output": "exported\n",
+      "started_at": "2026-01-02T03:04:05Z",
+      "completed_at": "2026-01-02T03:04:06Z",
+      "duration_ms": 1000
+    }
+  ]
 }
 `), 0o644); err != nil {
 		t.Fatal(err)
