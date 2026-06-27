@@ -405,6 +405,7 @@ This checks approved metadata, writes `state/validation-status.yaml`, and writes
 - LLM output is never executed directly. It must become reviewed repository files first.
 - Workers execute only approved and merged instructions.
 - High-frequency logs and per-event CDC offsets do not belong in GitHub. Periodic checkpoint snapshots do.
+- CDC checkpoint snapshots stay source-cluster scoped and their mode must match the source cluster `cdc.mode`.
 - Plaintext credentials must never be committed. Use secret references only.
 
 ## Next Milestones
