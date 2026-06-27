@@ -1468,7 +1468,10 @@ func validateReviewPlanStatus(path, planKind string) error {
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(status) != "" && !isSupportedReviewPlanStatus(status) {
+	if strings.TrimSpace(status) == "" {
+		return fmt.Errorf("%s status is required", planKind)
+	}
+	if !isSupportedReviewPlanStatus(status) {
 		return fmt.Errorf("unsupported %s status %q; supported statuses: draft, reviewed, approved", planKind, status)
 	}
 	return nil

@@ -1932,6 +1932,58 @@ func TestValidateRepoReportsInvalidReviewPlanStatus(t *testing.T) {
 	}
 }
 
+func TestValidateRepoReportsMissingReviewPlanStatus(t *testing.T) {
+	tests := []struct {
+		name      string
+		rel       string
+		planKind  string
+		wantError string
+	}{
+		{
+			name:      "export",
+			rel:       "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/export-plan.yaml",
+			planKind:  "export plan",
+			wantError: `invalid export plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/export-plan.yaml: export plan status is required`,
+		},
+		{
+			name:      "import",
+			rel:       "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml",
+			planKind:  "import plan",
+			wantError: `invalid import plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml: import plan status is required`,
+		},
+		{
+			name:      "cdc",
+			rel:       "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/cdc-plan.yaml",
+			planKind:  "cdc plan",
+			wantError: `invalid cdc plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/cdc-plan.yaml: cdc plan status is required`,
+		},
+		{
+			name:      "validation",
+			rel:       "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/validation-plan.yaml",
+			planKind:  "validation plan",
+			wantError: `invalid validation plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/validation-plan.yaml: validation plan status is required`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)
+			planYAML := readFile(t, root, tt.rel)
+			planYAML = strings.Replace(planYAML, "status: draft\n", "", 1)
+			writeFileForTest(t, root, tt.rel, planYAML)
+
+			report, err := ValidateRepo(root)
+			if err != nil {
+				t.Fatalf("ValidateRepo() error = %v", err)
+			}
+			if report.Valid {
+				t.Fatalf("ValidateRepo() valid = true, want missing %s status", tt.planKind)
+			}
+			assertContains(t, strings.Join(report.Errors, "\n"), tt.wantError)
+		})
+	}
+}
+
 func TestValidateRepoReportsInvalidExportPlanContent(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
