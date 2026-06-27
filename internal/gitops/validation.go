@@ -958,6 +958,9 @@ func validateOptionalDataStateStatus(path, label string) error {
 }
 
 func validateValidationStatusStateContent(path string) error {
+	if err := validateOptionalValidationStatusPhase(path); err != nil {
+		return err
+	}
 	status, err := readPlanTopLevelScalar(path, "status")
 	if err != nil {
 		return err
@@ -967,6 +970,20 @@ func validateValidationStatusStateContent(path string) error {
 	}
 	if err := validateOptionalValidationStatusUpdatedAt(path); err != nil {
 		return err
+	}
+	return nil
+}
+
+func validateOptionalValidationStatusPhase(path string) error {
+	phase, err := readPlanTopLevelScalar(path, "phase")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(phase) == "" {
+		return nil
+	}
+	if phase != "validation" {
+		return fmt.Errorf("validation status phase %q does not match expected phase %q", phase, "validation")
 	}
 	return nil
 }
