@@ -404,7 +404,7 @@ This checks approved metadata, writes `state/validation-status.yaml`, and writes
 - A source cluster can contain multiple migration projects.
 - LLM output is never executed directly. It must become reviewed repository files first.
 - Workers execute only approved and merged instructions.
-- Project migration state phases are restricted to `planning`, `ddl`, `export`, `import`, `cdc`, `validation`, `cutover`, or `completed`, and `updated_at` must be RFC3339.
+- Project migration state phases are restricted to `planning`, `ddl`, `export`, `import`, `cdc`, `validation`, `cutover`, or `completed`; status is restricted to `not_started`, `planned`, `running`, `completed`, or `failed`; and `updated_at` must be RFC3339.
 - Export/import state phase and status fields are optional during initialization, but phase must match `export`/`import` and status must be `planned` when present; their optional `updated_at` fields must be RFC3339.
 - Validation status state is restricted to `pending`, `passed`, or `failed`; when present, `updated_at` must be RFC3339.
 - High-frequency logs and per-event CDC offsets do not belong in GitHub. Periodic checkpoint snapshots do.
