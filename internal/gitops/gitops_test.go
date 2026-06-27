@@ -4692,6 +4692,34 @@ func TestRunImportWorkerWritesPlannedStateWhenApprovedHashMatches(t *testing.T) 
 	assertContains(t, evidence, `"payload_hash": "`+hash+`"`)
 }
 
+func TestRunImportWorkerPreservesImportJobFields(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateSchemaDraftOnly(root))
+	_, err := GenerateDataMovementPlans(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", DataMovementPlanSpec{
+		ObjectURIPrefix: "file:///tmp/sqlserver2tidb/full",
+		ChunkSizeRows:   1000000,
+		ExportFormat:    "csv",
+		ImportEngine:    "tidb-import-into",
+	})
+	if err != nil {
+		t.Fatalf("GenerateDataMovementPlans() error = %v", err)
+	}
+	setReviewPlanStatus(t, root, "import", "reviewed")
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(import) error = %v", err)
+	}
+	writeStageApproval(t, root, "import", hash)
+
+	if _, err := RunImportWorker(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a"); err != nil {
+		t.Fatalf("RunImportWorker() error = %v", err)
+	}
+
+	state := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/import-jobs.yaml")
+	assertContains(t, state, "fields:\n      - \"id\"\n      - \"customer_name\"\n      - \"@sqlserver2tidb_null_bitmap\"")
+}
+
 func TestRunImportWorkerRejectsDraftImportPlan(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())

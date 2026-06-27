@@ -1004,7 +1004,7 @@ evidence/import-summary.json
 - 文件 checksum 已确认。
 - TiDB 集群容量已确认。
 
-当前 MVP 的 `worker-import` 只在 import approval 和 payload hash 匹配后，把 `plan/import-plan.yaml` 写成 planned 状态和 evidence。它会拒绝没有 jobs 或缺少必需字段的 import plan。它不执行 TiDB Lightning 或 `IMPORT INTO`，也不连接 TiDB。
+当前 MVP 的 `worker-import` 只在 import approval 和 payload hash 匹配后，把 `plan/import-plan.yaml` 写成 planned 状态和 evidence；如果 import job 带有 `fields`，会原样写入 `state/import-jobs.yaml`。它会拒绝没有 jobs 或缺少必需字段的 import plan。它不执行 TiDB Lightning 或 `IMPORT INTO`，也不连接 TiDB。
 
 先计算 import payload hash：
 
@@ -1759,7 +1759,7 @@ bin/sqlserver2tidb worker-import \
   --project-id sales-db-to-tidb-prod-a
 ```
 
-该命令先检查 `approvals/import-approval.yaml`，只有 approval 通过且 payload hash 匹配时才读取 `plan/import-plan.yaml`，并写回 `state/import-jobs.yaml` 和 `evidence/import-summary.json`。它只写 planned 状态，不执行真实导入。
+该命令先检查 `approvals/import-approval.yaml`，只有 approval 通过且 payload hash 匹配时才读取 `plan/import-plan.yaml`，并写回 `state/import-jobs.yaml` 和 `evidence/import-summary.json`。如果 import job 带有 `fields`，planned state 会保留该字段列表，便于后续 executor PR 审计。它只写 planned 状态，不执行真实导入。
 
 ### 16.15 worker-cdc
 

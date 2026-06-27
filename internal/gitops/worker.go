@@ -830,6 +830,12 @@ func writeImportWorkerState(projectDir string, result DataWorkerResult, jobs []d
 			fmt.Fprintf(&b, "    target_object: %s\n", job.TargetObject)
 			fmt.Fprintf(&b, "    source_uri: %s\n", job.SourceURI)
 			fmt.Fprintf(&b, "    depends_on_export_chunk: %s\n", job.DependsOnExportChunk)
+			if len(job.Fields) > 0 {
+				b.WriteString("    fields:\n")
+				for _, field := range job.Fields {
+					fmt.Fprintf(&b, "      - %s\n", quoteYAML(field))
+				}
+			}
 		}
 	}
 	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
