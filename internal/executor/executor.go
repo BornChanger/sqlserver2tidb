@@ -1670,7 +1670,7 @@ func runCDC(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
-		if err := executeCDCApply(context.Background(), cdcExecuteSpec{
+		result, err := executeCDCApplyFunc(context.Background(), cdcExecuteSpec{
 			SourceObject:              *sourceObject,
 			TargetObject:              *targetObject,
 			SourceConnectionStringEnv: *sourceConnectionStringEnv,
@@ -1679,11 +1679,13 @@ func runCDC(args []string, stdout, stderr io.Writer) int {
 			KeyColumns:                keyColumns,
 			FromLSN:                   fromLSN,
 			ToLSN:                     toLSN,
-		}); err != nil {
+		})
+		if err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
 		fmt.Fprintf(stdout, "executor cdc completed: %s -> %s\n", *sourceObject, *targetObject)
+		fmt.Fprintf(stdout, "applied changes: %d\n", result.AppliedChanges)
 		return 0
 	}
 
@@ -1717,34 +1719,40 @@ type cdcExecuteSpec struct {
 	ToLSN                     []byte
 }
 
-func executeCDCApply(ctx context.Context, spec cdcExecuteSpec) error {
+type cdcApplyResult struct {
+	AppliedChanges int
+}
+
+var executeCDCApplyFunc = executeCDCApply
+
+func executeCDCApply(ctx context.Context, spec cdcExecuteSpec) (cdcApplyResult, error) {
 	_ = ctx
 	if len(spec.Columns) == 0 {
-		return fmt.Errorf("executor cdc: columns is required")
+		return cdcApplyResult{}, fmt.Errorf("executor cdc: columns is required")
 	}
 	if len(spec.KeyColumns) == 0 {
-		return fmt.Errorf("executor cdc: key columns is required")
+		return cdcApplyResult{}, fmt.Errorf("executor cdc: key columns is required")
 	}
 	columnSet := make(map[string]string, len(spec.Columns))
 	for _, column := range spec.Columns {
 		column = strings.TrimSpace(column)
 		if column == "" {
-			return fmt.Errorf("executor cdc: columns contains an empty item")
+			return cdcApplyResult{}, fmt.Errorf("executor cdc: columns contains an empty item")
 		}
 		normalized := strings.ToLower(column)
 		if _, ok := columnSet[normalized]; ok {
-			return fmt.Errorf("executor cdc: columns contains duplicate column %s", column)
+			return cdcApplyResult{}, fmt.Errorf("executor cdc: columns contains duplicate column %s", column)
 		}
 		columnSet[normalized] = column
 	}
 	if _, err := normalizeCDCKeyColumnSet(spec.KeyColumns, columnSet); err != nil {
-		return fmt.Errorf("executor cdc: %w", err)
+		return cdcApplyResult{}, fmt.Errorf("executor cdc: %w", err)
 	}
 	if len(spec.FromLSN) == 0 {
-		return fmt.Errorf("executor cdc: from LSN is required")
+		return cdcApplyResult{}, fmt.Errorf("executor cdc: from LSN is required")
 	}
 	if len(spec.ToLSN) == 0 {
-		return fmt.Errorf("executor cdc: to LSN is required")
+		return cdcApplyResult{}, fmt.Errorf("executor cdc: to LSN is required")
 	}
 	sourceEnvName := strings.TrimSpace(spec.SourceConnectionStringEnv)
 	if sourceEnvName == "" {
@@ -1752,7 +1760,7 @@ func executeCDCApply(ctx context.Context, spec cdcExecuteSpec) error {
 	}
 	sourceConnectionString := strings.TrimSpace(os.Getenv(sourceEnvName))
 	if sourceConnectionString == "" {
-		return fmt.Errorf("executor cdc: source connection string env %s is not set", sourceEnvName)
+		return cdcApplyResult{}, fmt.Errorf("executor cdc: source connection string env %s is not set", sourceEnvName)
 	}
 
 	targetEnvName := strings.TrimSpace(spec.TargetConnectionStringEnv)
@@ -1761,32 +1769,33 @@ func executeCDCApply(ctx context.Context, spec cdcExecuteSpec) error {
 	}
 	targetConnectionString := strings.TrimSpace(os.Getenv(targetEnvName))
 	if targetConnectionString == "" {
-		return fmt.Errorf("executor cdc: target connection string env %s is not set", targetEnvName)
+		return cdcApplyResult{}, fmt.Errorf("executor cdc: target connection string env %s is not set", targetEnvName)
 	}
 
 	sourceDB, err := sql.Open("sqlserver", sourceConnectionString)
 	if err != nil {
-		return fmt.Errorf("executor cdc: open SQL Server connection: %w", err)
+		return cdcApplyResult{}, fmt.Errorf("executor cdc: open SQL Server connection: %w", err)
 	}
 	defer sourceDB.Close()
 
 	targetDB, err := sql.Open("mysql", targetConnectionString)
 	if err != nil {
-		return fmt.Errorf("executor cdc: open TiDB connection: %w", err)
+		return cdcApplyResult{}, fmt.Errorf("executor cdc: open TiDB connection: %w", err)
 	}
 	defer targetDB.Close()
 
-	if _, err := applySQLServerCDCChanges(ctx, sqlServerCDCQuerier{db: sourceDB}, targetDB, cdcApplySpec{
+	applied, err := applySQLServerCDCChanges(ctx, sqlServerCDCQuerier{db: sourceDB}, targetDB, cdcApplySpec{
 		SourceObject: spec.SourceObject,
 		TargetObject: spec.TargetObject,
 		Columns:      spec.Columns,
 		KeyColumns:   spec.KeyColumns,
 		FromLSN:      spec.FromLSN,
 		ToLSN:        spec.ToLSN,
-	}); err != nil {
-		return fmt.Errorf("executor cdc: %w", err)
+	})
+	if err != nil {
+		return cdcApplyResult{}, fmt.Errorf("executor cdc: %w", err)
 	}
-	return nil
+	return cdcApplyResult{AppliedChanges: applied}, nil
 }
 
 type cdcApplySpec struct {

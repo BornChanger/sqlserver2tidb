@@ -876,6 +876,43 @@ func TestRunCDCExecuteRejectsKeyColumnOutsideColumns(t *testing.T) {
 	assertOutputContains(t, stderr.String(), "executor cdc: CDC key column tenant_id is not present in captured columns")
 }
 
+func TestRunCDCExecutePrintsAppliedChangeCount(t *testing.T) {
+	oldExecute := executeCDCApplyFunc
+	t.Cleanup(func() {
+		executeCDCApplyFunc = oldExecute
+	})
+	executeCDCApplyFunc = func(_ context.Context, spec cdcExecuteSpec) (cdcApplyResult, error) {
+		if spec.SourceObject != "sales.dbo.orders" || spec.TargetObject != "app.orders" {
+			t.Fatalf("cdc spec objects = %s -> %s", spec.SourceObject, spec.TargetObject)
+		}
+		if !reflect.DeepEqual(spec.FromLSN, []byte{0x00, 0x00, 0x00, 0x27, 0x00, 0x00, 0x01, 0xf4, 0x00, 0x01}) {
+			t.Fatalf("from LSN = %#v", spec.FromLSN)
+		}
+		return cdcApplyResult{AppliedChanges: 2}, nil
+	}
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"cdc",
+		"--execute",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--source-object", "sales.dbo.orders",
+		"--target-object", "app.orders",
+		"--columns", "id,customer_name",
+		"--key-columns", "id",
+		"--from-lsn", "0x00000027000001f40001",
+		"--to-lsn", "0x00000027000001f40002",
+		"--apply-batch-size", "1000",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("cdc execute code = %d, stderr = %s", code, stderr.String())
+	}
+	assertOutputContains(t, stdout.String(), "executor cdc completed: sales.dbo.orders -> app.orders")
+	assertOutputContains(t, stdout.String(), "applied changes: 2")
+}
+
 func TestBuildTiDBCDCUpsertStatementQuotesTargetAndSkipsKeyUpdates(t *testing.T) {
 	stmt, err := buildTiDBCDCUpsertStatement("app.orders", []string{"id", "customer`name", "total"}, []string{"id"})
 	if err != nil {
