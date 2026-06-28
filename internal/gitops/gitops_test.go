@@ -4307,6 +4307,22 @@ func TestGenerateDataMovementPlansRejectsUnsupportedObjectURIScheme(t *testing.T
 	assertContains(t, err.Error(), "object URI prefix scheme s3 is not supported by sqlserver2tidb-executor")
 }
 
+func TestGenerateDataMovementPlansRejectsRemoteFilePrefixForSQLInsertEngine(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+
+	_, err := GenerateDataMovementPlans(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", DataMovementPlanSpec{
+		ObjectURIPrefix: "file://remote-host/migration/prod/full",
+		ChunkSizeRows:   1000000,
+		ExportFormat:    "csv",
+		ImportEngine:    "sql-insert",
+	})
+	if err == nil {
+		t.Fatal("GenerateDataMovementPlans() expected remote file prefix error for sql-insert")
+	}
+	assertContains(t, err.Error(), "file object URI prefix host must be empty or localhost")
+}
+
 func TestNormalizeDataMovementPlanSpecDefaultsToExecutableCSVPlan(t *testing.T) {
 	spec := normalizeDataMovementPlanSpec(DataMovementPlanSpec{
 		ObjectURIPrefix: "https://object-store.example/migration/prod/full",

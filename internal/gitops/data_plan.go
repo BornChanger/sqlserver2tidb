@@ -163,16 +163,7 @@ func validateExecutableObjectURIPrefix(prefix, importEngine string) error {
 	case importEngineTiDBImportInto:
 		switch parsed.Scheme {
 		case "file":
-			if parsed.Host != "" && parsed.Host != "localhost" {
-				return fmt.Errorf("file object URI prefix host must be empty or localhost")
-			}
-			if strings.TrimSpace(parsed.Path) == "" {
-				return fmt.Errorf("file object URI prefix path is required")
-			}
-			if !filepath.IsAbs(filepath.Clean(parsed.Path)) {
-				return fmt.Errorf("file object URI prefix path must be absolute")
-			}
-			return nil
+			return validateLocalFileObjectURIPrefix(parsed)
 		case "s3", "gs":
 			return nil
 		case "":
@@ -182,7 +173,9 @@ func validateExecutableObjectURIPrefix(prefix, importEngine string) error {
 		}
 	default:
 		switch parsed.Scheme {
-		case "file", "http", "https":
+		case "file":
+			return validateLocalFileObjectURIPrefix(parsed)
+		case "http", "https":
 			return nil
 		case "":
 			return fmt.Errorf("object URI prefix must use file://, http://, or https://")
@@ -190,6 +183,19 @@ func validateExecutableObjectURIPrefix(prefix, importEngine string) error {
 			return fmt.Errorf("object URI prefix scheme %s is not supported by sqlserver2tidb-executor; supported schemes: file, http, https", parsed.Scheme)
 		}
 	}
+}
+
+func validateLocalFileObjectURIPrefix(parsed *url.URL) error {
+	if parsed.Host != "" && parsed.Host != "localhost" {
+		return fmt.Errorf("file object URI prefix host must be empty or localhost")
+	}
+	if strings.TrimSpace(parsed.Path) == "" {
+		return fmt.Errorf("file object URI prefix path is required")
+	}
+	if !filepath.IsAbs(filepath.Clean(parsed.Path)) {
+		return fmt.Errorf("file object URI prefix path must be absolute")
+	}
+	return nil
 }
 
 func buildDataExportTablePlan(project projectMetadata, databaseName, schemaName string, table SQLServerTable, prefixSchema bool, spec DataMovementPlanSpec) dataExportTablePlan {
