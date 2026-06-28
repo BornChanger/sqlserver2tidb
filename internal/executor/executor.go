@@ -249,6 +249,10 @@ func runApplyDDL(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "executor apply-ddl completed: %s\n", *ddlFile)
 		return 0
 	}
+	if _, err := readReviewedDDLStatements(*root, *ddlFile); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
 
 	fmt.Fprintln(stdout, "executor apply-ddl dry run")
 	fmt.Fprintf(stdout, "root: %s\n", *root)
@@ -266,20 +270,9 @@ type applyDDLExecuteSpec struct {
 }
 
 func executeTiDBDDL(ctx context.Context, spec applyDDLExecuteSpec) error {
-	ddlPath := spec.DDLFile
-	if !filepath.IsAbs(ddlPath) {
-		ddlPath = filepath.Join(spec.Root, filepath.FromSlash(ddlPath))
-	}
-	data, err := os.ReadFile(ddlPath)
+	statements, err := readReviewedDDLStatements(spec.Root, spec.DDLFile)
 	if err != nil {
-		return fmt.Errorf("executor apply-ddl: read DDL file: %w", err)
-	}
-	if containsTODO(string(data)) {
-		return fmt.Errorf("executor apply-ddl: DDL file still contains TODO")
-	}
-	statements := splitSQLStatements(string(data))
-	if len(statements) == 0 {
-		return fmt.Errorf("executor apply-ddl: DDL file contains no SQL statements")
+		return err
 	}
 
 	envName := strings.TrimSpace(spec.TargetConnectionStringEnv)
@@ -303,6 +296,25 @@ func executeTiDBDDL(ctx context.Context, spec applyDDLExecuteSpec) error {
 		}
 	}
 	return nil
+}
+
+func readReviewedDDLStatements(root, ddlFile string) ([]string, error) {
+	ddlPath := ddlFile
+	if !filepath.IsAbs(ddlPath) {
+		ddlPath = filepath.Join(root, filepath.FromSlash(ddlPath))
+	}
+	data, err := os.ReadFile(ddlPath)
+	if err != nil {
+		return nil, fmt.Errorf("executor apply-ddl: read DDL file: %w", err)
+	}
+	if containsTODO(string(data)) {
+		return nil, fmt.Errorf("executor apply-ddl: DDL file still contains TODO")
+	}
+	statements := splitSQLStatements(string(data))
+	if len(statements) == 0 {
+		return nil, fmt.Errorf("executor apply-ddl: DDL file contains no SQL statements")
+	}
+	return statements, nil
 }
 
 func splitSQLStatements(script string) []string {

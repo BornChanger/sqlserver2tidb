@@ -262,14 +262,19 @@ func TestRunImportDryRunRejectsUnsupportedTiDBImportIntoSourceURI(t *testing.T) 
 }
 
 func TestRunApplyDDLDryRunCommand(t *testing.T) {
+	root := t.TempDir()
+	ddlFile := filepath.Join(root, "ddl.sql")
+	if err := os.WriteFile(ddlFile, []byte("CREATE TABLE IF NOT EXISTS `app`.`orders` (`id` INT);\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	var stdout, stderr bytes.Buffer
 
 	code := Run([]string{
 		"apply-ddl",
-		"--root", ".",
+		"--root", root,
 		"--source-cluster-id", "prod-sqlserver-a",
 		"--project-id", "sales-db-to-tidb-prod-a",
-		"--ddl-file", "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/schema/tidb-ddl/dbo.orders.sql",
+		"--ddl-file", ddlFile,
 	}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("apply-ddl code = %d, stderr = %s", code, stderr.String())
@@ -278,8 +283,29 @@ func TestRunApplyDDLDryRunCommand(t *testing.T) {
 	assertOutputContains(t, output, "executor apply-ddl dry run")
 	assertOutputContains(t, output, "source cluster: prod-sqlserver-a")
 	assertOutputContains(t, output, "project: sales-db-to-tidb-prod-a")
-	assertOutputContains(t, output, "ddl file: clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/schema/tidb-ddl/dbo.orders.sql")
+	assertOutputContains(t, output, "ddl file: "+ddlFile)
 	assertOutputContains(t, output, "No TiDB connection will be opened.")
+}
+
+func TestRunApplyDDLDryRunRejectsTODODDL(t *testing.T) {
+	root := t.TempDir()
+	ddlFile := filepath.Join(root, "ddl.sql")
+	if err := os.WriteFile(ddlFile, []byte("CREATE TABLE t (c TEXT /* TODO: review */);\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"apply-ddl",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--ddl-file", ddlFile,
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("apply-ddl dry-run code = 0, want non-zero; stdout = %s", stdout.String())
+	}
+	assertOutputContains(t, stderr.String(), "executor apply-ddl: DDL file still contains TODO")
 }
 
 func TestRunApplyDDLExecuteRejectsTODODDL(t *testing.T) {
