@@ -2391,6 +2391,32 @@ jobs:
 	assertContains(t, strings.Join(report.Errors, "\n"), "invalid import plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml: import job import-dbo.orders.000001 fields are only supported with tidb-import-into")
 }
 
+func TestValidateRepoReportsInvalidTiDBImportIntoImportJobFields(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml", `status: reviewed
+engine: tidb-import-into
+jobs:
+  - id: import-dbo.orders.000001
+    target_object: app.orders
+    source_uri: file:///tmp/dbo.orders.000001.csv
+    depends_on_export_chunk: dbo.orders.000001
+    fields:
+      - id
+      - ID
+      - "@sqlserver2tidb_null_bitmap"
+`)
+
+	report, err := ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("ValidateRepo() valid = true, want false")
+	}
+	assertContains(t, strings.Join(report.Errors, "\n"), "invalid import plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml: import job import-dbo.orders.000001 fields contains duplicate column \"ID\"")
+}
+
 func TestValidateRepoAcceptsTiDBImportIntoEngine(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
@@ -5072,6 +5098,37 @@ func TestPrepareWorkerExecutorPassesImportJobFields(t *testing.T) {
 	assertArgValue(t, first.Args, "--fields", "id,customer_name,@sqlserver2tidb_null_bitmap")
 }
 
+func TestPrepareWorkerExecutorRejectsInvalidTiDBImportIntoImportJobFields(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateSchemaDraftOnly(root))
+	_, err := GenerateDataMovementPlans(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", DataMovementPlanSpec{
+		ObjectURIPrefix: "file:///tmp/sqlserver2tidb/full",
+		ChunkSizeRows:   1000000,
+		ExportFormat:    "csv",
+		ImportEngine:    "tidb-import-into",
+	})
+	if err != nil {
+		t.Fatalf("GenerateDataMovementPlans() error = %v", err)
+	}
+	importPlanRel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml"
+	importPlan := readFile(t, root, importPlanRel)
+	importPlan = strings.Replace(importPlan, "\"@sqlserver2tidb_null_bitmap\"", "\"@bad-name\"", 1)
+	writeFileForTest(t, root, importPlanRel, importPlan)
+	setReviewPlanStatus(t, root, "import", "reviewed")
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(import) error = %v", err)
+	}
+	writeStageApproval(t, root, "import", hash)
+
+	_, err = PrepareWorkerExecutor(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import", WorkerExecutorPrepareSpec{})
+	if err == nil {
+		t.Fatal("PrepareWorkerExecutor() expected invalid fields error")
+	}
+	assertContains(t, err.Error(), "import job import-dbo.orders.000001 fields contains invalid user variable \"@bad-name\"")
+}
+
 func TestPrepareWorkerExecutorRejectsTiDBImportIntoHTTPSourceURI(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
@@ -5793,6 +5850,37 @@ func TestRunImportWorkerPreservesImportJobFields(t *testing.T) {
 
 	state := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/import-jobs.yaml")
 	assertContains(t, state, "fields:\n      - \"id\"\n      - \"customer_name\"\n      - \"@sqlserver2tidb_null_bitmap\"")
+}
+
+func TestRunImportWorkerRejectsInvalidTiDBImportIntoImportJobFields(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateSchemaDraftOnly(root))
+	_, err := GenerateDataMovementPlans(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", DataMovementPlanSpec{
+		ObjectURIPrefix: "file:///tmp/sqlserver2tidb/full",
+		ChunkSizeRows:   1000000,
+		ExportFormat:    "csv",
+		ImportEngine:    "tidb-import-into",
+	})
+	if err != nil {
+		t.Fatalf("GenerateDataMovementPlans() error = %v", err)
+	}
+	importPlanRel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml"
+	importPlan := readFile(t, root, importPlanRel)
+	importPlan = strings.Replace(importPlan, "\"@sqlserver2tidb_null_bitmap\"", "\"@bad-name\"", 1)
+	writeFileForTest(t, root, importPlanRel, importPlan)
+	setReviewPlanStatus(t, root, "import", "reviewed")
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(import) error = %v", err)
+	}
+	writeStageApproval(t, root, "import", hash)
+
+	_, err = RunImportWorker(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a")
+	if err == nil {
+		t.Fatal("RunImportWorker() expected invalid fields error")
+	}
+	assertContains(t, err.Error(), "import job import-dbo.orders.000001 fields contains invalid user variable \"@bad-name\"")
 }
 
 func TestRunImportWorkerRejectsTiDBImportIntoHTTPSourceURI(t *testing.T) {

@@ -392,6 +392,46 @@ func TestRunImportRejectsFieldsForSQLInsert(t *testing.T) {
 	assertOutputContains(t, stderr.String(), "executor import: fields is only supported with tidb-import-into")
 }
 
+func TestRunImportRejectsInvalidTiDBImportIntoFields(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"import",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--job-id", "import-dbo.orders.000001",
+		"--target-object", "app.orders",
+		"--source-uri", "s3://migration/prod/full/dbo.orders.000001.csv",
+		"--engine", "tidb-import-into",
+		"--fields", "id,@bad-name",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("import dry-run code = 0, want non-zero; stdout = %s", stdout.String())
+	}
+	assertOutputContains(t, stderr.String(), "executor import: fields contains invalid user variable \"@bad-name\"")
+}
+
+func TestRunImportRejectsDuplicateTiDBImportIntoFields(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"import",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--job-id", "import-dbo.orders.000001",
+		"--target-object", "app.orders",
+		"--source-uri", "s3://migration/prod/full/dbo.orders.000001.csv",
+		"--engine", "tidb-import-into",
+		"--fields", "id,ID",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("import dry-run code = 0, want non-zero; stdout = %s", stdout.String())
+	}
+	assertOutputContains(t, stderr.String(), "executor import: fields contains duplicate column \"ID\"")
+}
+
 func TestExecuteTiDBImportValidatesBatchSizeBeforeSourceURI(t *testing.T) {
 	err := executeTiDBImport(context.Background(), importExecuteSpec{
 		TargetObject:              "app.orders",

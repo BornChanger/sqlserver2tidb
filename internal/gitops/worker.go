@@ -627,9 +627,7 @@ func readImportPlanJobs(path string) ([]dataImportJobState, error) {
 			collectingFields = true
 		case collectingFields && strings.HasPrefix(trimmed, "- ") && len(jobs) > 0:
 			field := trimYAMLScalar(strings.TrimPrefix(trimmed, "- "))
-			if field != "" {
-				jobs[len(jobs)-1].Fields = append(jobs[len(jobs)-1].Fields, field)
-			}
+			jobs[len(jobs)-1].Fields = append(jobs[len(jobs)-1].Fields, field)
 		case trimmed != "":
 			collectingFields = false
 		}

@@ -1497,6 +1497,9 @@ func parseImportFields(raw string) ([]string, error) {
 		}
 		fields = append(fields, field)
 	}
+	if err := validateTiDBImportIntoFields(fields, "executor import: fields"); err != nil {
+		return nil, err
+	}
 	return fields, nil
 }
 
@@ -1527,25 +1530,61 @@ func buildTiDBImportIntoFieldList(fields []string) (string, error) {
 	if len(fields) == 0 {
 		return "", nil
 	}
+	if err := validateTiDBImportIntoFields(fields, "IMPORT INTO field list"); err != nil {
+		return "", err
+	}
 	quoted := make([]string, 0, len(fields))
-	seenColumns := make(map[string]struct{}, len(fields))
 	for _, field := range fields {
 		field = strings.TrimSpace(field)
-		if field == "" {
-			return "", fmt.Errorf("IMPORT INTO field list contains an empty field")
-		}
 		if strings.HasPrefix(field, "@") {
 			quoted = append(quoted, field)
 			continue
 		}
-		normalizedColumn := strings.ToLower(field)
-		if _, ok := seenColumns[normalizedColumn]; ok {
-			return "", fmt.Errorf("CSV header contains duplicate column name %q", field)
-		}
-		seenColumns[normalizedColumn] = struct{}{}
 		quoted = append(quoted, quoteTiDBIdentifier(field))
 	}
 	return "(" + strings.Join(quoted, ", ") + ")", nil
+}
+
+func validateTiDBImportIntoFields(fields []string, label string) error {
+	seenColumns := make(map[string]struct{}, len(fields))
+	seenVariables := make(map[string]struct{}, len(fields))
+	for _, raw := range fields {
+		field := strings.TrimSpace(raw)
+		if field == "" {
+			return fmt.Errorf("%s contains an empty item", label)
+		}
+		if strings.HasPrefix(field, "@") {
+			if !isValidTiDBImportIntoUserVariableField(field) {
+				return fmt.Errorf("%s contains invalid user variable %q", label, field)
+			}
+			normalized := strings.ToLower(field)
+			if _, ok := seenVariables[normalized]; ok {
+				return fmt.Errorf("%s contains duplicate user variable %q", label, field)
+			}
+			seenVariables[normalized] = struct{}{}
+			continue
+		}
+		normalized := strings.ToLower(field)
+		if _, ok := seenColumns[normalized]; ok {
+			return fmt.Errorf("%s contains duplicate column %q", label, field)
+		}
+		seenColumns[normalized] = struct{}{}
+	}
+	return nil
+}
+
+func isValidTiDBImportIntoUserVariableField(field string) bool {
+	if len(field) <= 1 || field[0] != '@' {
+		return false
+	}
+	for i := 1; i < len(field); i++ {
+		ch := field[i]
+		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_' || ch == '.' || ch == '$' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func readTiDBImportIntoFieldsFromLocalSource(sourceURI string) ([]string, error) {

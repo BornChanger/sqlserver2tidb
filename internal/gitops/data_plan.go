@@ -220,15 +220,60 @@ func validateImportPlanJobSourceURIs(engine string, jobs []dataImportJobState) e
 
 func validateImportPlanJobFields(engine string, jobs []dataImportJobState) error {
 	engine = normalizeImportEngine(engine)
-	if engine == importEngineTiDBImportInto {
-		return nil
-	}
 	for _, job := range jobs {
-		if len(job.Fields) > 0 {
-			return fmt.Errorf("import job %s fields are only supported with tidb-import-into", job.ID)
+		if engine != importEngineTiDBImportInto {
+			if len(job.Fields) > 0 {
+				return fmt.Errorf("import job %s fields are only supported with tidb-import-into", job.ID)
+			}
+			continue
+		}
+		if err := validateTiDBImportIntoPlanFields(job); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+func validateTiDBImportIntoPlanFields(job dataImportJobState) error {
+	seenColumns := make(map[string]struct{}, len(job.Fields))
+	seenVariables := make(map[string]struct{}, len(job.Fields))
+	for _, raw := range job.Fields {
+		field := strings.TrimSpace(raw)
+		if field == "" {
+			return fmt.Errorf("import job %s fields contains an empty item", job.ID)
+		}
+		if strings.HasPrefix(field, "@") {
+			if !isValidTiDBImportIntoUserVariableField(field) {
+				return fmt.Errorf("import job %s fields contains invalid user variable %q", job.ID, field)
+			}
+			normalized := strings.ToLower(field)
+			if _, ok := seenVariables[normalized]; ok {
+				return fmt.Errorf("import job %s fields contains duplicate user variable %q", job.ID, field)
+			}
+			seenVariables[normalized] = struct{}{}
+			continue
+		}
+		normalized := strings.ToLower(field)
+		if _, ok := seenColumns[normalized]; ok {
+			return fmt.Errorf("import job %s fields contains duplicate column %q", job.ID, field)
+		}
+		seenColumns[normalized] = struct{}{}
+	}
+	return nil
+}
+
+func isValidTiDBImportIntoUserVariableField(field string) bool {
+	if len(field) <= 1 || field[0] != '@' {
+		return false
+	}
+	for i := 1; i < len(field); i++ {
+		ch := field[i]
+		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_' || ch == '.' || ch == '$' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func validateImportPlanJobSourceURI(engine string, job dataImportJobState) error {
