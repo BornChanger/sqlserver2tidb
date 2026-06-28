@@ -372,10 +372,11 @@ Preview ready and blocked worker actions across the repository:
 ```bash
 go run ./cmd/sqlserver2tidb worker-reconcile \
   --root . \
+  --source-cluster-id prod-sqlserver-a \
   --dry-run
 ```
 
-This scans cluster/project metadata and reports which `worker-executor --stage ddl`, `worker-export`, `worker-import`, `worker-cdc`, and `worker-validate` actions are ready or blocked by approval/hash checks. DDL actions are blocked until `schema/schema-diff.json` is `reviewed`; export, import, CDC, and validation actions are blocked while their plan files are still `draft`. A metadata-only stage is also blocked when the same approved payload hash already has non-empty state such as `planned`, `passed`, or `failed`, preventing reconcile loops from repeatedly running the same action. It does not execute workers, acquire leases, or write state.
+This scans cluster/project metadata and reports which `worker-executor --stage ddl`, `worker-export`, `worker-import`, `worker-cdc`, and `worker-validate` actions are ready or blocked by approval/hash checks. Use `--source-cluster-id` to scope the scan to one upstream SQL Server cluster directory. DDL actions are blocked until `schema/schema-diff.json` is `reviewed`; export, import, CDC, and validation actions are blocked while their plan files are still `draft`. A metadata-only stage is also blocked when the same approved payload hash already has non-empty state such as `planned`, `passed`, or `failed`, preventing reconcile loops from repeatedly running the same action. It does not execute workers, acquire leases, or write state.
 
 Add `--json` to emit the same dry-run report as machine-readable JSON with `projects`, `ready_actions`, `blocked_actions`, and `actions` fields.
 
@@ -384,6 +385,7 @@ Execute the first ready metadata-only worker action with a source-cluster lease:
 ```bash
 go run ./cmd/sqlserver2tidb worker-reconcile \
   --root . \
+  --source-cluster-id prod-sqlserver-a \
   --execute-next \
   --holder agent-a \
   --state-pr-draft
@@ -396,6 +398,7 @@ Run a bounded reconcile loop:
 ```bash
 go run ./cmd/sqlserver2tidb worker-reconcile \
   --root . \
+  --source-cluster-id prod-sqlserver-a \
   --loop \
   --holder agent-a \
   --max-iterations 10 \
@@ -409,6 +412,7 @@ Run the packaged worker agent entrypoint:
 ```bash
 go run ./cmd/sqlserver2tidb worker-agent \
   --root . \
+  --source-cluster-id prod-sqlserver-a \
   --holder agent-a \
   --max-iterations 0 \
   --interval 5s \
@@ -417,7 +421,7 @@ go run ./cmd/sqlserver2tidb worker-agent \
   --state-pr-draft
 ```
 
-`worker-agent` is the same deterministic metadata-only loop packaged as a stable process entrypoint for local runs and containers. It requires a holder, uses the source-cluster lease, can emit state PR drafts, and stops only when no ready metadata-only action remains unless `--poll` is enabled. In poll mode, `--idle-iterations 0` means keep waiting for new ready metadata actions; set a positive value for bounded smoke tests or batch jobs.
+`worker-agent` is the same deterministic metadata-only loop packaged as a stable process entrypoint for local runs and containers. It requires a holder, uses the source-cluster lease, can be scoped with `--source-cluster-id`, can emit state PR drafts, and stops only when no ready metadata-only action remains unless `--poll` is enabled. In poll mode, `--idle-iterations 0` means keep waiting for new ready metadata actions; set a positive value for bounded smoke tests or batch jobs.
 
 Prepare the git and GitHub commands for a worker state write-back PR:
 

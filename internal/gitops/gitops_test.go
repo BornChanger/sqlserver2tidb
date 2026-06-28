@@ -5576,6 +5576,58 @@ func TestExecuteNextWorkerReconcileAcquiresLeaseAndRunsFirstReadyAction(t *testi
 	assertContains(t, evidence, `"status": "planned"`)
 }
 
+func TestPlanWorkerReconcileFiltersSourceCluster(t *testing.T) {
+	root := t.TempDir()
+	createReadyExportProjectForCluster(t, root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a")
+	createReadyExportProjectForCluster(t, root, "prod-sqlserver-b", "billing-db-to-tidb-prod-b")
+
+	report, err := PlanWorkerReconcileWithSpec(root, WorkerReconcilePlanSpec{SourceClusterID: "prod-sqlserver-b"})
+	if err != nil {
+		t.Fatalf("PlanWorkerReconcileWithSpec() error = %v", err)
+	}
+	if report.Projects != 1 {
+		t.Fatalf("Projects = %d, want only one filtered project", report.Projects)
+	}
+	if len(report.Actions) == 0 {
+		t.Fatal("filtered report has no actions")
+	}
+	for _, action := range report.Actions {
+		if action.SourceClusterID != "prod-sqlserver-b" {
+			t.Fatalf("filtered action = %+v, want only prod-sqlserver-b", action)
+		}
+	}
+	export := findReconcileActionForProject(t, report.Actions, "prod-sqlserver-b", "billing-db-to-tidb-prod-b", "export")
+	if export.Status != "ready" {
+		t.Fatalf("filtered export action = %+v, want ready", export)
+	}
+}
+
+func TestExecuteNextWorkerReconcileFiltersSourceCluster(t *testing.T) {
+	root := t.TempDir()
+	createReadyExportProjectForCluster(t, root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a")
+	createReadyExportProjectForCluster(t, root, "prod-sqlserver-b", "billing-db-to-tidb-prod-b")
+
+	result, err := ExecuteNextWorkerReconcile(root, WorkerReconcileExecuteSpec{
+		Holder:          "agent-b",
+		SourceClusterID: "prod-sqlserver-b",
+	})
+	if err != nil {
+		t.Fatalf("ExecuteNextWorkerReconcile() error = %v", err)
+	}
+	if result.Action.SourceClusterID != "prod-sqlserver-b" || result.Action.ProjectID != "billing-db-to-tidb-prod-b" {
+		t.Fatalf("selected action = %+v, want prod-sqlserver-b/billing-db-to-tidb-prod-b", result.Action)
+	}
+	leaseA := readFile(t, root, "clusters/prod-sqlserver-a/state/worker-lease.yaml")
+	if strings.Contains(leaseA, "holder: agent-b") {
+		t.Fatalf("prod-sqlserver-a lease = %q, should not be touched by filtered execute", leaseA)
+	}
+	leaseB := readFile(t, root, "clusters/prod-sqlserver-b/state/worker-lease.yaml")
+	assertContains(t, leaseB, "source_cluster_id: prod-sqlserver-b")
+	assertContains(t, leaseB, "holder: agent-b")
+	assertContains(t, leaseB, "project_id: billing-db-to-tidb-prod-b")
+	assertFile(t, root, "clusters/prod-sqlserver-b/projects/billing-db-to-tidb-prod-b/state/export-chunks.yaml")
+}
+
 func TestPlanWorkerReconcileBlocksAlreadyPlannedStageForSamePayloadHash(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
@@ -6248,12 +6300,17 @@ func assertFindingCode(t *testing.T, findings []CompatibilityFinding, code strin
 
 func findReconcileAction(t *testing.T, actions []WorkerReconcileAction, stage string) WorkerReconcileAction {
 	t.Helper()
+	return findReconcileActionForProject(t, actions, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", stage)
+}
+
+func findReconcileActionForProject(t *testing.T, actions []WorkerReconcileAction, sourceClusterID, projectID, stage string) WorkerReconcileAction {
+	t.Helper()
 	for _, action := range actions {
-		if action.SourceClusterID == "prod-sqlserver-a" && action.ProjectID == "sales-db-to-tidb-prod-a" && action.Stage == stage {
+		if action.SourceClusterID == sourceClusterID && action.ProjectID == projectID && action.Stage == stage {
 			return action
 		}
 	}
-	t.Fatalf("expected reconcile action for stage %q\n%+v", stage, actions)
+	t.Fatalf("expected reconcile action for %s/%s stage %q\n%+v", sourceClusterID, projectID, stage, actions)
 	return WorkerReconcileAction{}
 }
 
@@ -6307,6 +6364,52 @@ func createValidationWorkerProject(t *testing.T, root, inventory string) {
 	writeFileForTest(t, root, "clusters/prod-sqlserver-a/inventory/inventory.json", inventory)
 }
 
+func createReadyExportProjectForCluster(t *testing.T, root, sourceClusterID, projectID string) {
+	t.Helper()
+	if _, err := os.Stat(filepath.Join(root, "global")); os.IsNotExist(err) {
+		must(t, InitRepo(root))
+	} else if err != nil {
+		t.Fatal(err)
+	}
+	must(t, CreateCluster(root, ClusterSpec{
+		ClusterID:              sourceClusterID,
+		DisplayName:            sourceClusterID,
+		Listener:               sourceClusterID + ".internal",
+		Port:                   1433,
+		SecretRef:              "vault://migration/" + sourceClusterID + "/readonly",
+		CDCMode:                "sqlserver-cdc",
+		RetentionHoursRequired: 168,
+		Owners:                 []string{"dba-team"},
+	}))
+	must(t, CreateProject(root, ProjectSpec{
+		SourceClusterID: sourceClusterID,
+		ProjectID:       projectID,
+		DisplayName:     projectID,
+		SourceDatabase:  "sales",
+		SourceSchemas:   []string{"dbo"},
+		TargetName:      "tidb-prod",
+		TargetDatabase:  "app",
+		TargetSecretRef: "vault://migration/tidb-prod/migrate-user",
+		Mode:            "short-downtime",
+		Owners:          []string{"dba-team"},
+	}))
+	writeFileForTest(t, root, filepath.Join("clusters", sourceClusterID, "inventory", "inventory.json"), dataWorkerInventory())
+	_, err := GenerateDataMovementPlans(root, sourceClusterID, projectID, DataMovementPlanSpec{
+		ObjectURIPrefix: "https://object-store.example/migration/" + sourceClusterID + "/" + projectID + "/full",
+		ChunkSizeRows:   1000000,
+		ExportFormat:    "csv",
+		ImportEngine:    "sql-insert",
+	})
+	must(t, err)
+	reviewExportPlanPredicatesForProject(t, root, sourceClusterID, projectID)
+	setReviewPlanStatusForProject(t, root, sourceClusterID, projectID, "export", "reviewed")
+	hash, err := ComputePayloadHashForStage(root, sourceClusterID, projectID, "export")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(export) error = %v", err)
+	}
+	writeStageApprovalForProject(t, root, sourceClusterID, projectID, "export", hash)
+}
+
 func GenerateSchemaDraftOnly(root string) error {
 	_, err := GenerateSchemaDraft(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a")
 	return err
@@ -6324,7 +6427,12 @@ func GenerateDataPlansOnly(root string) error {
 
 func reviewExportPlanPredicates(t *testing.T, root string) {
 	t.Helper()
-	rel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/export-plan.yaml"
+	reviewExportPlanPredicatesForProject(t, root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a")
+}
+
+func reviewExportPlanPredicatesForProject(t *testing.T, root, sourceClusterID, projectID string) {
+	t.Helper()
+	rel := filepath.Join("clusters", sourceClusterID, "projects", projectID, "plan", "export-plan.yaml")
 	plan := readFile(t, root, rel)
 	var reviewed strings.Builder
 	for _, line := range strings.Split(plan, "\n") {
@@ -6340,7 +6448,12 @@ func reviewExportPlanPredicates(t *testing.T, root string) {
 
 func setReviewPlanStatus(t *testing.T, root, stage, status string) {
 	t.Helper()
-	rel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/" + stage + "-plan.yaml"
+	setReviewPlanStatusForProject(t, root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", stage, status)
+}
+
+func setReviewPlanStatusForProject(t *testing.T, root, sourceClusterID, projectID, stage, status string) {
+	t.Helper()
+	rel := filepath.Join("clusters", sourceClusterID, "projects", projectID, "plan", stage+"-plan.yaml")
 	plan := readFile(t, root, rel)
 	updated := strings.Replace(plan, "status: draft", "status: "+status, 1)
 	if updated == plan {
@@ -6442,9 +6555,14 @@ func writeValidationApproval(t *testing.T, root, payloadHash string) {
 
 func writeStageApproval(t *testing.T, root, stage, payloadHash string) {
 	t.Helper()
-	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/approvals/"+stage+"-approval.yaml", fmt.Sprintf(`approval_id: %s-test
-project_id: sales-db-to-tidb-prod-a
-source_cluster_id: prod-sqlserver-a
+	writeStageApprovalForProject(t, root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", stage, payloadHash)
+}
+
+func writeStageApprovalForProject(t *testing.T, root, sourceClusterID, projectID, stage, payloadHash string) {
+	t.Helper()
+	writeFileForTest(t, root, filepath.Join("clusters", sourceClusterID, "projects", projectID, "approvals", stage+"-approval.yaml"), fmt.Sprintf(`approval_id: %s-test
+project_id: %s
+source_cluster_id: %s
 action: %s
 payload_hash: %s
 required_reviewers:
@@ -6453,7 +6571,7 @@ approved_by:
   - dba-team
 status: approved
 approved_at: "2026-06-26T00:00:00Z"
-`, stage, stage, payloadHash))
+`, stage, projectID, sourceClusterID, stage, payloadHash))
 }
 
 type fakeCatalogReader struct {

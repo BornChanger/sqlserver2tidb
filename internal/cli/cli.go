@@ -934,6 +934,7 @@ func runWorkerReconcile(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("worker-reconcile", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	root := fs.String("root", ".", "repository root")
+	sourceClusterID := fs.String("source-cluster-id", "", "optional source cluster id to scope reconcile actions")
 	dryRun := fs.Bool("dry-run", false, "plan worker actions without executing them")
 	executeNext := fs.Bool("execute-next", false, "execute the first ready metadata-only worker action")
 	loop := fs.Bool("loop", false, "execute ready metadata-only worker actions until none remain or max iterations is reached")
@@ -970,16 +971,18 @@ func runWorkerReconcile(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 		return runWorkerReconcileLoop(*root, gitops.WorkerReconcileExecuteSpec{
-			Holder:        *holder,
-			LeaseTTL:      *leaseTTL,
-			CreatePRDraft: *statePRDraft,
+			Holder:          *holder,
+			LeaseTTL:        *leaseTTL,
+			CreatePRDraft:   *statePRDraft,
+			SourceClusterID: *sourceClusterID,
 		}, *maxIterations, *interval, stdout, stderr)
 	}
 	if *executeNext {
 		result, err := gitops.ExecuteNextWorkerReconcile(*root, gitops.WorkerReconcileExecuteSpec{
-			Holder:        *holder,
-			LeaseTTL:      *leaseTTL,
-			CreatePRDraft: *statePRDraft,
+			Holder:          *holder,
+			LeaseTTL:        *leaseTTL,
+			CreatePRDraft:   *statePRDraft,
+			SourceClusterID: *sourceClusterID,
 		})
 		if err != nil {
 			fmt.Fprintf(stderr, "worker reconcile: %v\n", err)
@@ -999,7 +1002,7 @@ func runWorkerReconcile(args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 	}
-	report, err := gitops.PlanWorkerReconcile(*root)
+	report, err := gitops.PlanWorkerReconcileWithSpec(*root, gitops.WorkerReconcilePlanSpec{SourceClusterID: *sourceClusterID})
 	if err != nil {
 		fmt.Fprintf(stderr, "worker reconcile: %v\n", err)
 		return 1
@@ -1075,6 +1078,7 @@ func runWorkerAgent(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("worker-agent", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	root := fs.String("root", ".", "repository root")
+	sourceClusterID := fs.String("source-cluster-id", "", "optional source cluster id to scope reconcile actions")
 	holder := fs.String("holder", "", "worker lease holder id")
 	leaseTTL := fs.Duration("lease-ttl", 15*time.Minute, "worker lease ttl")
 	maxIterations := fs.Int("max-iterations", 0, "maximum loop iterations; 0 means continue until no ready metadata-only actions remain")
@@ -1104,9 +1108,10 @@ func runWorkerAgent(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintln(stdout, "worker agent")
 	fmt.Fprintf(stdout, "holder: %s\n", *holder)
 	spec := gitops.WorkerReconcileExecuteSpec{
-		Holder:        *holder,
-		LeaseTTL:      *leaseTTL,
-		CreatePRDraft: *statePRDraft,
+		Holder:          *holder,
+		LeaseTTL:        *leaseTTL,
+		CreatePRDraft:   *statePRDraft,
+		SourceClusterID: *sourceClusterID,
 	}
 	if *poll {
 		return runWorkerAgentPoll(*root, spec, *maxIterations, *interval, *idleIterations, stdout, stderr)
@@ -1272,10 +1277,10 @@ Usage:
   sqlserver2tidb worker-executor --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage import --target-connection-string-env SQLSERVER2TIDB_TARGET_CONNECTION_STRING --import-batch-size 1000
   sqlserver2tidb worker-executor --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage validation --source-connection-string-env SQLSERVER2TIDB_SOURCE_CONNECTION_STRING --target-connection-string-env SQLSERVER2TIDB_TARGET_CONNECTION_STRING
   sqlserver2tidb advance-cdc-checkpoint --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --status running
-  sqlserver2tidb worker-reconcile --root . --dry-run
-  sqlserver2tidb worker-reconcile --root . --execute-next --holder agent-a --state-pr-draft
-  sqlserver2tidb worker-reconcile --root . --loop --holder agent-a --max-iterations 10 --interval 5s
-  sqlserver2tidb worker-agent --root . --holder agent-a --max-iterations 0 --interval 5s --poll --idle-iterations 0 --state-pr-draft
+  sqlserver2tidb worker-reconcile --root . --source-cluster-id prod-sqlserver-a --dry-run
+  sqlserver2tidb worker-reconcile --root . --source-cluster-id prod-sqlserver-a --execute-next --holder agent-a --state-pr-draft
+  sqlserver2tidb worker-reconcile --root . --source-cluster-id prod-sqlserver-a --loop --holder agent-a --max-iterations 10 --interval 5s
+  sqlserver2tidb worker-agent --root . --source-cluster-id prod-sqlserver-a --holder agent-a --max-iterations 0 --interval 5s --poll --idle-iterations 0 --state-pr-draft
   sqlserver2tidb create-cluster --cluster-id prod-sqlserver-a --display-name "prod SQL Server A" --listener sqlserver-a.internal --secret-ref vault://...
   sqlserver2tidb create-project --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --source-database sales --source-schema dbo --target-name tidb-prod-a --target-database app --target-secret-ref vault://...
 `)

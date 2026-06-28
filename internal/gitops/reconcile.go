@@ -25,10 +25,15 @@ type WorkerReconcileAction struct {
 	Command         string `json:"command,omitempty"`
 }
 
+type WorkerReconcilePlanSpec struct {
+	SourceClusterID string
+}
+
 type WorkerReconcileExecuteSpec struct {
-	Holder        string
-	LeaseTTL      time.Duration
-	CreatePRDraft bool
+	Holder          string
+	LeaseTTL        time.Duration
+	CreatePRDraft   bool
+	SourceClusterID string
 }
 
 type WorkerReconcileExecutionResult struct {
@@ -62,6 +67,11 @@ var workerReconcileExecutableStages = map[string]bool{
 }
 
 func PlanWorkerReconcile(root string) (WorkerReconcileReport, error) {
+	return PlanWorkerReconcileWithSpec(root, WorkerReconcilePlanSpec{})
+}
+
+func PlanWorkerReconcileWithSpec(root string, spec WorkerReconcilePlanSpec) (WorkerReconcileReport, error) {
+	spec.SourceClusterID = strings.TrimSpace(spec.SourceClusterID)
 	clustersDir := filepath.Join(root, "clusters")
 	clusterEntries, err := os.ReadDir(clustersDir)
 	if err != nil {
@@ -74,6 +84,9 @@ func PlanWorkerReconcile(root string) (WorkerReconcileReport, error) {
 			continue
 		}
 		sourceClusterID := clusterEntry.Name()
+		if spec.SourceClusterID != "" && sourceClusterID != spec.SourceClusterID {
+			continue
+		}
 		projectsDir := filepath.Join(clustersDir, sourceClusterID, "projects")
 		projectEntries, err := os.ReadDir(projectsDir)
 		if err != nil {
@@ -99,6 +112,14 @@ func PlanWorkerReconcile(root string) (WorkerReconcileReport, error) {
 			}
 		}
 	}
+	if spec.SourceClusterID != "" && report.Projects == 0 {
+		if _, err := os.Stat(filepath.Join(clustersDir, spec.SourceClusterID)); err != nil {
+			if os.IsNotExist(err) {
+				return WorkerReconcileReport{}, fmt.Errorf("source cluster %q does not exist", spec.SourceClusterID)
+			}
+			return WorkerReconcileReport{}, fmt.Errorf("stat source cluster %q: %w", spec.SourceClusterID, err)
+		}
+	}
 	return report, nil
 }
 
@@ -111,7 +132,7 @@ func ExecuteNextWorkerReconcile(root string, spec WorkerReconcileExecuteSpec) (W
 		spec.LeaseTTL = 15 * time.Minute
 	}
 
-	report, err := PlanWorkerReconcile(root)
+	report, err := PlanWorkerReconcileWithSpec(root, WorkerReconcilePlanSpec{SourceClusterID: spec.SourceClusterID})
 	if err != nil {
 		return WorkerReconcileExecutionResult{}, err
 	}

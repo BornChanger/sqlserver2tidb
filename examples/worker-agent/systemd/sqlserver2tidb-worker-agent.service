@@ -9,12 +9,13 @@ User=sqlserver2tidb
 Group=sqlserver2tidb
 WorkingDirectory=/var/lib/sqlserver2tidb/repo
 Environment=SQLSERVER2TIDB_ROOT=/var/lib/sqlserver2tidb/repo
+Environment=SQLSERVER2TIDB_SOURCE_CLUSTER_ID=prod-sqlserver-a
 Environment=SQLSERVER2TIDB_HOLDER=agent-a
 Environment=SQLSERVER2TIDB_INTERVAL=5s
 Environment=SQLSERVER2TIDB_LEASE_TTL=15m
 Environment=SQLSERVER2TIDB_MAX_ITERATIONS=0
 Environment=SQLSERVER2TIDB_IDLE_ITERATIONS=0
-ExecStart=/usr/local/bin/sqlserver2tidb worker-agent --root ${SQLSERVER2TIDB_ROOT} --holder ${SQLSERVER2TIDB_HOLDER} --lease-ttl ${SQLSERVER2TIDB_LEASE_TTL} --max-iterations ${SQLSERVER2TIDB_MAX_ITERATIONS} --interval ${SQLSERVER2TIDB_INTERVAL} --poll --idle-iterations ${SQLSERVER2TIDB_IDLE_ITERATIONS} --state-pr-draft
+ExecStart=/usr/local/bin/sqlserver2tidb worker-agent --root ${SQLSERVER2TIDB_ROOT} --source-cluster-id ${SQLSERVER2TIDB_SOURCE_CLUSTER_ID} --holder ${SQLSERVER2TIDB_HOLDER} --lease-ttl ${SQLSERVER2TIDB_LEASE_TTL} --max-iterations ${SQLSERVER2TIDB_MAX_ITERATIONS} --interval ${SQLSERVER2TIDB_INTERVAL} --poll --idle-iterations ${SQLSERVER2TIDB_IDLE_ITERATIONS} --state-pr-draft
 Restart=always
 RestartSec=10s
 

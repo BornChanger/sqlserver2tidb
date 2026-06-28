@@ -6,6 +6,8 @@ services:
       - worker-agent
       - --root
       - /workspace
+      - --source-cluster-id
+      - ${SQLSERVER2TIDB_SOURCE_CLUSTER_ID:-prod-sqlserver-a}
       - --holder
       - ${SQLSERVER2TIDB_HOLDER:-agent-a}
       - --lease-ttl

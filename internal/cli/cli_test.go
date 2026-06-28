@@ -2325,6 +2325,70 @@ func TestRunWorkerAgentPollsWhenNoReadyActions(t *testing.T) {
 	}
 }
 
+func TestRunWorkerAgentFiltersSourceCluster(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createCLIReadyExportProjectForCluster(t, root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a")
+	createCLIReadyExportProjectForCluster(t, root, "prod-sqlserver-b", "billing-db-to-tidb-prod-b")
+
+	code := Run([]string{
+		"worker-reconcile",
+		"--root", root,
+		"--dry-run",
+		"--json",
+		"--source-cluster-id", "prod-sqlserver-b",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("worker-reconcile filtered json code = %d, stderr = %s", code, stderr.String())
+	}
+	var report struct {
+		Projects int `json:"projects"`
+		Actions  []struct {
+			SourceClusterID string `json:"source_cluster_id"`
+			ProjectID       string `json:"project_id"`
+			Stage           string `json:"stage"`
+		} `json:"actions"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("worker-reconcile filtered json stdout = %q, unmarshal error = %v", stdout.String(), err)
+	}
+	if report.Projects != 1 {
+		t.Fatalf("filtered report projects = %d, want 1", report.Projects)
+	}
+	for _, action := range report.Actions {
+		if action.SourceClusterID != "prod-sqlserver-b" || action.ProjectID != "billing-db-to-tidb-prod-b" {
+			t.Fatalf("filtered action = %+v, want only prod-sqlserver-b/billing-db-to-tidb-prod-b", action)
+		}
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = Run([]string{
+		"worker-agent",
+		"--root", root,
+		"--holder", "agent-b",
+		"--source-cluster-id", "prod-sqlserver-b",
+		"--max-iterations", "1",
+		"--interval", "1ms",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("worker-agent filtered code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "iteration 1: selected prod-sqlserver-b/billing-db-to-tidb-prod-b export") {
+		t.Fatalf("worker-agent filtered stdout = %q, want selected prod-sqlserver-b export", output)
+	}
+	leaseA := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/state/worker-lease.yaml")
+	if strings.Contains(leaseA, "holder: agent-b") {
+		t.Fatalf("prod-sqlserver-a lease = %q, should not be touched by filtered worker-agent", leaseA)
+	}
+	leaseB := readCLIRelFile(t, root, "clusters/prod-sqlserver-b/state/worker-lease.yaml")
+	if !strings.Contains(leaseB, "holder: agent-b") || !strings.Contains(leaseB, "project_id: billing-db-to-tidb-prod-b") {
+		t.Fatalf("prod-sqlserver-b lease = %q, want holder/project", leaseB)
+	}
+}
+
 func TestRunExecutorEvidencePRDraftAndCreateDryRunCommands(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer
@@ -2518,6 +2582,83 @@ func createCLIProjectWithOneExportChunk(t *testing.T, root string, stdout, stder
 	}
 }
 
+func createCLIReadyExportProjectForCluster(t *testing.T, root, sourceClusterID, projectID string) {
+	t.Helper()
+	if _, err := os.Stat(filepath.Join(root, "global")); os.IsNotExist(err) {
+		if err := gitops.InitRepo(root); err != nil {
+			t.Fatal(err)
+		}
+	} else if err != nil {
+		t.Fatal(err)
+	}
+	if err := gitops.CreateCluster(root, gitops.ClusterSpec{
+		ClusterID:              sourceClusterID,
+		DisplayName:            sourceClusterID,
+		Listener:               sourceClusterID + ".internal",
+		Port:                   1433,
+		SecretRef:              "vault://migration/" + sourceClusterID + "/readonly",
+		CDCMode:                "sqlserver-cdc",
+		RetentionHoursRequired: 168,
+		Owners:                 []string{"dba-team"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := gitops.CreateProject(root, gitops.ProjectSpec{
+		SourceClusterID: sourceClusterID,
+		ProjectID:       projectID,
+		DisplayName:     projectID,
+		SourceDatabase:  "sales",
+		SourceSchemas:   []string{"dbo"},
+		TargetName:      "tidb-prod",
+		TargetDatabase:  "app",
+		TargetSecretRef: "vault://migration/tidb-prod/migrate-user",
+		Mode:            "short-downtime",
+		Owners:          []string{"dba-team"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	inventoryPath := filepath.Join(root, "clusters", sourceClusterID, "inventory", "inventory.json")
+	if err := os.WriteFile(inventoryPath, []byte(`{
+  "status": "discovered",
+  "databases": [
+    {
+      "name": "sales",
+      "schemas": [
+        {
+          "name": "dbo",
+          "tables": [
+            {
+              "name": "orders",
+              "row_count": 1,
+              "columns": [
+                {"name": "id", "type": "int"}
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitops.GenerateDataMovementPlans(root, sourceClusterID, projectID, gitops.DataMovementPlanSpec{
+		ObjectURIPrefix: "file:///tmp/sqlserver2tidb-test/" + sourceClusterID + "/" + projectID + "/full",
+		ChunkSizeRows:   1000,
+		ExportFormat:    "csv",
+		ImportEngine:    "sql-insert",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	setCLIReviewPlanStatusForProject(t, root, sourceClusterID, projectID, "export", "reviewed")
+	hash, err := gitops.ComputePayloadHashForStage(root, sourceClusterID, projectID, "export")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeCLIStageApprovalForProject(t, root, sourceClusterID, projectID, "export", hash)
+}
+
 func assertExists(t *testing.T, root, rel string) {
 	t.Helper()
 	if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel))); err != nil {
@@ -2574,7 +2715,12 @@ func reviewCLIExportPlanPredicates(t *testing.T, root string) {
 
 func setCLIReviewPlanStatus(t *testing.T, root, stage, status string) {
 	t.Helper()
-	path := filepath.Join(root, "clusters", "prod-sqlserver-a", "projects", "sales-db-to-tidb-prod-a", "plan", stage+"-plan.yaml")
+	setCLIReviewPlanStatusForProject(t, root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", stage, status)
+}
+
+func setCLIReviewPlanStatusForProject(t *testing.T, root, sourceClusterID, projectID, stage, status string) {
+	t.Helper()
+	path := filepath.Join(root, "clusters", sourceClusterID, "projects", projectID, "plan", stage+"-plan.yaml")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -2626,10 +2772,15 @@ func setCLISchemaDiffStatus(t *testing.T, root, status string) {
 
 func writeCLIStageApproval(t *testing.T, root, stage, payloadHash string) {
 	t.Helper()
-	path := filepath.Join(root, "clusters", "prod-sqlserver-a", "projects", "sales-db-to-tidb-prod-a", "approvals", stage+"-approval.yaml")
+	writeCLIStageApprovalForProject(t, root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", stage, payloadHash)
+}
+
+func writeCLIStageApprovalForProject(t *testing.T, root, sourceClusterID, projectID, stage, payloadHash string) {
+	t.Helper()
+	path := filepath.Join(root, "clusters", sourceClusterID, "projects", projectID, "approvals", stage+"-approval.yaml")
 	content := `approval_id: ` + stage + `-cli-test
-project_id: sales-db-to-tidb-prod-a
-source_cluster_id: prod-sqlserver-a
+project_id: ` + projectID + `
+source_cluster_id: ` + sourceClusterID + `
 action: ` + stage + `
 payload_hash: ` + payloadHash + `
 required_reviewers:

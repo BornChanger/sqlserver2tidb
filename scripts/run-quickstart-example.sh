@@ -118,7 +118,7 @@ grep -q '"projects": 1' "${work_root}/worker-reconcile.json"
 run_cli worker-reconcile --root "${work_root}" --loop --holder quickstart-agent --max-iterations 1 --interval 1ms >"${work_root}/worker-reconcile-loop.txt"
 grep -q "worker reconcile loop" "${work_root}/worker-reconcile-loop.txt"
 
-run_cli worker-agent --root "${work_root}" --holder quickstart-agent --max-iterations 1 --interval 1ms --poll --idle-iterations 1 >"${work_root}/worker-agent.txt"
+run_cli worker-agent --root "${work_root}" --source-cluster-id prod-sqlserver-a --holder quickstart-agent --max-iterations 1 --interval 1ms --poll --idle-iterations 1 >"${work_root}/worker-agent.txt"
 grep -q "worker agent" "${work_root}/worker-agent.txt"
 grep -q "worker agent poll" "${work_root}/worker-agent.txt"
 
