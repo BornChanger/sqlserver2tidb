@@ -54,8 +54,8 @@ for target in "${targets[@]}"; do
   cp README.md LICENSE "${outdir}/"
   mkdir -p "${outdir}/docs"
   cp docs/design.md docs/user-manual.md "${outdir}/docs/"
-  mkdir -p "${outdir}/examples/quickstart" "${outdir}/scripts"
-  cp examples/quickstart/README.md examples/quickstart/inventory.json "${outdir}/examples/quickstart/"
+  mkdir -p "${outdir}/examples" "${outdir}/scripts"
+  cp -R examples/quickstart examples/worker-agent "${outdir}/examples/"
   cp scripts/run-quickstart-example.sh "${outdir}/scripts/"
 
   tar -C "${dist_dir}" -czf "${dist_dir}/${name}.tar.gz" "${name}"

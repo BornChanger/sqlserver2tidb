@@ -269,6 +269,8 @@ docker run --rm \
     --state-pr-draft
 ```
 
+仓库和 release archive 都包含 `examples/worker-agent/`，里面有 Docker Compose、`.env.example` 和 systemd unit 模板，可作为本地/容器部署起点。
+
 镜像内包含 `git`、`sqlserver2tidb` 和 `sqlserver2tidb-executor`，默认使用非 root 的 `sqlserver2tidb` 用户运行。镜像不内置 GitHub CLI；如果需要在容器内执行 `create-pr --execute`、`create-worker-state-pr --execute` 或 `create-executor-evidence-pr --execute`，请扩展镜像安装 `gh`，或者在宿主机执行这些 GitHub PR wrapper。
 
 ### 5.4 运行测试

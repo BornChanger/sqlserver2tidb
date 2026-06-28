@@ -54,6 +54,9 @@ dist-check:
 	tar -tzf "$$archive" "sqlserver2tidb_$(VERSION)_linux_amd64/README.md" >/dev/null; \
 	tar -tzf "$$archive" "sqlserver2tidb_$(VERSION)_linux_amd64/docs/user-manual.md" >/dev/null; \
 	tar -tzf "$$archive" "sqlserver2tidb_$(VERSION)_linux_amd64/examples/quickstart/inventory.json" >/dev/null; \
+	tar -tzf "$$archive" "sqlserver2tidb_$(VERSION)_linux_amd64/examples/worker-agent/.env.example" >/dev/null; \
+	tar -tzf "$$archive" "sqlserver2tidb_$(VERSION)_linux_amd64/examples/worker-agent/docker-compose.yaml" >/dev/null; \
+	tar -tzf "$$archive" "sqlserver2tidb_$(VERSION)_linux_amd64/examples/worker-agent/systemd/sqlserver2tidb-worker-agent.service" >/dev/null; \
 	tar -tzf "$$archive" "sqlserver2tidb_$(VERSION)_linux_amd64/scripts/run-quickstart-example.sh" >/dev/null; \
 	test -s "$$dist_dir/checksums.txt"; \
 	if grep -q "/" "$$dist_dir/checksums.txt"; then echo "checksums.txt must list archive basenames, not paths" >&2; exit 1; fi

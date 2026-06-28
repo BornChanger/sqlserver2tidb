@@ -1,0 +1,23 @@
+services:
+  worker-agent:
+    image: ${SQLSERVER2TIDB_IMAGE:-ghcr.io/bornchanger/sqlserver2tidb:latest}
+    working_dir: /workspace
+    command:
+      - worker-agent
+      - --root
+      - /workspace
+      - --holder
+      - ${SQLSERVER2TIDB_HOLDER:-agent-a}
+      - --lease-ttl
+      - ${SQLSERVER2TIDB_LEASE_TTL:-15m}
+      - --max-iterations
+      - ${SQLSERVER2TIDB_MAX_ITERATIONS:-0}
+      - --interval
+      - ${SQLSERVER2TIDB_INTERVAL:-5s}
+      - --poll
+      - --idle-iterations
+      - ${SQLSERVER2TIDB_IDLE_ITERATIONS:-0}
+      - --state-pr-draft
+    volumes:
+      - "${SQLSERVER2TIDB_REPO:?set SQLSERVER2TIDB_REPO to the metadata repository path}:/workspace"
+    restart: unless-stopped
