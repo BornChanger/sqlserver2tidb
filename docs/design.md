@@ -65,7 +65,7 @@ This command creates a local branch, commits files, pushes the branch, and opens
 - reject executor evidence whose source cluster, project, stage, or payload hash does not match the requested/current approved metadata;
 - reject executor evidence whose status is not `succeeded` or `failed`;
 - reject duplicate executor command IDs;
-- reject executor evidence without command records, and require every command record to include `id`, non-empty `args`, `shell_command`, and `exit_code`;
+- reject executor evidence without command records, and require every command record to include `id`, non-empty `args`, shell-quoted `shell_command`, and `exit_code`;
 - require every command record to include RFC3339Nano `started_at` and `completed_at`, plus non-negative `duration_ms`, reject completion timestamps earlier than start timestamps, and require optional `cdc_applied_changes` values to be non-negative;
 - reject `succeeded` evidence when any command has a non-zero `exit_code`;
 - reject `failed` evidence when no command has a non-zero `exit_code`;

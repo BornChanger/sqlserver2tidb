@@ -961,7 +961,29 @@ func exitCodeForCommandError(err error) int {
 }
 
 func renderArgsForEvidence(args []string) string {
-	return strings.Join(args, " ")
+	quoted := make([]string, 0, len(args))
+	for _, arg := range args {
+		quoted = append(quoted, shellQuoteForEvidence(arg))
+	}
+	return strings.Join(quoted, " ")
+}
+
+func shellQuoteForEvidence(arg string) string {
+	if arg == "" {
+		return "''"
+	}
+	for _, r := range arg {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			continue
+		}
+		switch r {
+		case '-', '_', '.', '/', ':', '=':
+			continue
+		default:
+			return "'" + strings.ReplaceAll(arg, "'", "'\"'\"'") + "'"
+		}
+	}
+	return arg
 }
 
 func workerExecutorCDCAppliedChanges(stage, output string) (*int, error) {

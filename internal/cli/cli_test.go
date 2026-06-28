@@ -1476,6 +1476,21 @@ func TestRunWorkerExecutorCDCExecuteRecordsAppliedChangesInEvidence(t *testing.T
 	}
 }
 
+func TestRenderArgsForEvidenceShellQuotesArguments(t *testing.T) {
+	got := renderArgsForEvidence([]string{
+		"./fake executor",
+		"validate-query",
+		"--source-sql",
+		"SELECT 'x y'",
+		"--empty",
+		"",
+	})
+	want := `'./fake executor' validate-query --source-sql 'SELECT '"'"'x y'"'"'' --empty ''`
+	if got != want {
+		t.Fatalf("renderArgsForEvidence() = %q, want %q", got, want)
+	}
+}
+
 func TestRunGenerateCDCPlanAndWorkerCDCCommands(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer
