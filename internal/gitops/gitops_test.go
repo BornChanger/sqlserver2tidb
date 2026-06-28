@@ -3271,6 +3271,7 @@ func TestGenerateExecutorEvidencePRDraftWritesDDLBody(t *testing.T) {
 	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-ddl-run.json", `{
   "stage": "ddl",
   "status": "succeeded",
+  "generated_at": "2026-01-02T03:04:00Z",
   "project_id": "sales-db-to-tidb-prod-a",
   "source_cluster_id": "prod-sqlserver-a",
   "payload_hash": "`+hash+`",
@@ -3307,6 +3308,7 @@ func TestGenerateExecutorEvidencePRDraftWritesDDLBody(t *testing.T) {
 	body := readFile(t, root, draft.BodyFile)
 	assertContains(t, body, "Stage: `ddl`")
 	assertContains(t, body, "Status: `succeeded`")
+	assertContains(t, body, "Generated at: `2026-01-02T03:04:00Z`")
 	assertContains(t, body, "Payload hash: `"+hash+"`")
 	assertContains(t, body, "## Executor Commands")
 	assertContains(t, body, "| schema/tidb-ddl/dbo.orders.sql | 0 | 2026-01-02T03:04:05Z | 2026-01-02T03:04:06Z | 1000 | applied |")
