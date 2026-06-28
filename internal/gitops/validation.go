@@ -409,8 +409,14 @@ func validateCDCCheckpointEntries(path string) error {
 		if strings.TrimSpace(entry.SourceObject) == "" {
 			return fmt.Errorf("CDC checkpoint entry %d source_object is required", index)
 		}
+		if err := validateSQLServerSourceObjectName(fmt.Sprintf("CDC checkpoint entry %d source_object", index), entry.SourceObject); err != nil {
+			return err
+		}
 		if strings.TrimSpace(entry.TargetObject) == "" {
 			return fmt.Errorf("CDC checkpoint entry %d target_object is required", index)
+		}
+		if err := validateTiDBTargetObjectName(fmt.Sprintf("CDC checkpoint entry %d target_object", index), entry.TargetObject); err != nil {
+			return err
 		}
 		if err := validateCDCPlanLSN(entry.FromLSN, "from_lsn"); err != nil {
 			return fmt.Errorf("CDC checkpoint entry %d %w", index, err)

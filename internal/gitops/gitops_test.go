@@ -651,6 +651,28 @@ func TestValidateRepoReportsInvalidCDCCheckpointEntry(t *testing.T) {
 		wantError  string
 	}{
 		{
+			name: "invalid_source_object",
+			checkpoint: `checkpoints:
+  - source_object: orders
+    target_object: app.orders
+    from_lsn: 0x00000027000001f40001
+    to_lsn: 0x00000027000001f40002
+    applied_changes: 2
+    completed_at: "2026-01-02T03:04:06Z"`,
+			wantError: "CDC checkpoint entry 1 source_object must be schema.table or database.schema.table",
+		},
+		{
+			name: "invalid_target_object",
+			checkpoint: `checkpoints:
+  - source_object: sales.dbo.orders
+    target_object: app.sales.orders
+    from_lsn: 0x00000027000001f40001
+    to_lsn: 0x00000027000001f40002
+    applied_changes: 2
+    completed_at: "2026-01-02T03:04:06Z"`,
+			wantError: "CDC checkpoint entry 1 target_object must be table or database.table",
+		},
+		{
 			name: "invalid_from_lsn",
 			checkpoint: `checkpoints:
   - source_object: sales.dbo.orders
