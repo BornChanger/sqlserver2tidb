@@ -1025,7 +1025,7 @@ func runWorkerReconcileLoop(root string, spec gitops.WorkerReconcileExecuteSpec,
 		result, err := gitops.ExecuteNextWorkerReconcile(root, spec)
 		if err != nil {
 			message := err.Error()
-			if strings.Contains(message, "no ready worker actions") || strings.Contains(message, "no ready metadata worker actions") {
+			if isNoReadyWorkerActionsError(message) {
 				fmt.Fprintf(stdout, "iteration %d: %s\n", iteration, message)
 				fmt.Fprintf(stdout, "executed actions: %d\n", executed)
 				return 0
@@ -1053,6 +1053,10 @@ func runWorkerReconcileLoop(root string, spec gitops.WorkerReconcileExecuteSpec,
 	return 0
 }
 
+func isNoReadyWorkerActionsError(message string) bool {
+	return strings.Contains(message, "no ready worker actions") || strings.Contains(message, "no ready metadata worker actions")
+}
+
 func runWorkerAgent(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("worker-agent", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -1061,6 +1065,8 @@ func runWorkerAgent(args []string, stdout, stderr io.Writer) int {
 	leaseTTL := fs.Duration("lease-ttl", 15*time.Minute, "worker lease ttl")
 	maxIterations := fs.Int("max-iterations", 0, "maximum loop iterations; 0 means continue until no ready metadata-only actions remain")
 	interval := fs.Duration("interval", 5*time.Second, "sleep interval between loop iterations")
+	poll := fs.Bool("poll", false, "keep polling after idle no-ready scans")
+	idleIterations := fs.Int("idle-iterations", 0, "maximum consecutive idle polls in --poll mode; 0 means unlimited")
 	statePRDraft := fs.Bool("state-pr-draft", false, "write PR drafts for worker state and evidence changes")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -1077,13 +1083,63 @@ func runWorkerAgent(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "worker-agent --interval must be non-negative")
 		return 2
 	}
+	if *idleIterations < 0 {
+		fmt.Fprintln(stderr, "worker-agent --idle-iterations must be non-negative")
+		return 2
+	}
 	fmt.Fprintln(stdout, "worker agent")
 	fmt.Fprintf(stdout, "holder: %s\n", *holder)
-	return runWorkerReconcileLoop(*root, gitops.WorkerReconcileExecuteSpec{
+	spec := gitops.WorkerReconcileExecuteSpec{
 		Holder:        *holder,
 		LeaseTTL:      *leaseTTL,
 		CreatePRDraft: *statePRDraft,
-	}, *maxIterations, *interval, stdout, stderr)
+	}
+	if *poll {
+		return runWorkerAgentPoll(*root, spec, *maxIterations, *interval, *idleIterations, stdout, stderr)
+	}
+	return runWorkerReconcileLoop(*root, spec, *maxIterations, *interval, stdout, stderr)
+}
+
+func runWorkerAgentPoll(root string, spec gitops.WorkerReconcileExecuteSpec, maxIterations int, interval time.Duration, idleIterations int, stdout, stderr io.Writer) int {
+	fmt.Fprintln(stdout, "worker agent poll")
+	executed := 0
+	idle := 0
+	for {
+		result, err := gitops.ExecuteNextWorkerReconcile(root, spec)
+		if err != nil {
+			message := err.Error()
+			if isNoReadyWorkerActionsError(message) {
+				idle++
+				fmt.Fprintf(stdout, "idle iteration %d: %s\n", idle, message)
+				if idleIterations > 0 && idle >= idleIterations {
+					fmt.Fprintf(stdout, "executed actions: %d\n", executed)
+					return 0
+				}
+				time.Sleep(interval)
+				continue
+			}
+			fmt.Fprintf(stderr, "worker agent poll: %v\n", err)
+			return 1
+		}
+		idle = 0
+		executed++
+		fmt.Fprintf(stdout, "iteration %d: selected %s/%s %s\n", executed, result.Action.SourceClusterID, result.Action.ProjectID, result.Action.Stage)
+		fmt.Fprintf(stdout, "  status: %s\n", result.Status)
+		fmt.Fprintf(stdout, "  payload hash: %s\n", result.Action.PayloadHash)
+		fmt.Fprintf(stdout, "  lease id: %s\n", result.LeaseID)
+		fmt.Fprintf(stdout, "  wrote %s\n", result.StateFile)
+		fmt.Fprintf(stdout, "  wrote %s\n", result.EvidenceFile)
+		fmt.Fprintf(stdout, "  wrote %s\n", result.LeaseFile)
+		if result.PRBodyFile != "" {
+			fmt.Fprintf(stdout, "  state PR draft: %s\n", result.PRBodyFile)
+			fmt.Fprintf(stdout, "  branch: %s\n", result.BranchName)
+		}
+		if maxIterations > 0 && executed >= maxIterations {
+			fmt.Fprintf(stdout, "executed actions: %d\n", executed)
+			return 0
+		}
+		time.Sleep(interval)
+	}
 }
 
 func runCreateCluster(args []string, stdout, stderr io.Writer) int {
@@ -1205,7 +1261,7 @@ Usage:
   sqlserver2tidb worker-reconcile --root . --dry-run
   sqlserver2tidb worker-reconcile --root . --execute-next --holder agent-a --state-pr-draft
   sqlserver2tidb worker-reconcile --root . --loop --holder agent-a --max-iterations 10 --interval 5s
-  sqlserver2tidb worker-agent --root . --holder agent-a --max-iterations 0 --interval 5s --state-pr-draft
+  sqlserver2tidb worker-agent --root . --holder agent-a --max-iterations 0 --interval 5s --poll --idle-iterations 0 --state-pr-draft
   sqlserver2tidb create-cluster --cluster-id prod-sqlserver-a --display-name "prod SQL Server A" --listener sqlserver-a.internal --secret-ref vault://...
   sqlserver2tidb create-project --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --source-database sales --source-schema dbo --target-name tidb-prod-a --target-database app --target-secret-ref vault://...
 `)

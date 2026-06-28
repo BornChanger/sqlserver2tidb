@@ -264,6 +264,8 @@ docker run --rm \
     --holder agent-a \
     --max-iterations 0 \
     --interval 5s \
+    --poll \
+    --idle-iterations 0 \
     --state-pr-draft
 ```
 
@@ -1493,10 +1495,12 @@ bin/sqlserver2tidb worker-agent \
   --holder agent-a \
   --max-iterations 0 \
   --interval 5s \
+  --poll \
+  --idle-iterations 0 \
   --state-pr-draft
 ```
 
-`worker-agent` 是同一 deterministic reconcile loop 的稳定进程入口，适合本地进程管理器或容器运行时使用。它要求 `--holder`，使用源集群级 lease，遵守同一 approval/hash/plan/status/state-dedupe gate；`--state-pr-draft` 会为每次 metadata-only state/evidence/lease 写回生成对应 PR body，但不会创建 branch、commit、push 或 GitHub PR。
+`worker-agent` 是同一 deterministic reconcile loop 的稳定进程入口，适合本地进程管理器或容器运行时使用。它要求 `--holder`，使用源集群级 lease，遵守同一 approval/hash/plan/status/state-dedupe gate；`--poll` 会在没有 ready metadata-only action 时继续按 `--interval` 轮询，`--idle-iterations 0` 表示不限制空转次数。`--state-pr-draft` 会为每次 metadata-only state/evidence/lease 写回生成对应 PR body，但不会创建 branch、commit、push 或 GitHub PR。
 
 ## 12. LLM 使用说明
 
@@ -2218,10 +2222,12 @@ bin/sqlserver2tidb worker-agent \
   --holder agent-a \
   --max-iterations 0 \
   --interval 5s \
+  --poll \
+  --idle-iterations 0 \
   --state-pr-draft
 ```
 
-`worker-agent` 是 `worker-reconcile --loop` 的交付入口，用于本地进程或容器中长期运行 metadata-only reconcile。它要求 `--holder`，默认 `--max-iterations 0`，即一直运行到没有 ready metadata-only action；`--interval` 控制轮询间隔；`--lease-ttl` 默认 `15m`；`--state-pr-draft` 会为被执行的 action 生成 state/evidence/lease PR body。它不执行 DDL、不调用外部 executor、不创建 GitHub PR，也不连接数据库或对象存储。
+`worker-agent` 是 `worker-reconcile --loop` 的交付入口，用于本地进程或容器中长期运行 metadata-only reconcile。它要求 `--holder`，默认 `--max-iterations 0`，即一直运行到没有 ready metadata-only action；加上 `--poll` 后，没有 ready action 时不会退出，而是按 `--interval` 继续轮询；`--idle-iterations 0` 表示不限制连续 idle 次数，正整数可用于 smoke test 或批处理退出；`--lease-ttl` 默认 `15m`；`--state-pr-draft` 会为被执行的 action 生成 state/evidence/lease PR body。它不执行 DDL、不调用外部 executor、不创建 GitHub PR，也不连接数据库或对象存储。
 
 ### 16.22 create-worker-state-pr
 

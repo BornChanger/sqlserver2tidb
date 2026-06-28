@@ -2253,6 +2253,40 @@ func TestRunWorkerAgentExecutesReconcileLoop(t *testing.T) {
 	assertExists(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/export-chunks.yaml")
 }
 
+func TestRunWorkerAgentPollsWhenNoReadyActions(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createCLIProjectWithOneExportChunk(t, root, &stdout, &stderr)
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"worker-agent",
+		"--root", root,
+		"--holder", "agent-a",
+		"--poll",
+		"--idle-iterations", "2",
+		"--interval", "1ms",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("worker-agent poll code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "worker agent poll") {
+		t.Fatalf("worker-agent poll stdout = %q, want poll header", output)
+	}
+	if !strings.Contains(output, "idle iteration 1: no ready worker actions") {
+		t.Fatalf("worker-agent poll stdout = %q, want first idle iteration", output)
+	}
+	if !strings.Contains(output, "idle iteration 2: no ready worker actions") {
+		t.Fatalf("worker-agent poll stdout = %q, want second idle iteration", output)
+	}
+	if !strings.Contains(output, "executed actions: 0") {
+		t.Fatalf("worker-agent poll stdout = %q, want executed count", output)
+	}
+}
+
 func TestRunExecutorEvidencePRDraftAndCreateDryRunCommands(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer

@@ -410,10 +410,12 @@ go run ./cmd/sqlserver2tidb worker-agent \
   --holder agent-a \
   --max-iterations 0 \
   --interval 5s \
+  --poll \
+  --idle-iterations 0 \
   --state-pr-draft
 ```
 
-`worker-agent` is the same deterministic metadata-only loop packaged as a stable process entrypoint for local runs and containers. It requires a holder, uses the source-cluster lease, can emit state PR drafts, and stops only when no ready metadata-only action remains unless `--max-iterations` is set.
+`worker-agent` is the same deterministic metadata-only loop packaged as a stable process entrypoint for local runs and containers. It requires a holder, uses the source-cluster lease, can emit state PR drafts, and stops only when no ready metadata-only action remains unless `--poll` is enabled. In poll mode, `--idle-iterations 0` means keep waiting for new ready metadata actions; set a positive value for bounded smoke tests or batch jobs.
 
 Prepare the git and GitHub commands for a worker state write-back PR:
 
