@@ -3379,6 +3379,26 @@ func TestGenerateExecutorEvidencePRDraftIncludesValidationOutputSummary(t *testi
 	assertContains(t, body, "| orders-bucket-1 | 1 | 2026-01-02T03:04:06Z | 2026-01-02T03:04:07Z | 1000 | validation mismatch source: 10 target: 9 |")
 }
 
+func TestExecutorEvidenceOutputSummaryIsMarkdownTableSafe(t *testing.T) {
+	summary := escapeMarkdownTableCell(executorEvidenceOutputSummary("validation mismatch\nsource: 10 | target: 9\n"))
+	if summary != `validation mismatch source: 10 \| target: 9` {
+		t.Fatalf("summary = %q, want normalized and escaped markdown table cell", summary)
+	}
+
+	empty := escapeMarkdownTableCell(executorEvidenceOutputSummary(" \n\t "))
+	if empty != "(empty)" {
+		t.Fatalf("empty summary = %q, want explicit empty marker", empty)
+	}
+
+	longSummary := executorEvidenceOutputSummary(strings.Repeat("a", 300))
+	if len(longSummary) != 240 {
+		t.Fatalf("long summary length = %d, want 240", len(longSummary))
+	}
+	if !strings.HasSuffix(longSummary, "...") {
+		t.Fatalf("long summary = %q, want ellipsis suffix", longSummary)
+	}
+}
+
 func TestGenerateExecutorEvidencePRDraftRejectsUnreviewedSchemaDiff(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())

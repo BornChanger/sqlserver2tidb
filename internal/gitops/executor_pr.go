@@ -441,6 +441,9 @@ func writeExecutorEvidenceCommandTable(b *strings.Builder, commands []executorEv
 func executorEvidenceOutputSummary(output string) string {
 	const maxSummaryLength = 240
 	summary := strings.Join(strings.Fields(output), " ")
+	if summary == "" {
+		return "(empty)"
+	}
 	if len(summary) <= maxSummaryLength {
 		return summary
 	}
