@@ -924,6 +924,10 @@ func runWorkerExecutor(args []string, stdout, stderr io.Writer) int {
 			}
 			attempts = append(attempts, attemptEvidence)
 			cdcAppliedChanges, errParse := workerExecutorCDCAppliedChanges(spec.Stage, string(output))
+			dataRows, dataBytes, errDataMetrics := workerExecutorDataMetrics(spec.Stage, string(output))
+			if errParse == nil {
+				errParse = errDataMetrics
+			}
 			commandEvidence = workerExecutorRunCommandEvidence{
 				ID:                command.ID,
 				Args:              args,
@@ -936,6 +940,8 @@ func runWorkerExecutor(args []string, stdout, stderr io.Writer) int {
 				CompletedAt:       attemptEvidence.CompletedAt,
 				DurationMs:        attemptEvidence.DurationMs,
 				CDCAppliedChanges: cdcAppliedChanges,
+				DataRows:          dataRows,
+				DataBytes:         dataBytes,
 			}
 			if len(attempts) > 1 {
 				commandEvidence.Attempts = attempts
@@ -1083,6 +1089,8 @@ type workerExecutorRunCommandEvidence struct {
 	CompletedAt       string                                    `json:"completed_at"`
 	DurationMs        int64                                     `json:"duration_ms"`
 	CDCAppliedChanges *int                                      `json:"cdc_applied_changes,omitempty"`
+	DataRows          *int64                                    `json:"data_rows,omitempty"`
+	DataBytes         *int64                                    `json:"data_bytes,omitempty"`
 }
 
 type workerExecutorRunCommandAttemptEvidence struct {
@@ -1184,6 +1192,53 @@ func workerExecutorCDCAppliedChanges(stage, output string) (*int, error) {
 		return &appliedChanges, nil
 	}
 	return nil, fmt.Errorf("CDC executor output must include applied changes: N")
+}
+
+func workerExecutorDataMetrics(stage, output string) (*int64, *int64, error) {
+	switch stage {
+	case "export":
+		return parseWorkerExecutorDataMetrics(stage, output, "exported rows:", "output bytes:")
+	case "import":
+		return parseWorkerExecutorDataMetrics(stage, output, "imported rows:", "input bytes:")
+	default:
+		return nil, nil, nil
+	}
+}
+
+func parseWorkerExecutorDataMetrics(stage, output, rowsPrefix, bytesPrefix string) (*int64, *int64, error) {
+	var dataRows *int64
+	var dataBytes *int64
+	for _, rawLine := range strings.Split(output, "\n") {
+		line := strings.TrimSpace(rawLine)
+		if strings.HasPrefix(line, rowsPrefix) {
+			value, err := parseWorkerExecutorNonNegativeInt64Metric(line, rowsPrefix)
+			if err != nil {
+				return nil, nil, fmt.Errorf("%s executor output metric %q must contain a non-negative integer", stage, rowsPrefix)
+			}
+			dataRows = &value
+			continue
+		}
+		if strings.HasPrefix(line, bytesPrefix) {
+			value, err := parseWorkerExecutorNonNegativeInt64Metric(line, bytesPrefix)
+			if err != nil {
+				return nil, nil, fmt.Errorf("%s executor output metric %q must contain a non-negative integer", stage, bytesPrefix)
+			}
+			dataBytes = &value
+		}
+	}
+	if (dataRows == nil) != (dataBytes == nil) {
+		return nil, nil, fmt.Errorf("%s executor output must include both %s N and %s N when data metrics are present", stage, rowsPrefix, bytesPrefix)
+	}
+	return dataRows, dataBytes, nil
+}
+
+func parseWorkerExecutorNonNegativeInt64Metric(line, prefix string) (int64, error) {
+	value := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || parsed < 0 {
+		return 0, fmt.Errorf("invalid non-negative integer")
+	}
+	return parsed, nil
 }
 
 func withExternalExecutorExecuteFlag(args []string) []string {

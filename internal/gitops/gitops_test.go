@@ -3714,6 +3714,48 @@ func TestGenerateExecutorEvidencePRDraftIncludesCDCAppliedChanges(t *testing.T) 
 	assertContains(t, body, "| sales.dbo.orders | 0 | 2026-01-02T03:04:05Z | 2026-01-02T03:04:06Z | 1000 | applied changes: 2 | 2 |")
 }
 
+func TestGenerateExecutorEvidencePRDraftIncludesDataMetrics(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateDataPlansOnly(root))
+	setReviewPlanStatus(t, root, "export", "reviewed")
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(export) error = %v", err)
+	}
+	writeStageApproval(t, root, "export", hash)
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-export-run.json", `{
+  "stage": "export",
+  "status": "succeeded",
+  "project_id": "sales-db-to-tidb-prod-a",
+  "source_cluster_id": "prod-sqlserver-a",
+  "payload_hash": "`+hash+`",
+  "commands": [
+    {
+      "id": "dbo.orders.000001",
+      "args": ["sqlserver2tidb-executor", "export", "--execute"],
+      "shell_command": "sqlserver2tidb-executor export --execute",
+      "exit_code": 0,
+      "output": "exported rows: 2\noutput bytes: 128\n",
+      "started_at": "2026-01-02T03:04:05Z",
+      "completed_at": "2026-01-02T03:04:06Z",
+      "duration_ms": 1000,
+      "data_rows": 2,
+      "data_bytes": 128
+    }
+  ]
+}
+`)
+
+	draft, err := GenerateExecutorEvidencePRDraft(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
+	if err != nil {
+		t.Fatalf("GenerateExecutorEvidencePRDraft() error = %v", err)
+	}
+	body := readFile(t, root, draft.BodyFile)
+	assertContains(t, body, "| Command ID | Exit code | Started at | Completed at | Duration ms | Data rows | Data bytes | Output summary |")
+	assertContains(t, body, "| dbo.orders.000001 | 0 | 2026-01-02T03:04:05Z | 2026-01-02T03:04:06Z | 1000 | 2 | 128 | exported rows: 2 output bytes: 128 |")
+}
+
 func TestGenerateExecutorEvidencePRDraftIncludesAttemptCount(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
@@ -4019,6 +4061,81 @@ func TestGenerateExecutorEvidencePRDraftRejectsUnknownExecutorStatus(t *testing.
 		t.Fatal("GenerateExecutorEvidencePRDraft() expected unsupported status error")
 	}
 	assertContains(t, err.Error(), `executor evidence status "success" is unsupported`)
+}
+
+func TestValidateRepoReportsNegativeExecutorDataMetrics(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	evidenceRel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-export-run.json"
+	writeFileForTest(t, root, evidenceRel, `{
+  "stage": "export",
+  "status": "succeeded",
+  "project_id": "sales-db-to-tidb-prod-a",
+  "source_cluster_id": "prod-sqlserver-a",
+  "payload_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "generated_at": "2026-01-02T03:04:07Z",
+  "commands": [
+    {
+      "id": "dbo.orders.000001",
+      "args": ["sqlserver2tidb-executor", "export", "--execute"],
+      "shell_command": "sqlserver2tidb-executor export --execute",
+      "exit_code": 0,
+      "output": "executor export completed\n",
+      "started_at": "2026-01-02T03:04:05Z",
+      "completed_at": "2026-01-02T03:04:06Z",
+      "duration_ms": 1000,
+      "data_rows": -1,
+      "data_bytes": 128
+    }
+  ]
+}
+`)
+
+	report, err := ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("ValidateRepo() valid = true, want executor data metrics error")
+	}
+	assertContains(t, strings.Join(report.Errors, "\n"), `invalid executor evidence `+evidenceRel+`: executor evidence command dbo.orders.000001 data_rows must be non-negative`)
+}
+
+func TestValidateRepoReportsPartialExecutorDataMetrics(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	evidenceRel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-export-run.json"
+	writeFileForTest(t, root, evidenceRel, `{
+  "stage": "export",
+  "status": "succeeded",
+  "project_id": "sales-db-to-tidb-prod-a",
+  "source_cluster_id": "prod-sqlserver-a",
+  "payload_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "generated_at": "2026-01-02T03:04:07Z",
+  "commands": [
+    {
+      "id": "dbo.orders.000001",
+      "args": ["sqlserver2tidb-executor", "export", "--execute"],
+      "shell_command": "sqlserver2tidb-executor export --execute",
+      "exit_code": 0,
+      "output": "exported rows: 2\n",
+      "started_at": "2026-01-02T03:04:05Z",
+      "completed_at": "2026-01-02T03:04:06Z",
+      "duration_ms": 1000,
+      "data_rows": 2
+    }
+  ]
+}
+`)
+
+	report, err := ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("ValidateRepo() valid = true, want partial executor data metrics error")
+	}
+	assertContains(t, strings.Join(report.Errors, "\n"), `invalid executor evidence `+evidenceRel+`: executor evidence command dbo.orders.000001 data_rows and data_bytes must be provided together`)
 }
 
 func TestGenerateExecutorEvidencePRDraftRejectsFailedStatusWithoutFailedCommand(t *testing.T) {

@@ -1152,6 +1152,75 @@ func TestRunWorkerExecutorExecutePassesExecuteFlagToExternalExecutor(t *testing.
 	}
 }
 
+func TestRunWorkerExecutorExecuteRecordsDataMetricsInEvidence(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createCLIProjectWithOneExportChunk(t, root, &stdout, &stderr)
+	reviewCLIExportPlanPredicates(t, root)
+	setCLIReviewPlanStatus(t, root, "export", "reviewed")
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"compute-payload-hash",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "export",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("compute-payload-hash export code = %d, stderr = %s", code, stderr.String())
+	}
+	writeCLIStageApproval(t, root, "export", parsePayloadHash(t, stdout.String()))
+
+	fakeExecutor := filepath.Join(root, "fake-executor-metrics")
+	if err := os.WriteFile(fakeExecutor, []byte("#!/bin/sh\nprintf 'executor export completed: sales.dbo.orders -> file:///tmp/orders.csv\\n'\nprintf 'exported rows: 2\\n'\nprintf 'output bytes: 128\\n'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = Run([]string{
+		"worker-executor",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "export",
+		"--executor-binary", "./fake-executor-metrics",
+		"--execute",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("worker-executor execute code = %d, stderr = %s", code, stderr.String())
+	}
+
+	evidence := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-export-run.json")
+	if !strings.Contains(evidence, `"data_rows": 2`) {
+		t.Fatalf("executor evidence = %q, want structured data rows", evidence)
+	}
+	if !strings.Contains(evidence, `"data_bytes": 128`) {
+		t.Fatalf("executor evidence = %q, want structured data bytes", evidence)
+	}
+}
+
+func TestWorkerExecutorDataMetricsRejectsPartialOrInvalidOutput(t *testing.T) {
+	_, _, err := workerExecutorDataMetrics("export", "exported rows: 2\n")
+	if err == nil {
+		t.Fatal("workerExecutorDataMetrics() error = nil, want partial metric error")
+	}
+	if !strings.Contains(err.Error(), "must include both exported rows: N and output bytes: N") {
+		t.Fatalf("workerExecutorDataMetrics() error = %v, want partial metric error", err)
+	}
+
+	_, _, err = workerExecutorDataMetrics("import", "imported rows: -1\ninput bytes: 128\n")
+	if err == nil {
+		t.Fatal("workerExecutorDataMetrics() error = nil, want invalid metric error")
+	}
+	if !strings.Contains(err.Error(), `metric "imported rows:" must contain a non-negative integer`) {
+		t.Fatalf("workerExecutorDataMetrics() error = %v, want invalid imported rows error", err)
+	}
+}
+
 func TestRunWorkerExecutorExecuteWritesFailedEvidenceOnCommandFailure(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer

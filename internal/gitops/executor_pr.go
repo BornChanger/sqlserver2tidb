@@ -55,6 +55,8 @@ type executorEvidenceCommandSummary struct {
 	CompletedAt       string                                  `json:"completed_at"`
 	DurationMs        *int64                                  `json:"duration_ms"`
 	CDCAppliedChanges *int                                    `json:"cdc_applied_changes"`
+	DataRows          *int64                                  `json:"data_rows"`
+	DataBytes         *int64                                  `json:"data_bytes"`
 }
 
 type executorEvidenceCommandAttemptSummary struct {
@@ -314,6 +316,15 @@ func validateExecutorEvidenceCommands(status string, commands []executorEvidence
 		if command.CDCAppliedChanges != nil && *command.CDCAppliedChanges < 0 {
 			return fmt.Errorf("executor evidence command %s cdc_applied_changes must be non-negative", commandID)
 		}
+		if (command.DataRows == nil) != (command.DataBytes == nil) {
+			return fmt.Errorf("executor evidence command %s data_rows and data_bytes must be provided together", commandID)
+		}
+		if command.DataRows != nil && *command.DataRows < 0 {
+			return fmt.Errorf("executor evidence command %s data_rows must be non-negative", commandID)
+		}
+		if command.DataBytes != nil && *command.DataBytes < 0 {
+			return fmt.Errorf("executor evidence command %s data_bytes must be non-negative", commandID)
+		}
 		if err := validateExecutorEvidenceCommandAttempts(commandID, command.AttemptCount, command.Attempts); err != nil {
 			return err
 		}
@@ -495,6 +506,7 @@ func renderExecutorEvidencePRDraftMarkdown(ctx executorEvidencePRContext, draft 
 func writeExecutorEvidenceCommandTable(b *strings.Builder, commands []executorEvidenceCommandSummary) {
 	b.WriteString("\n## Executor Commands\n\n")
 	includeCDC := executorEvidenceTableIncludesCDCAppliedChanges(commands)
+	includeDataMetrics := executorEvidenceTableIncludesDataMetrics(commands)
 	includeError := executorEvidenceTableIncludesCommandError(commands)
 	includeAttempts := executorEvidenceTableIncludesAttempts(commands)
 	headers := []string{"Command ID", "Exit code"}
@@ -503,8 +515,14 @@ func writeExecutorEvidenceCommandTable(b *strings.Builder, commands []executorEv
 		headers = append(headers, "Attempts")
 		alignments = append(alignments, "---:")
 	}
-	headers = append(headers, "Started at", "Completed at", "Duration ms", "Output summary")
-	alignments = append(alignments, "---", "---", "---:", "---")
+	headers = append(headers, "Started at", "Completed at", "Duration ms")
+	alignments = append(alignments, "---", "---", "---:")
+	if includeDataMetrics {
+		headers = append(headers, "Data rows", "Data bytes")
+		alignments = append(alignments, "---:", "---:")
+	}
+	headers = append(headers, "Output summary")
+	alignments = append(alignments, "---")
 	if includeError {
 		headers = append(headers, "Command error")
 		alignments = append(alignments, "---")
@@ -535,8 +553,19 @@ func writeExecutorEvidenceCommandTable(b *strings.Builder, commands []executorEv
 			command.StartedAt,
 			command.CompletedAt,
 			duration,
-			executorEvidenceOutputSummary(command.Output),
 		)
+		if includeDataMetrics {
+			dataRows := ""
+			if command.DataRows != nil {
+				dataRows = fmt.Sprintf("%d", *command.DataRows)
+			}
+			dataBytes := ""
+			if command.DataBytes != nil {
+				dataBytes = fmt.Sprintf("%d", *command.DataBytes)
+			}
+			cells = append(cells, dataRows, dataBytes)
+		}
+		cells = append(cells, executorEvidenceOutputSummary(command.Output))
 		if includeError {
 			cells = append(cells, strings.TrimSpace(command.Error))
 		}
@@ -602,6 +631,15 @@ func executorEvidenceOutputSummary(output string) string {
 func executorEvidenceTableIncludesCDCAppliedChanges(commands []executorEvidenceCommandSummary) bool {
 	for _, command := range commands {
 		if command.CDCAppliedChanges != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func executorEvidenceTableIncludesDataMetrics(commands []executorEvidenceCommandSummary) bool {
+	for _, command := range commands {
+		if command.DataRows != nil || command.DataBytes != nil {
 			return true
 		}
 	}

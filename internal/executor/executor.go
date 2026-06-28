@@ -510,17 +510,20 @@ func runExport(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	if *execute {
-		if err := executeSQLServerExport(context.Background(), exportExecuteSpec{
+		result, err := executeSQLServerExport(context.Background(), exportExecuteSpec{
 			SourceObject:              *sourceObject,
 			OutputURI:                 *outputURI,
 			Predicate:                 *predicate,
 			Compression:               normalizedCompression,
 			SourceConnectionStringEnv: *sourceConnectionStringEnv,
-		}); err != nil {
+		})
+		if err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
 		fmt.Fprintf(stdout, "executor export completed: %s -> %s\n", *sourceObject, *outputURI)
+		fmt.Fprintf(stdout, "exported rows: %d\n", result.ExportedRows)
+		fmt.Fprintf(stdout, "output bytes: %d\n", result.OutputBytes)
 		return 0
 	}
 
@@ -551,21 +554,26 @@ type exportExecuteSpec struct {
 	SourceConnectionStringEnv string
 }
 
-func executeSQLServerExport(ctx context.Context, spec exportExecuteSpec) error {
+type exportExecuteResult struct {
+	ExportedRows int64
+	OutputBytes  int64
+}
+
+func executeSQLServerExport(ctx context.Context, spec exportExecuteSpec) (exportExecuteResult, error) {
 	compression, err := normalizeCompression(spec.Compression)
 	if err != nil {
-		return fmt.Errorf("executor export: %w", err)
+		return exportExecuteResult{}, fmt.Errorf("executor export: %w", err)
 	}
 	if strings.Contains(strings.ToUpper(spec.Predicate), "TODO") {
-		return fmt.Errorf("executor export: predicate still contains TODO")
+		return exportExecuteResult{}, fmt.Errorf("executor export: predicate still contains TODO")
 	}
 
 	output, err := parseExportOutputURI(spec.OutputURI)
 	if err != nil {
-		return fmt.Errorf("executor export: %w", err)
+		return exportExecuteResult{}, fmt.Errorf("executor export: %w", err)
 	}
 	if err := prepareExportOutputURI(output); err != nil {
-		return fmt.Errorf("executor export: create output directory: %w", err)
+		return exportExecuteResult{}, fmt.Errorf("executor export: create output directory: %w", err)
 	}
 
 	envName := strings.TrimSpace(spec.SourceConnectionStringEnv)
@@ -574,38 +582,42 @@ func executeSQLServerExport(ctx context.Context, spec exportExecuteSpec) error {
 	}
 	connectionString := strings.TrimSpace(os.Getenv(envName))
 	if connectionString == "" {
-		return fmt.Errorf("executor export: source connection string env %s is not set", envName)
+		return exportExecuteResult{}, fmt.Errorf("executor export: source connection string env %s is not set", envName)
 	}
 
 	query, err := buildSQLServerExportQuery(spec.SourceObject, spec.Predicate)
 	if err != nil {
-		return fmt.Errorf("executor export: %w", err)
+		return exportExecuteResult{}, fmt.Errorf("executor export: %w", err)
 	}
 
 	db, err := sql.Open("sqlserver", connectionString)
 	if err != nil {
-		return fmt.Errorf("executor export: open SQL Server connection: %w", err)
+		return exportExecuteResult{}, fmt.Errorf("executor export: open SQL Server connection: %w", err)
 	}
 	defer db.Close()
 
 	rows, err := db.QueryContext(ctx, query)
 	if err != nil {
-		return fmt.Errorf("executor export: query source object %s: %w", spec.SourceObject, err)
+		return exportExecuteResult{}, fmt.Errorf("executor export: query source object %s: %w", spec.SourceObject, err)
 	}
 
 	outputWriter, err := openCSVExportOutput(ctx, output, compression)
 	if err != nil {
 		rows.Close()
-		return fmt.Errorf("executor export: %w", err)
+		return exportExecuteResult{}, fmt.Errorf("executor export: %w", err)
 	}
-	if err := writeCSVExportRows(outputWriter, rows); err != nil {
+	exportedRows, err := writeCSVExportRows(outputWriter, rows)
+	if err != nil {
 		outputWriter.Close()
-		return fmt.Errorf("executor export: write CSV output: %w", err)
+		return exportExecuteResult{}, fmt.Errorf("executor export: write CSV output: %w", err)
 	}
 	if err := outputWriter.Close(); err != nil {
-		return fmt.Errorf("executor export: close CSV output: %w", err)
+		return exportExecuteResult{}, fmt.Errorf("executor export: close CSV output: %w", err)
 	}
-	return nil
+	return exportExecuteResult{
+		ExportedRows: exportedRows,
+		OutputBytes:  outputWriter.BytesWritten(),
+	}, nil
 }
 
 func resolveExportOutputFile(outputURI string) (string, error) {
@@ -666,23 +678,64 @@ func prepareExportOutputURI(output exportOutputURI) error {
 	return nil
 }
 
-func openCSVExportOutput(ctx context.Context, output exportOutputURI, compression string) (io.WriteCloser, error) {
+type csvExportOutput struct {
+	io.WriteCloser
+	counter *countingWriteCloser
+}
+
+func (output *csvExportOutput) BytesWritten() int64 {
+	if output == nil || output.counter == nil {
+		return 0
+	}
+	return output.counter.BytesWritten()
+}
+
+type countingWriteCloser struct {
+	writer io.WriteCloser
+	bytes  int64
+}
+
+func (w *countingWriteCloser) Write(p []byte) (int, error) {
+	n, err := w.writer.Write(p)
+	w.bytes += int64(n)
+	return n, err
+}
+
+func (w *countingWriteCloser) Close() error {
+	return w.writer.Close()
+}
+
+func (w *countingWriteCloser) BytesWritten() int64 {
+	if w == nil {
+		return 0
+	}
+	return w.bytes
+}
+
+func openCSVExportOutput(ctx context.Context, output exportOutputURI, compression string) (*csvExportOutput, error) {
+	var base io.WriteCloser
 	switch output.scheme {
 	case "file":
 		file, err := os.Create(output.path)
 		if err != nil {
 			return nil, fmt.Errorf("create output file: %w", err)
 		}
-		return wrapCSVExportWriter(file, compression)
+		base = file
 	case "http", "https":
 		writer, err := newHTTPExportWriter(ctx, output.uri, compression)
 		if err != nil {
 			return nil, err
 		}
-		return wrapCSVExportWriter(writer, compression)
+		base = writer
 	default:
 		return nil, fmt.Errorf("unsupported output URI scheme %q", output.scheme)
 	}
+	counter := &countingWriteCloser{writer: base}
+	writer, err := wrapCSVExportWriter(counter, compression)
+	if err != nil {
+		return nil, err
+	}
+	return &csvExportOutput{WriteCloser: writer, counter: counter}, nil
 }
 
 type compressedWriteCloser struct {
@@ -805,24 +858,25 @@ type exportRows interface {
 
 const csvNullBitmapColumn = "__sqlserver2tidb_null_bitmap"
 
-func writeCSVExportRows(w io.Writer, rows exportRows) error {
+func writeCSVExportRows(w io.Writer, rows exportRows) (int64, error) {
 	defer rows.Close()
 
 	columns, err := rows.Columns()
 	if err != nil {
-		return err
+		return 0, err
 	}
 	for _, column := range columns {
 		if column == csvNullBitmapColumn {
-			return fmt.Errorf("source column name %q conflicts with internal CSV null bitmap column", csvNullBitmapColumn)
+			return 0, fmt.Errorf("source column name %q conflicts with internal CSV null bitmap column", csvNullBitmapColumn)
 		}
 	}
 	writer := csv.NewWriter(w)
 	header := append(append([]string(nil), columns...), csvNullBitmapColumn)
 	if err := writer.Write(header); err != nil {
-		return err
+		return 0, err
 	}
 
+	var exportedRows int64
 	values := make([]any, len(columns))
 	dest := make([]any, len(columns))
 	for i := range values {
@@ -830,7 +884,7 @@ func writeCSVExportRows(w io.Writer, rows exportRows) error {
 	}
 	for rows.Next() {
 		if err := rows.Scan(dest...); err != nil {
-			return err
+			return 0, err
 		}
 		record := make([]string, 0, len(values)+1)
 		nullBitmap := make([]byte, len(values))
@@ -845,14 +899,18 @@ func writeCSVExportRows(w io.Writer, rows exportRows) error {
 		}
 		record = append(record, string(nullBitmap))
 		if err := writer.Write(record); err != nil {
-			return err
+			return 0, err
 		}
+		exportedRows++
 	}
 	if err := rows.Err(); err != nil {
-		return err
+		return 0, err
 	}
 	writer.Flush()
-	return writer.Error()
+	if err := writer.Error(); err != nil {
+		return 0, err
+	}
+	return exportedRows, nil
 }
 
 func formatCSVValue(value any) string {
@@ -940,7 +998,7 @@ func runImport(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	if *execute {
-		if err := executeTiDBImport(context.Background(), importExecuteSpec{
+		result, err := executeTiDBImport(context.Background(), importExecuteSpec{
 			ImportEngine:              normalizedEngine,
 			TargetObject:              *targetObject,
 			SourceURI:                 *sourceURI,
@@ -949,11 +1007,16 @@ func runImport(args []string, stdout, stderr io.Writer) int {
 			Fields:                    fields,
 			RequireEmptyTarget:        *requireEmptyTarget,
 			Compression:               normalizedCompression,
-		}); err != nil {
+		})
+		if err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
 		fmt.Fprintf(stdout, "executor import completed: %s -> %s\n", *sourceURI, *targetObject)
+		if normalizedEngine == importEngineSQLInsert {
+			fmt.Fprintf(stdout, "imported rows: %d\n", result.ImportedRows)
+			fmt.Fprintf(stdout, "input bytes: %d\n", result.InputBytes)
+		}
 		return 0
 	}
 
@@ -1335,28 +1398,33 @@ type importExecuteSpec struct {
 	Compression               string
 }
 
-func executeTiDBImport(ctx context.Context, spec importExecuteSpec) error {
+type importExecuteResult struct {
+	ImportedRows int64
+	InputBytes   int64
+}
+
+func executeTiDBImport(ctx context.Context, spec importExecuteSpec) (importExecuteResult, error) {
 	engine, err := normalizeImportEngine(spec.ImportEngine)
 	if err != nil {
-		return err
+		return importExecuteResult{}, err
 	}
 	compression, err := normalizeCompression(spec.Compression)
 	if err != nil {
-		return fmt.Errorf("executor import: %w", err)
+		return importExecuteResult{}, fmt.Errorf("executor import: %w", err)
 	}
 	if err := validateCompressionForImportEngine(compression, engine); err != nil {
-		return fmt.Errorf("executor import: %w", err)
+		return importExecuteResult{}, fmt.Errorf("executor import: %w", err)
 	}
 	if engine == importEngineTiDBImportInto {
 		return executeTiDBImportInto(ctx, spec)
 	}
 	if spec.ImportBatchSize <= 0 {
-		return fmt.Errorf("executor import: import batch size must be positive")
+		return importExecuteResult{}, fmt.Errorf("executor import: import batch size must be positive")
 	}
 
 	source, err := parseImportSourceURI(spec.SourceURI)
 	if err != nil {
-		return fmt.Errorf("executor import: %w", err)
+		return importExecuteResult{}, fmt.Errorf("executor import: %w", err)
 	}
 
 	envName := strings.TrimSpace(spec.TargetConnectionStringEnv)
@@ -1365,67 +1433,74 @@ func executeTiDBImport(ctx context.Context, spec importExecuteSpec) error {
 	}
 	connectionString := strings.TrimSpace(os.Getenv(envName))
 	if connectionString == "" {
-		return fmt.Errorf("executor import: target connection string env %s is not set", envName)
+		return importExecuteResult{}, fmt.Errorf("executor import: target connection string env %s is not set", envName)
 	}
 
 	db, err := openMySQLDB(connectionString)
 	if err != nil {
-		return fmt.Errorf("executor import: open TiDB connection: %w", err)
+		return importExecuteResult{}, fmt.Errorf("executor import: open TiDB connection: %w", err)
 	}
 	defer db.Close()
 
 	if spec.RequireEmptyTarget {
 		if err := ensureTiDBImportTargetEmpty(ctx, db, spec.TargetObject); err != nil {
-			return fmt.Errorf("executor import: %w", err)
+			return importExecuteResult{}, fmt.Errorf("executor import: %w", err)
 		}
 	}
 
 	sourceReader, err := openParsedCSVImportSource(ctx, source)
 	if err != nil {
-		return fmt.Errorf("executor import: %w", err)
+		return importExecuteResult{}, fmt.Errorf("executor import: %w", err)
 	}
-	rawSourceReader := sourceReader
-	sourceReader, err = wrapCSVImportReader(rawSourceReader, compression)
+	countingSourceReader := &countingReadCloser{reader: sourceReader}
+	sourceReader, err = wrapCSVImportReader(countingSourceReader, compression)
 	if err != nil {
-		rawSourceReader.Close()
-		return fmt.Errorf("executor import: %w", err)
+		countingSourceReader.Close()
+		return importExecuteResult{}, fmt.Errorf("executor import: %w", err)
 	}
 	defer sourceReader.Close()
 
 	reader, err := newCSVImportReader(sourceReader)
 	if err != nil {
-		return fmt.Errorf("executor import: read CSV source: %w", err)
+		return importExecuteResult{}, fmt.Errorf("executor import: read CSV source: %w", err)
 	}
 	insertSQL, err := buildTiDBInsertStatement(spec.TargetObject, reader.Columns())
 	if err != nil {
-		return fmt.Errorf("executor import: %w", err)
+		return importExecuteResult{}, fmt.Errorf("executor import: %w", err)
 	}
 
-	return insertCSVImportRows(ctx, db, insertSQL, reader, spec.ImportBatchSize)
+	importedRows, err := insertCSVImportRows(ctx, db, insertSQL, reader, spec.ImportBatchSize)
+	if err != nil {
+		return importExecuteResult{}, err
+	}
+	return importExecuteResult{
+		ImportedRows: importedRows,
+		InputBytes:   countingSourceReader.BytesRead(),
+	}, nil
 }
 
-func executeTiDBImportInto(ctx context.Context, spec importExecuteSpec) error {
+func executeTiDBImportInto(ctx context.Context, spec importExecuteSpec) (importExecuteResult, error) {
 	compression, err := normalizeCompression(spec.Compression)
 	if err != nil {
-		return fmt.Errorf("executor import: %w", err)
+		return importExecuteResult{}, fmt.Errorf("executor import: %w", err)
 	}
 	if err := validateCompressionForImportEngine(compression, importEngineTiDBImportInto); err != nil {
-		return fmt.Errorf("executor import: %w", err)
+		return importExecuteResult{}, fmt.Errorf("executor import: %w", err)
 	}
 	fields := spec.Fields
 	if err := requireTiDBImportIntoFieldsForRemoteSource(spec.SourceURI, fields); err != nil {
-		return fmt.Errorf("executor import: %w", err)
+		return importExecuteResult{}, fmt.Errorf("executor import: %w", err)
 	}
 	if len(fields) == 0 {
 		var err error
 		fields, err = readTiDBImportIntoFieldsFromLocalSource(spec.SourceURI)
 		if err != nil {
-			return fmt.Errorf("executor import: %w", err)
+			return importExecuteResult{}, fmt.Errorf("executor import: %w", err)
 		}
 	}
 	statement, err := buildTiDBImportIntoStatementWithFields(spec.TargetObject, spec.SourceURI, fields)
 	if err != nil {
-		return fmt.Errorf("executor import: %w", err)
+		return importExecuteResult{}, fmt.Errorf("executor import: %w", err)
 	}
 
 	envName := strings.TrimSpace(spec.TargetConnectionStringEnv)
@@ -1434,23 +1509,23 @@ func executeTiDBImportInto(ctx context.Context, spec importExecuteSpec) error {
 	}
 	connectionString := strings.TrimSpace(os.Getenv(envName))
 	if connectionString == "" {
-		return fmt.Errorf("executor import: target connection string env %s is not set", envName)
+		return importExecuteResult{}, fmt.Errorf("executor import: target connection string env %s is not set", envName)
 	}
 
 	db, err := openMySQLDB(connectionString)
 	if err != nil {
-		return fmt.Errorf("executor import: open TiDB connection: %w", err)
+		return importExecuteResult{}, fmt.Errorf("executor import: open TiDB connection: %w", err)
 	}
 	defer db.Close()
 
 	if err := ensureTiDBImportTargetEmpty(ctx, db, spec.TargetObject); err != nil {
-		return fmt.Errorf("executor import: %w", err)
+		return importExecuteResult{}, fmt.Errorf("executor import: %w", err)
 	}
 
 	if _, err := db.ExecContext(ctx, statement); err != nil {
-		return fmt.Errorf("executor import: execute TiDB IMPORT INTO: %w", err)
+		return importExecuteResult{}, fmt.Errorf("executor import: execute TiDB IMPORT INTO: %w", err)
 	}
-	return nil
+	return importExecuteResult{}, nil
 }
 
 func openCSVImportFile(sourceURI string) (io.ReadCloser, error) {
@@ -1553,6 +1628,28 @@ type compressedReadCloser struct {
 	reader io.Reader
 	closer io.Closer
 	base   io.Closer
+}
+
+type countingReadCloser struct {
+	reader io.ReadCloser
+	bytes  int64
+}
+
+func (r *countingReadCloser) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	r.bytes += int64(n)
+	return n, err
+}
+
+func (r *countingReadCloser) Close() error {
+	return r.reader.Close()
+}
+
+func (r *countingReadCloser) BytesRead() int64 {
+	if r == nil {
+		return 0
+	}
+	return r.bytes
 }
 
 func (r compressedReadCloser) Read(p []byte) (int, error) {
@@ -2044,21 +2141,21 @@ func quoteTiDBIdentifier(identifier string) string {
 	return "`" + strings.ReplaceAll(identifier, "`", "``") + "`"
 }
 
-func insertCSVImportRows(ctx context.Context, db *sql.DB, insertSQL string, reader *csvImportReader, batchSize int) error {
+func insertCSVImportRows(ctx context.Context, db *sql.DB, insertSQL string, reader *csvImportReader, batchSize int) (int64, error) {
 	if batchSize <= 0 {
-		return fmt.Errorf("executor import: import batch size must be positive")
+		return 0, fmt.Errorf("executor import: import batch size must be positive")
 	}
 
-	rowNumber := 0
+	var rowNumber int64
 	for {
 		tx, err := db.BeginTx(ctx, nil)
 		if err != nil {
-			return fmt.Errorf("executor import: begin transaction: %w", err)
+			return 0, fmt.Errorf("executor import: begin transaction: %w", err)
 		}
 		stmt, err := tx.PrepareContext(ctx, insertSQL)
 		if err != nil {
 			tx.Rollback()
-			return fmt.Errorf("executor import: prepare insert: %w", err)
+			return 0, fmt.Errorf("executor import: prepare insert: %w", err)
 		}
 
 		rowsInBatch := 0
@@ -2068,22 +2165,22 @@ func insertCSVImportRows(ctx context.Context, db *sql.DB, insertSQL string, read
 				stmt.Close()
 				if rowsInBatch == 0 {
 					tx.Rollback()
-					return nil
+					return rowNumber, nil
 				}
 				if err := tx.Commit(); err != nil {
-					return fmt.Errorf("executor import: commit transaction: %w", err)
+					return 0, fmt.Errorf("executor import: commit transaction: %w", err)
 				}
-				return nil
+				return rowNumber, nil
 			}
 			if err != nil {
 				stmt.Close()
 				tx.Rollback()
-				return fmt.Errorf("executor import: read CSV row %d: %w", rowNumber+1, err)
+				return 0, fmt.Errorf("executor import: read CSV row %d: %w", rowNumber+1, err)
 			}
 			if _, err := stmt.ExecContext(ctx, args...); err != nil {
 				stmt.Close()
 				tx.Rollback()
-				return fmt.Errorf("executor import: insert row %d: %w", rowNumber+1, err)
+				return 0, fmt.Errorf("executor import: insert row %d: %w", rowNumber+1, err)
 			}
 			rowNumber++
 			rowsInBatch++
@@ -2091,10 +2188,10 @@ func insertCSVImportRows(ctx context.Context, db *sql.DB, insertSQL string, read
 
 		if err := stmt.Close(); err != nil {
 			tx.Rollback()
-			return fmt.Errorf("executor import: close insert statement: %w", err)
+			return 0, fmt.Errorf("executor import: close insert statement: %w", err)
 		}
 		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("executor import: commit transaction: %w", err)
+			return 0, fmt.Errorf("executor import: commit transaction: %w", err)
 		}
 	}
 }

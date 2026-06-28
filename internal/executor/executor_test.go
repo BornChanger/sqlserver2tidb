@@ -674,7 +674,7 @@ func TestRunImportRejectsRemoteTiDBImportIntoSourceWithoutFields(t *testing.T) {
 }
 
 func TestExecuteTiDBImportValidatesBatchSizeBeforeSourceURI(t *testing.T) {
-	err := executeTiDBImport(context.Background(), importExecuteSpec{
+	_, err := executeTiDBImport(context.Background(), importExecuteSpec{
 		TargetObject:              "app.orders",
 		SourceURI:                 "s3://migration/prod/full/dbo.orders.000001.csv",
 		TargetConnectionStringEnv: "MISSING_TIDB_DSN",
@@ -687,7 +687,7 @@ func TestExecuteTiDBImportValidatesBatchSizeBeforeSourceURI(t *testing.T) {
 }
 
 func TestExecuteTiDBImportIntoRejectsRemoteSourceWithoutFieldsBeforeConnectionString(t *testing.T) {
-	err := executeTiDBImportInto(context.Background(), importExecuteSpec{
+	_, err := executeTiDBImportInto(context.Background(), importExecuteSpec{
 		TargetObject:              "app.orders",
 		SourceURI:                 "s3://migration/prod/full/dbo.orders.000001.csv",
 		TargetConnectionStringEnv: "MISSING_TIDB_DSN",
@@ -2109,8 +2109,12 @@ func TestWriteCSVExportRows(t *testing.T) {
 		},
 	}
 
-	if err := writeCSVExportRows(&output, rows); err != nil {
+	exportedRows, err := writeCSVExportRows(&output, rows)
+	if err != nil {
 		t.Fatalf("writeCSVExportRows() error = %v", err)
+	}
+	if exportedRows != 2 {
+		t.Fatalf("exported rows = %d, want 2", exportedRows)
 	}
 
 	want := "id,name,active,__sqlserver2tidb_null_bitmap\n1,Ada,true,000\n2,,false,010\n"
@@ -2151,8 +2155,12 @@ func TestWriteCSVExportRowsHTTPOutput(t *testing.T) {
 		},
 	}
 
-	if err := writeCSVExportRows(output, rows); err != nil {
+	exportedRows, err := writeCSVExportRows(output, rows)
+	if err != nil {
 		t.Fatalf("writeCSVExportRows() error = %v", err)
+	}
+	if exportedRows != 2 {
+		t.Fatalf("exported rows = %d, want 2", exportedRows)
 	}
 	if err := output.Close(); err != nil {
 		t.Fatalf("output.Close() error = %v", err)
@@ -2200,8 +2208,12 @@ func TestWriteCSVExportRowsHTTPGzipOutput(t *testing.T) {
 		},
 	}
 
-	if err := writeCSVExportRows(output, rows); err != nil {
+	exportedRows, err := writeCSVExportRows(output, rows)
+	if err != nil {
 		t.Fatalf("writeCSVExportRows() error = %v", err)
+	}
+	if exportedRows != 2 {
+		t.Fatalf("exported rows = %d, want 2", exportedRows)
 	}
 	if err := output.Close(); err != nil {
 		t.Fatalf("output.Close() error = %v", err)
