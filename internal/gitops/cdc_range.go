@@ -75,6 +75,9 @@ func PrepareCDCPlanRange(root, sourceClusterID, projectID string, spec CDCPlanRa
 		if err := validateCDCPlanLSN(fromLSN, "from_lsn"); err != nil {
 			return CDCPlanRangeResult{}, fmt.Errorf("cdc tracked table %s %w", table.SourceObject, err)
 		}
+		if err := validateCDCPlanLSNRange(fromLSN, toLSN); err != nil {
+			return CDCPlanRangeResult{}, fmt.Errorf("cdc tracked table %s %w", table.SourceObject, err)
+		}
 		ranges[table.SourceObject] = cdcPlanRange{
 			FromLSN: fromLSN,
 			ToLSN:   toLSN,

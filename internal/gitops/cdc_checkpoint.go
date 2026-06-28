@@ -121,6 +121,9 @@ func cdcCheckpointSnapshotFromEvidenceCommand(command executorEvidenceCommandSum
 	if err := validateCDCPlanLSN(toLSN, "to_lsn"); err != nil {
 		return cdcCheckpointSnapshot{}, fmt.Errorf("cdc executor evidence command %s: %w", command.ID, err)
 	}
+	if err := validateCDCPlanLSNRange(fromLSN, toLSN); err != nil {
+		return cdcCheckpointSnapshot{}, fmt.Errorf("cdc executor evidence command %s: %w", command.ID, err)
+	}
 	return cdcCheckpointSnapshot{
 		SourceObject:   sourceObject,
 		TargetObject:   targetObject,

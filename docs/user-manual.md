@@ -1075,7 +1075,7 @@ CDC checkpoint 是源集群级：
 clusters/<source_cluster_id>/state/cdc-checkpoint.yaml
 ```
 
-`validate-repo` 会校验 checkpoint 归属的 `source_cluster_id`，并要求初始化状态里的 `capture_mode` 或 worker 写回状态里的 `mode` 与 `cluster.yaml` 的 `cdc.mode` 一致。checkpoint 顶层 `phase` 可在初始化时省略，出现时必须是 `cdc`；`status` 只接受 `not_started`、`planned`、`running`、`caught_up` 或 `failed`；`updated_at` 必须非空并使用 RFC3339。表级 checkpoint entry 必须包含源/目标对象、10-byte hex `from_lsn` / `to_lsn`、非负 `applied_changes` 和 RFC3339 `completed_at`。
+`validate-repo` 会校验 checkpoint 归属的 `source_cluster_id`，并要求初始化状态里的 `capture_mode` 或 worker 写回状态里的 `mode` 与 `cluster.yaml` 的 `cdc.mode` 一致。checkpoint 顶层 `phase` 可在初始化时省略，出现时必须是 `cdc`；`status` 只接受 `not_started`、`planned`、`running`、`caught_up` 或 `failed`；`updated_at` 必须非空并使用 RFC3339。表级 checkpoint entry 必须包含源/目标对象、10-byte hex `from_lsn` / `to_lsn`、满足 `from_lsn <= to_lsn`、非负 `applied_changes` 和 RFC3339 `completed_at`。
 
 原因：
 
@@ -1694,7 +1694,7 @@ bin/sqlserver2tidb prepare-cdc-range \
   --to-lsn 0x00000027000001f40003
 ```
 
-该命令读取当前 `plan/cdc-plan.yaml` 和源集群级 `state/cdc-checkpoint.yaml`，把已有 checkpoint entry 的 `to_lsn` 写成下一段 plan 的 `from_lsn`，并把 operator 提供的 `--to-lsn` 写成下一段 plan 的 `to_lsn`。如果 tracked table 还没有 checkpoint entry，必须传 `--from-lsn` 作为第一段 CDC range 的起点。命令不连接 SQL Server，不查询 max LSN，会把 CDC plan 顶层和 tracked table status 重置为 `draft`，让新的 range 重新经过 PR review 和 approval。
+该命令读取当前 `plan/cdc-plan.yaml` 和源集群级 `state/cdc-checkpoint.yaml`，把已有 checkpoint entry 的 `to_lsn` 写成下一段 plan 的 `from_lsn`，并把 operator 提供的 `--to-lsn` 写成下一段 plan 的 `to_lsn`。如果 tracked table 还没有 checkpoint entry，必须传 `--from-lsn` 作为第一段 CDC range 的起点。命令会校验 `from_lsn <= to_lsn`；不连接 SQL Server，不查询 max LSN，会把 CDC plan 顶层和 tracked table status 重置为 `draft`，让新的 range 重新经过 PR review 和 approval。
 
 ### 16.9.2 generate-validation-plan
 

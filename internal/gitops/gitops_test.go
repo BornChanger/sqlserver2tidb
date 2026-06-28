@@ -673,6 +673,17 @@ func TestValidateRepoReportsInvalidCDCCheckpointEntry(t *testing.T) {
 			wantError: "CDC checkpoint entry 1 applied_changes must be non-negative",
 		},
 		{
+			name: "reversed_lsn_range",
+			checkpoint: `checkpoints:
+  - source_object: sales.dbo.orders
+    target_object: app.orders
+    from_lsn: 0x00000027000001f40003
+    to_lsn: 0x00000027000001f40002
+    applied_changes: 2
+    completed_at: "2026-01-02T03:04:06Z"`,
+			wantError: "CDC checkpoint entry 1 from_lsn must be less than or equal to to_lsn",
+		},
+		{
 			name: "invalid_completed_at",
 			checkpoint: `checkpoints:
   - source_object: sales.dbo.orders
@@ -4684,6 +4695,25 @@ func TestPrepareWorkerExecutorRejectsInvalidCDCLSNRange(t *testing.T) {
 	assertContains(t, err.Error(), "cdc tracked table sales.dbo.orders from_lsn must be a 10-byte hex value")
 }
 
+func TestPrepareWorkerExecutorRejectsReversedCDCLSNRange(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateCDCPlanOnly(root))
+	setCDCPlanLSNRange(t, root, "0x00000027000001f40003", "0x00000027000001f40002")
+	setReviewPlanStatus(t, root, "cdc", "reviewed")
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "cdc")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(cdc) error = %v", err)
+	}
+	writeStageApproval(t, root, "cdc", hash)
+
+	_, err = PrepareWorkerExecutor(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "cdc", WorkerExecutorPrepareSpec{})
+	if err == nil {
+		t.Fatal("PrepareWorkerExecutor() expected reversed CDC LSN range error")
+	}
+	assertContains(t, err.Error(), "cdc tracked table sales.dbo.orders from_lsn must be less than or equal to to_lsn")
+}
+
 func TestPrepareWorkerExecutorBuildsCDCCommandsWhenApprovedHashMatches(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
@@ -5265,6 +5295,35 @@ func TestPrepareCDCPlanRangeRequiresInitialFromLSNWithoutCheckpointEntry(t *test
 	if !strings.Contains(err.Error(), "pass --from-lsn for initial range") {
 		t.Fatalf("PrepareCDCPlanRange() error = %v, want missing initial from_lsn guidance", err)
 	}
+}
+
+func TestPrepareCDCPlanRangeRejectsReversedRange(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateCDCPlanOnly(root))
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/state/cdc-checkpoint.yaml", `source_cluster_id: prod-sqlserver-a
+phase: cdc
+status: running
+project_id: sales-db-to-tidb-prod-a
+mode: sqlserver-cdc
+checkpoint_scope: source-cluster
+checkpoints:
+  - source_object: sales.dbo.orders
+    target_object: app.orders
+    from_lsn: 0x00000027000001f40002
+    to_lsn: 0x00000027000001f40003
+    applied_changes: 2
+    completed_at: "2026-01-02T03:04:06Z"
+updated_at: "2026-01-02T03:04:07Z"
+`)
+
+	_, err := PrepareCDCPlanRange(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", CDCPlanRangeSpec{
+		ToLSN: "0x00000027000001f40002",
+	})
+	if err == nil {
+		t.Fatal("PrepareCDCPlanRange() error = nil, want reversed range error")
+	}
+	assertContains(t, err.Error(), "cdc tracked table sales.dbo.orders from_lsn must be less than or equal to to_lsn")
 }
 
 func TestRunCDCWorkerRejectsEmptyCDCPlan(t *testing.T) {

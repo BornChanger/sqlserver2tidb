@@ -1,6 +1,7 @@
 package gitops
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -767,19 +768,42 @@ func validateCDCPlanSummaryForExecutionWithLSN(plan cdcPlanSummary, requireKeyCo
 			if err := validateCDCPlanLSN(table.ToLSN, "to_lsn"); err != nil {
 				return fmt.Errorf("cdc tracked table %s %w", table.SourceObject, err)
 			}
+			if err := validateCDCPlanLSNRange(table.FromLSN, table.ToLSN); err != nil {
+				return fmt.Errorf("cdc tracked table %s %w", table.SourceObject, err)
+			}
 		}
 	}
 	return nil
 }
 
 func validateCDCPlanLSN(raw, field string) error {
+	_, err := parseCDCPlanLSN(raw, field)
+	return err
+}
+
+func validateCDCPlanLSNRange(fromLSN, toLSN string) error {
+	fromBytes, err := parseCDCPlanLSN(fromLSN, "from_lsn")
+	if err != nil {
+		return err
+	}
+	toBytes, err := parseCDCPlanLSN(toLSN, "to_lsn")
+	if err != nil {
+		return err
+	}
+	if bytes.Compare(fromBytes, toBytes) > 0 {
+		return fmt.Errorf("from_lsn must be less than or equal to to_lsn")
+	}
+	return nil
+}
+
+func parseCDCPlanLSN(raw, field string) ([]byte, error) {
 	value := strings.TrimSpace(raw)
 	value = strings.TrimPrefix(strings.TrimPrefix(value, "0x"), "0X")
 	decoded, err := hex.DecodeString(value)
 	if err != nil || len(decoded) != 10 {
-		return fmt.Errorf("%s must be a 10-byte hex value", field)
+		return nil, fmt.Errorf("%s must be a 10-byte hex value", field)
 	}
-	return nil
+	return decoded, nil
 }
 
 func collectPayloadFiles(root, projectRel string, entries []string) ([]string, error) {

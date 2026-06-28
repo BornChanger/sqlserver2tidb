@@ -418,6 +418,9 @@ func validateCDCCheckpointEntries(path string) error {
 		if err := validateCDCPlanLSN(entry.ToLSN, "to_lsn"); err != nil {
 			return fmt.Errorf("CDC checkpoint entry %d %w", index, err)
 		}
+		if err := validateCDCPlanLSNRange(entry.FromLSN, entry.ToLSN); err != nil {
+			return fmt.Errorf("CDC checkpoint entry %d %w", index, err)
+		}
 		if entry.AppliedChanges == nil {
 			return fmt.Errorf("CDC checkpoint entry %d applied_changes is required", index)
 		}

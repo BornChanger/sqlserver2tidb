@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/csv"
@@ -1802,6 +1803,10 @@ func runCDC(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
+		if err := validateSQLServerCDCLSNRange(fromLSN, toLSN); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
 		result, err := executeCDCApplyFunc(context.Background(), cdcExecuteSpec{
 			SourceObject:              *sourceObject,
 			TargetObject:              *targetObject,
@@ -1885,6 +1890,9 @@ func executeCDCApply(ctx context.Context, spec cdcExecuteSpec) (cdcApplyResult, 
 	}
 	if len(spec.ToLSN) == 0 {
 		return cdcApplyResult{}, fmt.Errorf("executor cdc: to LSN is required")
+	}
+	if err := validateSQLServerCDCLSNRange(spec.FromLSN, spec.ToLSN); err != nil {
+		return cdcApplyResult{}, err
 	}
 	sourceEnvName := strings.TrimSpace(spec.SourceConnectionStringEnv)
 	if sourceEnvName == "" {
@@ -2407,6 +2415,13 @@ func parseSQLServerCDCLSN(raw, label string) ([]byte, error) {
 		return nil, fmt.Errorf("executor cdc: %s must be a 10-byte hex value", label)
 	}
 	return decoded, nil
+}
+
+func validateSQLServerCDCLSNRange(fromLSN, toLSN []byte) error {
+	if bytes.Compare(fromLSN, toLSN) > 0 {
+		return fmt.Errorf("executor cdc: from LSN must be less than or equal to to LSN")
+	}
+	return nil
 }
 
 func formatSQLServerCDCLSN(value []byte, label string) (string, error) {

@@ -862,6 +862,29 @@ func TestRunCDCExecuteRequiresLSNRange(t *testing.T) {
 	assertOutputContains(t, stderr.String(), "executor cdc: from LSN is required")
 }
 
+func TestRunCDCExecuteRejectsReversedLSNRange(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"cdc",
+		"--execute",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--source-object", "sales.dbo.orders",
+		"--target-object", "app.orders",
+		"--columns", "id,customer_name",
+		"--key-columns", "id",
+		"--from-lsn", "0x00000027000001f40003",
+		"--to-lsn", "0x00000027000001f40002",
+		"--apply-batch-size", "1000",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatal("cdc execute code = 0, want reversed LSN range error")
+	}
+	assertOutputContains(t, stderr.String(), "executor cdc: from LSN must be less than or equal to to LSN")
+}
+
 func TestRunCDCExecuteRequiresSourceConnectionStringEnv(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 
