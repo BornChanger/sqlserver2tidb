@@ -1197,6 +1197,107 @@ func TestRunWorkerExecutorExecuteWritesFailedEvidenceOnCommandFailure(t *testing
 	}
 }
 
+func TestRunWorkerExecutorValidationExecuteContinuesAfterCommandFailure(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createCLIProjectWithOneExportChunk(t, root, &stdout, &stderr)
+	if code := Run([]string{
+		"generate-schema-draft",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+	}, &stdout, &stderr); code != 0 {
+		t.Fatalf("generate-schema-draft code = %d, stderr = %s", code, stderr.String())
+	}
+	validationPlanPath := filepath.Join(root, "clusters", "prod-sqlserver-a", "projects", "sales-db-to-tidb-prod-a", "plan", "validation-plan.yaml")
+	if err := os.WriteFile(validationPlanPath, []byte(`status: reviewed
+checks:
+  - id: orders-bucket-0
+    type: bucketed_count
+    source_sql: "SELECT COUNT(*) FROM sales.dbo.orders WHERE id % 2 = 0"
+    target_sql: "SELECT COUNT(*) FROM app.orders WHERE id % 2 = 0"
+  - id: orders-bucket-1
+    type: bucketed_count
+    source_sql: "SELECT COUNT(*) FROM sales.dbo.orders WHERE id % 2 = 1"
+    target_sql: "SELECT COUNT(*) FROM app.orders WHERE id % 2 = 1"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"compute-payload-hash",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "validation",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("compute-payload-hash validation code = %d, stderr = %s", code, stderr.String())
+	}
+	writeCLIStageApproval(t, root, "validation", parsePayloadHash(t, stdout.String()))
+
+	fakeExecutor := filepath.Join(root, "fake-validation-executor")
+	if err := os.WriteFile(fakeExecutor, []byte(`#!/bin/sh
+printf '%s\n' "$*" >> validation-executor-args.log
+case "$*" in
+  *orders-bucket-0*)
+    printf 'validation mismatch for bucket 0\n'
+    exit 17
+    ;;
+  *orders-bucket-1*)
+    printf 'validation matched for bucket 1\n'
+    exit 0
+    ;;
+esac
+printf 'unexpected command\n'
+exit 99
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = Run([]string{
+		"worker-executor",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "validation",
+		"--executor-binary", "./fake-validation-executor",
+		"--execute",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("worker-executor validation execute code = 0, want failure")
+	}
+	if !strings.Contains(stderr.String(), "worker executor: validation completed with 1 failed command(s)") {
+		t.Fatalf("worker-executor stderr = %q, want validation aggregate failure", stderr.String())
+	}
+
+	argsLog, err := os.ReadFile(filepath.Join(root, "validation-executor-args.log"))
+	if err != nil {
+		t.Fatalf("read validation executor args log: %v", err)
+	}
+	if !strings.Contains(string(argsLog), "--check-id orders-bucket-0") || !strings.Contains(string(argsLog), "--check-id orders-bucket-1") {
+		t.Fatalf("validation executor args log = %q, want both validation commands executed", string(argsLog))
+	}
+	evidence := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-validation-run.json")
+	if !strings.Contains(evidence, `"status": "failed"`) {
+		t.Fatalf("executor evidence = %q, want failed status", evidence)
+	}
+	if !strings.Contains(evidence, `"id": "orders-bucket-0"`) || !strings.Contains(evidence, `"exit_code": 17`) {
+		t.Fatalf("executor evidence = %q, want failed command evidence", evidence)
+	}
+	if !strings.Contains(evidence, `"id": "orders-bucket-1"`) || !strings.Contains(evidence, `"exit_code": 0`) {
+		t.Fatalf("executor evidence = %q, want successful command evidence after failure", evidence)
+	}
+	if !strings.Contains(evidence, `validation mismatch for bucket 0`) || !strings.Contains(evidence, `validation matched for bucket 1`) {
+		t.Fatalf("executor evidence = %q, want both command outputs", evidence)
+	}
+}
+
 func TestRunWorkerExecutorCDCExecuteRecordsAppliedChangesInEvidence(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer

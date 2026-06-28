@@ -844,6 +844,7 @@ func runWorkerExecutor(args []string, stdout, stderr io.Writer) int {
 	}
 
 	results := make([]workerExecutorRunCommandEvidence, 0, len(spec.Commands))
+	failedCommands := 0
 	for _, command := range spec.Commands {
 		if len(command.Args) == 0 {
 			fmt.Fprintf(stderr, "worker executor: empty command for %s\n", command.ID)
@@ -875,12 +876,23 @@ func runWorkerExecutor(args []string, stdout, stderr io.Writer) int {
 			CDCAppliedChanges: cdcAppliedChanges,
 		})
 		if commandErr != nil {
+			if spec.Stage == "validation" {
+				failedCommands++
+				continue
+			}
 			if _, evidenceErr := writeWorkerExecutorRunEvidence(*root, spec, "failed", results); evidenceErr != nil {
 				fmt.Fprintf(stderr, "worker executor: %v\n", evidenceErr)
 			}
 			fmt.Fprintf(stderr, "worker executor: command %s failed: %v\n", command.ID, commandErr)
 			return 1
 		}
+	}
+	if failedCommands > 0 {
+		if _, evidenceErr := writeWorkerExecutorRunEvidence(*root, spec, "failed", results); evidenceErr != nil {
+			fmt.Fprintf(stderr, "worker executor: %v\n", evidenceErr)
+		}
+		fmt.Fprintf(stderr, "worker executor: validation completed with %d failed command(s)\n", failedCommands)
+		return 1
 	}
 	evidenceFile, err := writeWorkerExecutorRunEvidence(*root, spec, "succeeded", results)
 	if err != nil {
