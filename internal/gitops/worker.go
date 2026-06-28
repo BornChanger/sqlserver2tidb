@@ -168,6 +168,7 @@ func RunValidationWorker(root, sourceClusterID, projectID string) (ValidationWor
 			}
 		}
 	}
+	addValidationExecutorEvidenceCheck(root, sourceClusterID, projectID, projectDir, &result)
 
 	if err := writeValidationWorkerState(projectDir, result); err != nil {
 		return ValidationWorkerResult{}, err
@@ -176,6 +177,54 @@ func RunValidationWorker(root, sourceClusterID, projectID string) (ValidationWor
 		return ValidationWorkerResult{}, err
 	}
 	return result, nil
+}
+
+func addValidationExecutorEvidenceCheck(root, sourceClusterID, projectID, projectDir string, result *ValidationWorkerResult) {
+	evidencePath := filepath.Join(projectDir, "evidence", "executor-validation-run.json")
+	if info, err := os.Stat(evidencePath); err != nil || info.IsDir() {
+		return
+	}
+	ctx, err := loadExecutorEvidencePRContext(root, sourceClusterID, projectID, "validation")
+	if err != nil {
+		result.addCheck("validation_executor_evidence", false, err.Error())
+		return
+	}
+	result.addCheck("validation_executor_evidence", ctx.evidence.Status == "succeeded", summarizeValidationExecutorEvidence(ctx.evidence))
+}
+
+func summarizeValidationExecutorEvidence(evidence executorEvidenceSummary) string {
+	total := len(evidence.Commands)
+	if evidence.Status == "succeeded" {
+		return fmt.Sprintf("executor validation evidence succeeded (%d commands passed)", total)
+	}
+	failedCommands := summarizeFailedExecutorEvidenceCommands(evidence.Commands)
+	if len(failedCommands) == 0 {
+		return fmt.Sprintf("executor validation evidence failed (0 of %d commands failed)", total)
+	}
+	return fmt.Sprintf("executor validation evidence failed (%d of %d commands failed: %s)", len(failedCommands), total, strings.Join(failedCommands, "; "))
+}
+
+func summarizeFailedExecutorEvidenceCommands(commands []executorEvidenceCommandSummary) []string {
+	var failed []string
+	for _, command := range commands {
+		if command.ExitCode == nil || *command.ExitCode == 0 {
+			continue
+		}
+		detail := fmt.Sprintf("%s exit_code=%d", command.ID, *command.ExitCode)
+		if output := compactExecutorEvidenceOutput(command.Output); output != "" {
+			detail += " output=" + output
+		}
+		failed = append(failed, detail)
+	}
+	return failed
+}
+
+func compactExecutorEvidenceOutput(output string) string {
+	compacted := strings.Join(strings.Fields(output), " ")
+	if len(compacted) <= 160 {
+		return compacted
+	}
+	return compacted[:157] + "..."
 }
 
 func RunExportWorker(root, sourceClusterID, projectID string) (DataWorkerResult, error) {

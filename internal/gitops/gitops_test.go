@@ -6226,6 +6226,124 @@ checks:
 	assertContains(t, report, wantSummary)
 }
 
+func TestRunValidationWorkerSummarizesSucceededExecutorValidationEvidence(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateSchemaDraftOnly(root))
+	setReviewPlanStatus(t, root, "validation", "reviewed")
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "validation")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage() error = %v", err)
+	}
+	writeValidationApproval(t, root, hash)
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-validation-run.json", `{
+  "stage": "validation",
+  "status": "succeeded",
+  "project_id": "sales-db-to-tidb-prod-a",
+  "source_cluster_id": "prod-sqlserver-a",
+  "payload_hash": "`+hash+`",
+  "commands": [
+    {
+      "id": "orders-row-count",
+      "args": ["sqlserver2tidb-executor", "validate-count", "--execute"],
+      "shell_command": "sqlserver2tidb-executor validate-count --execute",
+      "exit_code": 0,
+      "output": "row counts match\n",
+      "started_at": "2026-01-02T03:04:05Z",
+      "completed_at": "2026-01-02T03:04:06Z",
+      "duration_ms": 1000
+    },
+    {
+      "id": "orders-total",
+      "args": ["sqlserver2tidb-executor", "validate-query", "--execute"],
+      "shell_command": "sqlserver2tidb-executor validate-query --execute",
+      "exit_code": 0,
+      "output": "scalar values match\n",
+      "started_at": "2026-01-02T03:04:06Z",
+      "completed_at": "2026-01-02T03:04:07Z",
+      "duration_ms": 1000
+    }
+  ]
+}
+`)
+
+	result, err := RunValidationWorker(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a")
+	if err != nil {
+		t.Fatalf("RunValidationWorker() error = %v", err)
+	}
+	if !result.Passed {
+		t.Fatalf("RunValidationWorker() Passed = false, checks = %+v", result.Checks)
+	}
+
+	state := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/validation-status.yaml")
+	assertContains(t, state, "name: validation_executor_evidence")
+	assertContains(t, state, "status: passed")
+	assertContains(t, state, "executor validation evidence succeeded (2 commands passed)")
+
+	report := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/validation-report.md")
+	assertContains(t, report, "validation_executor_evidence")
+	assertContains(t, report, "executor validation evidence succeeded (2 commands passed)")
+}
+
+func TestRunValidationWorkerFailsWhenExecutorValidationEvidenceFailed(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateSchemaDraftOnly(root))
+	setReviewPlanStatus(t, root, "validation", "reviewed")
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "validation")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage() error = %v", err)
+	}
+	writeValidationApproval(t, root, hash)
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-validation-run.json", `{
+  "stage": "validation",
+  "status": "failed",
+  "project_id": "sales-db-to-tidb-prod-a",
+  "source_cluster_id": "prod-sqlserver-a",
+  "payload_hash": "`+hash+`",
+  "commands": [
+    {
+      "id": "orders-row-count",
+      "args": ["sqlserver2tidb-executor", "validate-count", "--execute"],
+      "shell_command": "sqlserver2tidb-executor validate-count --execute",
+      "exit_code": 0,
+      "output": "row counts match\n",
+      "started_at": "2026-01-02T03:04:05Z",
+      "completed_at": "2026-01-02T03:04:06Z",
+      "duration_ms": 1000
+    },
+    {
+      "id": "orders-bucket-1",
+      "args": ["sqlserver2tidb-executor", "validate-query", "--execute"],
+      "shell_command": "sqlserver2tidb-executor validate-query --execute",
+      "exit_code": 1,
+      "output": "validation mismatch\nsource: 10\ntarget: 9\n",
+      "started_at": "2026-01-02T03:04:06Z",
+      "completed_at": "2026-01-02T03:04:07Z",
+      "duration_ms": 1000
+    }
+  ]
+}
+`)
+
+	result, err := RunValidationWorker(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a")
+	if err != nil {
+		t.Fatalf("RunValidationWorker() error = %v", err)
+	}
+	if result.Passed {
+		t.Fatalf("RunValidationWorker() Passed = true, want false")
+	}
+
+	state := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/validation-status.yaml")
+	assertContains(t, state, "status: failed")
+	assertContains(t, state, "name: validation_executor_evidence")
+	assertContains(t, state, "orders-bucket-1 exit_code=1 output=validation mismatch source: 10 target: 9")
+
+	report := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/validation-report.md")
+	assertContains(t, report, "- Status: `failed`")
+	assertContains(t, report, "executor validation evidence failed (1 of 2 commands failed: orders-bucket-1 exit_code=1 output=validation mismatch source: 10 target: 9)")
+}
+
 func TestRunValidationWorkerFailsInvalidValidationPlanRowCountCheck(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, `{

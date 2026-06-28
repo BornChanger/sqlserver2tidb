@@ -1333,7 +1333,7 @@ payload hash 覆盖：
 - `schema/conversion-report.md` 存在。
 - `plan/validation-plan.yaml` 存在。
 
-如果 approval 未通过或 hash 不匹配，worker 直接退出，不写 `state/` 或 `evidence/`。如果 approval 通过，worker 写回 `state/validation-status.yaml` 和 `evidence/validation-report.md`。当 validation plan 结构合法时，`validation_plan_checks_valid` 消息会汇总支持的检查类型数量，例如 `1 row_count, 1 checksum, 1 sampled_hash, 16 bucketed_count, 1 business_sql`。如果检查失败，worker 会写入 failed 状态，CLI 返回非零退出码。
+如果 approval 未通过或 hash 不匹配，worker 直接退出，不写 `state/` 或 `evidence/`。如果 approval 通过，worker 写回 `state/validation-status.yaml` 和 `evidence/validation-report.md`。当 validation plan 结构合法时，`validation_plan_checks_valid` 消息会汇总支持的检查类型数量，例如 `1 row_count, 1 checksum, 1 sampled_hash, 16 bucketed_count, 1 business_sql`。如果 `evidence/executor-validation-run.json` 已经存在，worker 还会校验该 evidence 是否属于当前 project、stage 和 approval payload hash，并把 executor 命令数量、失败命令 ID、exit code 和输出摘要写入 validation status/report；只要存在失败的 validation executor 命令，worker 结果就是 `failed`。如果检查失败，worker 会写入 failed 状态，CLI 返回非零退出码。
 
 行数校验计划示例：
 
@@ -1397,7 +1397,7 @@ SELECT COUNT(*) FROM [sales].[dbo].[orders] WHERE id >= 1;
 SELECT COUNT(*) FROM `app`.`orders` WHERE id >= 1;
 ```
 
-如果行数不同，命令返回非零退出码并输出 mismatch。当前也支持通过 `checksum`、`sampled_hash`、`bucketed_count` 和 `business_sql` 检查项配置源端和目标端各一条返回单行单列的 SQL，并由 `sqlserver2tidb-executor validate-query --execute` 比较标量结果。`generate-validation-plan --include-checksum --include-sampled-hash --include-bucketed-count` 可以自动生成 exact-numeric 和整数分桶 count 的 scalar-query 草稿；当前仍不提供通用行级 digest、生产级 bucketed sampled-hash 或大规模聚合校验引擎。
+如果行数不同，命令返回非零退出码并输出 mismatch。当前也支持通过 `checksum`、`sampled_hash`、`bucketed_count` 和 `business_sql` 检查项配置源端和目标端各一条返回单行单列的 SQL，并由 `sqlserver2tidb-executor validate-query --execute` 比较标量结果。`generate-validation-plan --include-checksum --include-sampled-hash --include-bucketed-count` 可以自动生成 exact-numeric 和整数分桶 count 的 scalar-query 草稿。执行 `worker-executor --stage validation --execute` 后，可以再运行 `worker-validate`，把 `executor-validation-run.json` 聚合进 `validation-report.md`。当前仍不提供通用行级 digest、生产级 bucketed sampled-hash 或大规模聚合校验引擎。
 
 ### 10.10 阶段 9：Cutover
 

@@ -46,6 +46,7 @@ type executorEvidenceCommandSummary struct {
 	Args              []string `json:"args"`
 	ShellCommand      string   `json:"shell_command"`
 	ExitCode          *int     `json:"exit_code"`
+	Output            string   `json:"output"`
 	StartedAt         string   `json:"started_at"`
 	CompletedAt       string   `json:"completed_at"`
 	DurationMs        *int64   `json:"duration_ms"`
