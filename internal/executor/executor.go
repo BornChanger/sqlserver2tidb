@@ -474,6 +474,10 @@ func runExport(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "executor export: %v\n", err)
 		return 1
 	}
+	if _, err := buildSQLServerExportQuery(*sourceObject, *predicate); err != nil {
+		fmt.Fprintf(stderr, "executor export: %v\n", err)
+		return 1
+	}
 	if *execute {
 		if err := executeSQLServerExport(context.Background(), exportExecuteSpec{
 			SourceObject:              *sourceObject,
@@ -829,6 +833,10 @@ func runImport(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "executor import: %v\n", err)
 		return 1
 	}
+	if _, err := quoteTiDBObjectName(*targetObject); err != nil {
+		fmt.Fprintf(stderr, "executor import: %v\n", err)
+		return 1
+	}
 	if normalizedEngine == importEngineTiDBImportInto {
 		if err := requireTiDBImportIntoFieldsForRemoteSource(*sourceURI, fields); err != nil {
 			fmt.Fprintf(stderr, "executor import: %v\n", err)
@@ -917,6 +925,14 @@ func runValidateCount(args []string, stdout, stderr io.Writer) int {
 	}
 	if err := validateCountInputsNoTODO(*predicate, *targetPredicate); err != nil {
 		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	if _, err := buildSQLServerCountQuery(*sourceObject, *predicate); err != nil {
+		fmt.Fprintf(stderr, "executor validate-count: %v\n", err)
+		return 1
+	}
+	if _, err := buildTiDBCountQuery(*targetObject, *targetPredicate); err != nil {
+		fmt.Fprintf(stderr, "executor validate-count: %v\n", err)
 		return 1
 	}
 	if *execute {
@@ -1972,6 +1988,14 @@ func runCDC(args []string, stdout, stderr io.Writer) int {
 	}
 	if err := validateSQLServerCDCLSNRange(fromLSN, toLSN); err != nil {
 		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	if _, err := buildSQLServerCDCChangesQuery(*sourceObject, columns); err != nil {
+		fmt.Fprintf(stderr, "executor cdc: %v\n", err)
+		return 1
+	}
+	if _, err := buildTiDBCDCUpsertStatement(*targetObject, columns, keyColumns); err != nil {
+		fmt.Fprintf(stderr, "executor cdc: %v\n", err)
 		return 1
 	}
 	if *execute {

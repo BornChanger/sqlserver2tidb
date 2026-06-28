@@ -198,6 +198,25 @@ func TestRunExportDryRunRejectsTODOExportPredicate(t *testing.T) {
 	assertOutputContains(t, stderr.String(), "executor export: predicate still contains TODO")
 }
 
+func TestRunExportDryRunRejectsInvalidSourceObject(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"export",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--chunk-id", "dbo.orders.000001",
+		"--source-object", "orders",
+		"--target-object", "app.orders",
+		"--output-uri", "file:///tmp/dbo.orders.000001.csv",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("export dry-run code = 0, want non-zero; stdout = %s", stdout.String())
+	}
+	assertOutputContains(t, stderr.String(), "executor export: source object must be schema.table or database.schema.table")
+}
+
 func TestRunImportDryRunCommand(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 
@@ -259,6 +278,24 @@ func TestRunImportDryRunRejectsUnsupportedTiDBImportIntoSourceURI(t *testing.T) 
 		t.Fatalf("import dry-run code = 0, want non-zero; stdout = %s", stdout.String())
 	}
 	assertOutputContains(t, stderr.String(), "executor import: IMPORT INTO source URI scheme https is not supported")
+}
+
+func TestRunImportDryRunRejectsInvalidTargetObject(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"import",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--job-id", "import-dbo.orders.000001",
+		"--target-object", "app.sales.orders",
+		"--source-uri", "file:///tmp/dbo.orders.000001.csv",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("import dry-run code = 0, want non-zero; stdout = %s", stdout.String())
+	}
+	assertOutputContains(t, stderr.String(), "executor import: target object must be table or database.table")
 }
 
 func TestRunApplyDDLDryRunCommand(t *testing.T) {
@@ -728,6 +765,40 @@ func TestRunValidateCountDryRunRejectsTODOTargetPredicate(t *testing.T) {
 		t.Fatalf("validate-count dry-run code = 0, want non-zero; stdout = %s", stdout.String())
 	}
 	assertOutputContains(t, stderr.String(), "executor validate-count: target predicate still contains TODO")
+}
+
+func TestRunValidateCountDryRunRejectsInvalidSourceObject(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"validate-count",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--source-object", "orders",
+		"--target-object", "app.orders",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("validate-count dry-run code = 0, want non-zero; stdout = %s", stdout.String())
+	}
+	assertOutputContains(t, stderr.String(), "executor validate-count: source object must be schema.table or database.schema.table")
+}
+
+func TestRunValidateCountDryRunRejectsInvalidTargetObject(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"validate-count",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--source-object", "dbo.orders",
+		"--target-object", "app.sales.orders",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("validate-count dry-run code = 0, want non-zero; stdout = %s", stdout.String())
+	}
+	assertOutputContains(t, stderr.String(), "executor validate-count: target object must be table or database.table")
 }
 
 func TestRunValidateQueryDryRunRejectsTODOSourceSQL(t *testing.T) {
@@ -1227,6 +1298,50 @@ func TestRunCDCDryRunRejectsKeyColumnOutsideColumns(t *testing.T) {
 		t.Fatalf("cdc dry-run code = 0, want non-zero; stdout = %s", stdout.String())
 	}
 	assertOutputContains(t, stderr.String(), "executor cdc: CDC key column tenant_id is not present in captured columns")
+}
+
+func TestRunCDCDryRunRejectsInvalidSourceObject(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"cdc",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--source-object", "orders",
+		"--target-object", "app.orders",
+		"--columns", "id,customer_name",
+		"--key-columns", "id",
+		"--from-lsn", "0x00000027000001f40001",
+		"--to-lsn", "0x00000027000001f40002",
+		"--apply-batch-size", "1000",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("cdc dry-run code = 0, want non-zero; stdout = %s", stdout.String())
+	}
+	assertOutputContains(t, stderr.String(), "executor cdc: source object must be schema.table or database.schema.table")
+}
+
+func TestRunCDCDryRunRejectsInvalidTargetObject(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"cdc",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--source-object", "sales.dbo.orders",
+		"--target-object", "app.sales.orders",
+		"--columns", "id,customer_name",
+		"--key-columns", "id",
+		"--from-lsn", "0x00000027000001f40001",
+		"--to-lsn", "0x00000027000001f40002",
+		"--apply-batch-size", "1000",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("cdc dry-run code = 0, want non-zero; stdout = %s", stdout.String())
+	}
+	assertOutputContains(t, stderr.String(), "executor cdc: target object must be table or database.table")
 }
 
 func TestRunCDCLSNDryRunCommand(t *testing.T) {
