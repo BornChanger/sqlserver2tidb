@@ -314,6 +314,9 @@ func runDataWorker(root, sourceClusterID, projectID, stage string) (DataWorkerRe
 		if err := validateExportPlanChunks(chunks); err != nil {
 			return DataWorkerResult{}, err
 		}
+		if err := validateExportPlanChunkOutputURIs(chunks); err != nil {
+			return DataWorkerResult{}, err
+		}
 		result.Items = len(chunks)
 		result.StateFile = "state/export-chunks.yaml"
 		result.EvidenceFile = "evidence/precheck.json"

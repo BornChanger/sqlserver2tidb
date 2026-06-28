@@ -161,6 +161,9 @@ func prepareExportExecutorCommands(projectDir, binary, sourceClusterID, projectI
 	if err := validateExportPlanChunks(chunks); err != nil {
 		return nil, err
 	}
+	if err := validateExportPlanChunkOutputURIs(chunks); err != nil {
+		return nil, err
+	}
 	sourceConnectionStringEnv := strings.TrimSpace(spec.SourceConnectionStringEnv)
 	commands := make([]WorkerExecutorCommand, 0, len(chunks))
 	for _, chunk := range chunks {

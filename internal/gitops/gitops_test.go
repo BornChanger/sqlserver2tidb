@@ -2250,6 +2250,31 @@ tables:
 	assertContains(t, strings.Join(report.Errors, "\n"), "invalid export plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/export-plan.yaml: duplicate export chunk id dbo.orders.000001")
 }
 
+func TestValidateRepoReportsUnsupportedExportOutputURI(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/export-plan.yaml", `status: reviewed
+format: csv
+tables:
+  - source_object: sales.dbo.orders
+    target_object: app.orders
+    chunks:
+      - id: dbo.orders.000001
+        estimated_rows: 10
+        predicate: id >= 1 and id < 11
+        output_uri: s3://migration-bucket/dbo.orders.000001.csv
+`)
+
+	report, err := ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("ValidateRepo() valid = true, want false")
+	}
+	assertContains(t, strings.Join(report.Errors, "\n"), "invalid export plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/export-plan.yaml: export chunk dbo.orders.000001 output_uri scheme s3 is not supported by sqlserver2tidb-executor")
+}
+
 func TestValidateRepoReportsTODOExportPredicate(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
@@ -4727,6 +4752,33 @@ func TestRunExportWorkerWritesPlannedStateWhenApprovedHashMatches(t *testing.T) 
 	assertContains(t, evidence, `"payload_hash": "`+hash+`"`)
 }
 
+func TestRunExportWorkerRejectsUnsupportedExportOutputURI(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateDataPlansOnly(root))
+	reviewExportPlanPredicates(t, root)
+	exportPlanRel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/export-plan.yaml"
+	exportPlan := readFile(t, root, exportPlanRel)
+	exportPlan = strings.Replace(exportPlan,
+		"https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full/dbo.orders.000001.csv",
+		"s3://migration-bucket/dbo.orders.000001.csv",
+		1,
+	)
+	writeFileForTest(t, root, exportPlanRel, exportPlan)
+	setReviewPlanStatus(t, root, "export", "reviewed")
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(export) error = %v", err)
+	}
+	writeStageApproval(t, root, "export", hash)
+
+	_, err = RunExportWorker(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a")
+	if err == nil {
+		t.Fatal("RunExportWorker() expected unsupported export output URI error")
+	}
+	assertContains(t, err.Error(), "export chunk dbo.orders.000001 output_uri scheme s3 is not supported by sqlserver2tidb-executor")
+}
+
 func TestRunExportWorkerRejectsTODOExportPredicate(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
@@ -4819,6 +4871,33 @@ func TestPrepareWorkerExecutorRejectsUnsupportedExportFormat(t *testing.T) {
 		t.Fatal("PrepareWorkerExecutor() expected unsupported export format error")
 	}
 	assertContains(t, err.Error(), "export format parquet is not supported by sqlserver2tidb-executor")
+}
+
+func TestPrepareWorkerExecutorRejectsUnsupportedExportOutputURI(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateDataPlansOnly(root))
+	reviewExportPlanPredicates(t, root)
+	exportPlanRel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/export-plan.yaml"
+	exportPlan := readFile(t, root, exportPlanRel)
+	exportPlan = strings.Replace(exportPlan,
+		"https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full/dbo.orders.000001.csv",
+		"s3://migration-bucket/dbo.orders.000001.csv",
+		1,
+	)
+	writeFileForTest(t, root, exportPlanRel, exportPlan)
+	setReviewPlanStatus(t, root, "export", "reviewed")
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(export) error = %v", err)
+	}
+	writeStageApproval(t, root, "export", hash)
+
+	_, err = PrepareWorkerExecutor(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export", WorkerExecutorPrepareSpec{})
+	if err == nil {
+		t.Fatal("PrepareWorkerExecutor() expected unsupported export output URI error")
+	}
+	assertContains(t, err.Error(), "export chunk dbo.orders.000001 output_uri scheme s3 is not supported by sqlserver2tidb-executor")
 }
 
 func TestPrepareWorkerExecutorRejectsTODOExportPredicate(t *testing.T) {

@@ -288,6 +288,52 @@ func validateObjectStorageImportSourceURI(parsed *url.URL) error {
 	return nil
 }
 
+func validateExportPlanChunkOutputURIs(chunks []dataExportChunkState) error {
+	for _, chunk := range chunks {
+		if err := validateExportPlanChunkOutputURI(chunk); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateExportPlanChunkOutputURI(chunk dataExportChunkState) error {
+	outputURI := strings.TrimSpace(chunk.OutputURI)
+	parsed, err := url.Parse(outputURI)
+	if err != nil {
+		return fmt.Errorf("export chunk %s output_uri parse: %w", chunk.ID, err)
+	}
+	switch parsed.Scheme {
+	case "file":
+		if err := validateLocalFileExportOutputURI(parsed); err != nil {
+			return fmt.Errorf("export chunk %s output_uri: %w", chunk.ID, err)
+		}
+		return nil
+	case "http", "https":
+		if strings.TrimSpace(parsed.Host) == "" {
+			return fmt.Errorf("export chunk %s output_uri: %s output URI host is required", chunk.ID, parsed.Scheme)
+		}
+		return nil
+	case "":
+		return fmt.Errorf("export chunk %s output_uri must use file://, http://, or https://", chunk.ID)
+	default:
+		return fmt.Errorf("export chunk %s output_uri scheme %s is not supported by sqlserver2tidb-executor; supported schemes: file, http, https", chunk.ID, parsed.Scheme)
+	}
+}
+
+func validateLocalFileExportOutputURI(parsed *url.URL) error {
+	if parsed.Host != "" && parsed.Host != "localhost" {
+		return fmt.Errorf("file output URI host must be empty or localhost")
+	}
+	if strings.TrimSpace(parsed.Path) == "" {
+		return fmt.Errorf("file output URI path is required")
+	}
+	if !filepath.IsAbs(filepath.Clean(parsed.Path)) {
+		return fmt.Errorf("file output URI path must be absolute")
+	}
+	return nil
+}
+
 func buildDataExportTablePlan(project projectMetadata, databaseName, schemaName string, table SQLServerTable, prefixSchema bool, spec DataMovementPlanSpec) dataExportTablePlan {
 	targetTable := table.Name
 	if prefixSchema {

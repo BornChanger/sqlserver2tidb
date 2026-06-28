@@ -1405,7 +1405,7 @@ func validateExportPlanContent(path string) error {
 			return fmt.Errorf("export chunk %s predicate still contains TODO", chunk.ID)
 		}
 	}
-	return nil
+	return validateExportPlanChunkOutputURIs(chunks)
 }
 
 func validateImportPlanContent(path string) error {
