@@ -1944,21 +1944,25 @@ func runCDC(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "executor cdc: apply batch size must be positive")
 		return 1
 	}
+	if err := validateCDCKeyColumnsInCapturedColumns(columns, keyColumns); err != nil {
+		fmt.Fprintf(stderr, "executor cdc: %v\n", err)
+		return 1
+	}
+	fromLSN, err := parseSQLServerCDCLSN(*fromLSNRaw, "from LSN")
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	toLSN, err := parseSQLServerCDCLSN(*toLSNRaw, "to LSN")
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	if err := validateSQLServerCDCLSNRange(fromLSN, toLSN); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
 	if *execute {
-		fromLSN, err := parseSQLServerCDCLSN(*fromLSNRaw, "from LSN")
-		if err != nil {
-			fmt.Fprintln(stderr, err)
-			return 1
-		}
-		toLSN, err := parseSQLServerCDCLSN(*toLSNRaw, "to LSN")
-		if err != nil {
-			fmt.Fprintln(stderr, err)
-			return 1
-		}
-		if err := validateSQLServerCDCLSNRange(fromLSN, toLSN); err != nil {
-			fmt.Fprintln(stderr, err)
-			return 1
-		}
 		result, err := executeCDCApplyFunc(context.Background(), cdcExecuteSpec{
 			SourceObject:              *sourceObject,
 			TargetObject:              *targetObject,
@@ -1995,6 +1999,16 @@ func runCDC(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "apply batch size: %s\n", strconv.Itoa(*applyBatchSize))
 	fmt.Fprintln(stdout, "No CDC reader or TiDB apply worker will be started.")
 	return 0
+}
+
+func validateCDCKeyColumnsInCapturedColumns(columns, keyColumns []string) error {
+	columnSet := make(map[string]string, len(columns))
+	for _, column := range columns {
+		column = strings.TrimSpace(column)
+		columnSet[strings.ToLower(column)] = column
+	}
+	_, err := normalizeCDCKeyColumnSet(keyColumns, columnSet)
+	return err
 }
 
 type cdcExecuteSpec struct {

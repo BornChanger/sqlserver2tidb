@@ -1139,6 +1139,70 @@ func TestRunCDCDryRunCommand(t *testing.T) {
 	assertOutputContains(t, output, "No CDC reader or TiDB apply worker will be started.")
 }
 
+func TestRunCDCDryRunRequiresLSNRange(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"cdc",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--source-object", "sales.dbo.orders",
+		"--target-object", "app.orders",
+		"--columns", "id,customer_name",
+		"--key-columns", "id",
+		"--apply-batch-size", "1000",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("cdc dry-run code = 0, want non-zero; stdout = %s", stdout.String())
+	}
+	assertOutputContains(t, stderr.String(), "executor cdc: from LSN is required")
+}
+
+func TestRunCDCDryRunRejectsReversedLSNRange(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"cdc",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--source-object", "sales.dbo.orders",
+		"--target-object", "app.orders",
+		"--columns", "id,customer_name",
+		"--key-columns", "id",
+		"--from-lsn", "0x00000027000001f40003",
+		"--to-lsn", "0x00000027000001f40002",
+		"--apply-batch-size", "1000",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("cdc dry-run code = 0, want non-zero; stdout = %s", stdout.String())
+	}
+	assertOutputContains(t, stderr.String(), "executor cdc: from LSN must be less than or equal to to LSN")
+}
+
+func TestRunCDCDryRunRejectsKeyColumnOutsideColumns(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"cdc",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--source-object", "sales.dbo.orders",
+		"--target-object", "app.orders",
+		"--columns", "id,customer_name",
+		"--key-columns", "tenant_id",
+		"--from-lsn", "0x00000027000001f40001",
+		"--to-lsn", "0x00000027000001f40002",
+		"--apply-batch-size", "1000",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("cdc dry-run code = 0, want non-zero; stdout = %s", stdout.String())
+	}
+	assertOutputContains(t, stderr.String(), "executor cdc: CDC key column tenant_id is not present in captured columns")
+}
+
 func TestRunCDCLSNDryRunCommand(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 
