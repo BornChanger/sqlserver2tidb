@@ -818,8 +818,13 @@ func runWorkerExecutor(args []string, stdout, stderr io.Writer) int {
 	sourceConnectionStringEnv := fs.String("source-connection-string-env", "", "environment variable containing the SQL Server connection string for export execution")
 	targetConnectionStringEnv := fs.String("target-connection-string-env", "", "environment variable containing the TiDB/MySQL connection string for import execution")
 	importBatchSize := fs.Int("import-batch-size", 0, "rows to commit per import transaction; default is executor-defined")
+	commandTimeout := fs.Duration("command-timeout", 0, "maximum runtime per external executor command; 0 disables timeout")
 	execute := fs.Bool("execute", false, "run external executor commands with executor --execute; default is dry-run")
 	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if *commandTimeout < 0 {
+		fmt.Fprintln(stderr, "worker executor: --command-timeout must be non-negative")
 		return 2
 	}
 	spec, err := gitops.PrepareWorkerExecutor(*root, *sourceClusterID, *projectID, *stage, gitops.WorkerExecutorPrepareSpec{
@@ -851,21 +856,35 @@ func runWorkerExecutor(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		args := withExternalExecutorExecuteFlag(command.Args)
-		cmd := exec.Command(args[0], args[1:]...)
+		commandContext := context.Background()
+		var cancel context.CancelFunc
+		if *commandTimeout > 0 {
+			commandContext, cancel = context.WithTimeout(commandContext, *commandTimeout)
+		}
+		cmd := newWorkerExecutorCommand(commandContext, args[0], args[1:]...)
 		cmd.Dir = *root
 		startedAt := time.Now().UTC()
 		output, commandErr := cmd.CombinedOutput()
 		completedAt := time.Now().UTC()
+		timedOut := commandContext.Err() == context.DeadlineExceeded
+		if cancel != nil {
+			cancel()
+		}
 		if len(output) > 0 {
 			fmt.Fprint(stdout, string(output))
 		}
 		cdcAppliedChanges, parseErr := workerExecutorCDCAppliedChanges(spec.Stage, string(output))
+		commandEvidenceError := ""
+		if timedOut {
+			commandEvidenceError = fmt.Sprintf("command timed out after %s", commandTimeout.String())
+		}
 		results = append(results, workerExecutorRunCommandEvidence{
 			ID:                command.ID,
 			Args:              args,
 			ShellCommand:      renderArgsForEvidence(args),
 			ExitCode:          exitCodeForCommandError(commandErr),
 			Output:            string(output),
+			Error:             commandEvidenceError,
 			StartedAt:         startedAt.Format(time.RFC3339Nano),
 			CompletedAt:       completedAt.Format(time.RFC3339Nano),
 			DurationMs:        completedAt.Sub(startedAt).Milliseconds(),
@@ -878,6 +897,10 @@ func runWorkerExecutor(args []string, stdout, stderr io.Writer) int {
 			}
 			if _, evidenceErr := writeWorkerExecutorRunEvidence(*root, spec, "failed", results); evidenceErr != nil {
 				fmt.Fprintf(stderr, "worker executor: %v\n", evidenceErr)
+			}
+			if timedOut {
+				fmt.Fprintf(stderr, "worker executor: command %s timed out after %s\n", command.ID, commandTimeout.String())
+				return 1
 			}
 			fmt.Fprintf(stderr, "worker executor: command %s failed: %v\n", command.ID, commandErr)
 			return 1

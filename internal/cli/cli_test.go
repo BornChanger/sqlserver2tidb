@@ -6,8 +6,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/BornChanger/sqlserver2tidb/internal/gitops"
 )
@@ -1194,6 +1196,114 @@ func TestRunWorkerExecutorExecuteWritesFailedEvidenceOnCommandFailure(t *testing
 	}
 	if !strings.Contains(evidence, `fake executor failed`) {
 		t.Fatalf("executor evidence = %q, want failure output", evidence)
+	}
+}
+
+func TestRunWorkerExecutorExecuteWritesFailedEvidenceOnCommandTimeout(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createCLIProjectWithOneExportChunk(t, root, &stdout, &stderr)
+	reviewCLIExportPlanPredicates(t, root)
+	setCLIReviewPlanStatus(t, root, "export", "reviewed")
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"compute-payload-hash",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "export",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("compute-payload-hash export code = %d, stderr = %s", code, stderr.String())
+	}
+	writeCLIStageApproval(t, root, "export", parsePayloadHash(t, stdout.String()))
+
+	fakeExecutor := filepath.Join(root, "fake-executor-sleeps")
+	if err := os.WriteFile(fakeExecutor, []byte("#!/bin/sh\nprintf 'fake executor started\\n'\nsleep 2\nprintf 'fake executor finished\\n'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = Run([]string{
+		"worker-executor",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "export",
+		"--executor-binary", "./fake-executor-sleeps",
+		"--command-timeout", "10ms",
+		"--execute",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("worker-executor execute code = 0, want timeout failure")
+	}
+	if !strings.Contains(stderr.String(), "command dbo.orders.000001 timed out after 10ms") {
+		t.Fatalf("worker-executor stderr = %q, want timeout message", stderr.String())
+	}
+	evidence := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-export-run.json")
+	if !strings.Contains(evidence, `"status": "failed"`) {
+		t.Fatalf("executor evidence = %q, want failed status", evidence)
+	}
+	if !strings.Contains(evidence, `"error": "command timed out after 10ms"`) {
+		t.Fatalf("executor evidence = %q, want timeout command error", evidence)
+	}
+}
+
+func TestRunWorkerExecutorCommandTimeoutTerminatesProcessGroup(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell process group termination is Unix-specific")
+	}
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createCLIProjectWithOneExportChunk(t, root, &stdout, &stderr)
+	reviewCLIExportPlanPredicates(t, root)
+	setCLIReviewPlanStatus(t, root, "export", "reviewed")
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"compute-payload-hash",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "export",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("compute-payload-hash export code = %d, stderr = %s", code, stderr.String())
+	}
+	writeCLIStageApproval(t, root, "export", parsePayloadHash(t, stdout.String()))
+
+	fakeExecutor := filepath.Join(root, "fake-executor-spawns-child")
+	if err := os.WriteFile(fakeExecutor, []byte("#!/bin/sh\n(sleep 0.5; printf child > child-marker) &\nsleep 2\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = Run([]string{
+		"worker-executor",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "export",
+		"--executor-binary", "./fake-executor-spawns-child",
+		"--command-timeout", "100ms",
+		"--execute",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("worker-executor execute code = 0, want timeout failure")
+	}
+
+	time.Sleep(800 * time.Millisecond)
+	if _, err := os.Stat(filepath.Join(root, "child-marker")); err == nil {
+		t.Fatalf("child process survived timeout and wrote marker")
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("stat child marker: %v", err)
 	}
 }
 
