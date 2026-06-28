@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"io"
 	"net/http"
@@ -12,8 +13,65 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 )
+
+const nonEmptyTargetTestDriverName = "sqlserver2tidb_non_empty_target_test"
+
+var registerNonEmptyTargetTestDriverOnce sync.Once
+
+type nonEmptyTargetTestDriver struct{}
+
+func (driver nonEmptyTargetTestDriver) Open(name string) (driver.Conn, error) {
+	return nonEmptyTargetTestConn{}, nil
+}
+
+type nonEmptyTargetTestConn struct{}
+
+func (conn nonEmptyTargetTestConn) Prepare(query string) (driver.Stmt, error) {
+	return nil, errors.New("unexpected prepare")
+}
+
+func (conn nonEmptyTargetTestConn) Close() error {
+	return nil
+}
+
+func (conn nonEmptyTargetTestConn) Begin() (driver.Tx, error) {
+	return nil, errors.New("unexpected begin")
+}
+
+func (conn nonEmptyTargetTestConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+	return &singleCountTestRows{count: 1}, nil
+}
+
+type singleCountTestRows struct {
+	count int64
+	read  bool
+}
+
+func (rows *singleCountTestRows) Columns() []string {
+	return []string{"COUNT(*)"}
+}
+
+func (rows *singleCountTestRows) Close() error {
+	return nil
+}
+
+func (rows *singleCountTestRows) Next(dest []driver.Value) error {
+	if rows.read {
+		return io.EOF
+	}
+	rows.read = true
+	dest[0] = rows.count
+	return nil
+}
+
+func registerNonEmptyTargetTestDriver() {
+	registerNonEmptyTargetTestDriverOnce.Do(func() {
+		sql.Register(nonEmptyTargetTestDriverName, nonEmptyTargetTestDriver{})
+	})
+}
 
 type recordingCDCExecutor struct {
 	called bool
@@ -345,6 +403,71 @@ func TestExecuteTiDBImportValidatesBatchSizeBeforeSourceURI(t *testing.T) {
 		t.Fatal("executeTiDBImport() error = nil, want import batch size error")
 	}
 	assertOutputContains(t, err.Error(), "executor import: import batch size must be positive")
+}
+
+func TestRunImportExecuteRequireEmptyTargetRejectsNonEmptyTargetBeforeOpeningSource(t *testing.T) {
+	registerNonEmptyTargetTestDriver()
+	oldOpenMySQLDB := openMySQLDB
+	openMySQLDB = func(_ string) (*sql.DB, error) {
+		return sql.Open(nonEmptyTargetTestDriverName, "non-empty-target")
+	}
+	defer func() {
+		openMySQLDB = oldOpenMySQLDB
+	}()
+	t.Setenv("TEST_TIDB_DSN", "non-empty-target")
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"import",
+		"--execute",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--job-id", "import-dbo.orders.000001",
+		"--target-object", "app.orders",
+		"--source-uri", "file:///definitely/missing.csv",
+		"--target-connection-string-env", "TEST_TIDB_DSN",
+		"--require-empty-target",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatal("import execute code = 0, want non-empty target preflight error")
+	}
+	assertOutputContains(t, stderr.String(), "preflight target table is not empty: app.orders has 1 rows")
+	if strings.Contains(stderr.String(), "open CSV source") {
+		t.Fatalf("import execute stderr = %q, want target preflight before source open", stderr.String())
+	}
+}
+
+func TestRunImportExecuteDoesNotRequireEmptyTargetByDefault(t *testing.T) {
+	registerNonEmptyTargetTestDriver()
+	oldOpenMySQLDB := openMySQLDB
+	openMySQLDB = func(_ string) (*sql.DB, error) {
+		return sql.Open(nonEmptyTargetTestDriverName, "non-empty-target")
+	}
+	defer func() {
+		openMySQLDB = oldOpenMySQLDB
+	}()
+	t.Setenv("TEST_TIDB_DSN", "non-empty-target")
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"import",
+		"--execute",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--job-id", "import-dbo.orders.000002",
+		"--target-object", "app.orders",
+		"--source-uri", "file:///definitely/missing.csv",
+		"--target-connection-string-env", "TEST_TIDB_DSN",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatal("import execute code = 0, want missing source error")
+	}
+	assertOutputContains(t, stderr.String(), "open CSV source")
+	if strings.Contains(stderr.String(), "preflight target table is not empty") {
+		t.Fatalf("import execute stderr = %q, should not require empty target by default", stderr.String())
+	}
 }
 
 func TestRunValidateCountDryRunCommand(t *testing.T) {

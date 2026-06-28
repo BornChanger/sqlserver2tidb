@@ -968,6 +968,7 @@ func TestRunWorkerExportAndImportCommands(t *testing.T) {
 		"--stage", "import",
 		"--target-connection-string-env", "TIDB_IMPORT_DSN",
 		"--import-batch-size", "500",
+		"--require-empty-target",
 	}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("worker-executor import code = %d, stderr = %s", code, stderr.String())
@@ -977,6 +978,9 @@ func TestRunWorkerExportAndImportCommands(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "--import-batch-size 500") {
 		t.Fatalf("worker-executor stdout = %q, want import batch size", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "--require-empty-target") {
+		t.Fatalf("worker-executor stdout = %q, want require empty target flag", stdout.String())
 	}
 
 	stdout.Reset()

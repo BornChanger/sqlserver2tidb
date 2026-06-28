@@ -14,6 +14,7 @@ type WorkerExecutorPrepareSpec struct {
 	SourceConnectionStringEnv string
 	TargetConnectionStringEnv string
 	ImportBatchSize           int
+	RequireEmptyTarget        bool
 }
 
 type WorkerExecutorSpec struct {
@@ -220,6 +221,9 @@ func prepareImportExecutorCommands(projectDir, binary, sourceClusterID, projectI
 		}
 		if spec.ImportBatchSize > 0 {
 			args = append(args, "--import-batch-size", strconv.Itoa(spec.ImportBatchSize))
+		}
+		if spec.RequireEmptyTarget && engine == importEngineSQLInsert {
+			args = append(args, "--require-empty-target")
 		}
 		if len(job.Fields) > 0 {
 			args = append(args, "--fields", strings.Join(job.Fields, ","))

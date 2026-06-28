@@ -4928,6 +4928,61 @@ func TestPrepareWorkerExecutorAddsImportConnectionStringEnvAndBatchSize(t *testi
 	assertContains(t, spec.Commands[0].ShellCommand, "--import-batch-size 500")
 }
 
+func TestPrepareWorkerExecutorAddsRequireEmptyTargetForSQLInsertImport(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateSchemaDraftOnly(root))
+	must(t, GenerateDataPlansOnly(root))
+	setReviewPlanStatus(t, root, "import", "reviewed")
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(import) error = %v", err)
+	}
+	writeStageApproval(t, root, "import", hash)
+
+	spec, err := PrepareWorkerExecutor(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import", WorkerExecutorPrepareSpec{
+		RequireEmptyTarget: true,
+	})
+	if err != nil {
+		t.Fatalf("PrepareWorkerExecutor() error = %v", err)
+	}
+	if len(spec.Commands) == 0 {
+		t.Fatal("Commands is empty")
+	}
+	assertContains(t, spec.Commands[0].ShellCommand, "--require-empty-target")
+	assertArgPresent(t, spec.Commands[0].Args, "--require-empty-target")
+}
+
+func TestPrepareWorkerExecutorDoesNotAddRequireEmptyTargetForTiDBImportInto(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateSchemaDraftOnly(root))
+	must(t, GenerateDataPlansOnly(root))
+	importPlanRel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml"
+	importPlan := readFile(t, root, importPlanRel)
+	importPlan = strings.Replace(importPlan, "engine: sql-insert", "engine: tidb-import-into", 1)
+	writeFileForTest(t, root, importPlanRel, importPlan)
+	setReviewPlanStatus(t, root, "import", "reviewed")
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(import) error = %v", err)
+	}
+	writeStageApproval(t, root, "import", hash)
+
+	spec, err := PrepareWorkerExecutor(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import", WorkerExecutorPrepareSpec{
+		RequireEmptyTarget: true,
+	})
+	if err != nil {
+		t.Fatalf("PrepareWorkerExecutor() error = %v", err)
+	}
+	if len(spec.Commands) == 0 {
+		t.Fatal("Commands is empty")
+	}
+	if strings.Contains(spec.Commands[0].ShellCommand, "--require-empty-target") {
+		t.Fatalf("command = %q, should not pass sql-insert empty-target flag to tidb-import-into", spec.Commands[0].ShellCommand)
+	}
+}
+
 func TestPrepareWorkerExecutorRejectsNegativeImportBatchSize(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
@@ -6877,6 +6932,16 @@ func assertArgValue(t *testing.T, args []string, name, want string) {
 			if args[i+1] != want {
 				t.Fatalf("arg %s = %q, want %q\nargs:\n%v", name, args[i+1], want, args)
 			}
+			return
+		}
+	}
+	t.Fatalf("arg %s not found\nargs:\n%v", name, args)
+}
+
+func assertArgPresent(t *testing.T, args []string, name string) {
+	t.Helper()
+	for _, arg := range args {
+		if arg == name {
 			return
 		}
 	}

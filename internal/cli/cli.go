@@ -818,6 +818,7 @@ func runWorkerExecutor(args []string, stdout, stderr io.Writer) int {
 	sourceConnectionStringEnv := fs.String("source-connection-string-env", "", "environment variable containing the SQL Server connection string for export execution")
 	targetConnectionStringEnv := fs.String("target-connection-string-env", "", "environment variable containing the TiDB/MySQL connection string for import execution")
 	importBatchSize := fs.Int("import-batch-size", 0, "rows to commit per import transaction; default is executor-defined")
+	requireEmptyTarget := fs.Bool("require-empty-target", false, "pass executor --require-empty-target to sql-insert import commands")
 	commandTimeout := fs.Duration("command-timeout", 0, "maximum runtime per external executor command; 0 disables timeout")
 	commandRetries := fs.Int("command-retries", 0, "number of retries for a failed external executor command")
 	retryBackoff := fs.Duration("retry-backoff", time.Second, "fixed backoff between external executor command retries")
@@ -843,6 +844,7 @@ func runWorkerExecutor(args []string, stdout, stderr io.Writer) int {
 		SourceConnectionStringEnv: *sourceConnectionStringEnv,
 		TargetConnectionStringEnv: *targetConnectionStringEnv,
 		ImportBatchSize:           *importBatchSize,
+		RequireEmptyTarget:        *requireEmptyTarget,
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "worker executor: %v\n", err)

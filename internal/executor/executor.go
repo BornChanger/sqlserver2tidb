@@ -35,6 +35,10 @@ const (
 
 var csvHTTPClient = &http.Client{Timeout: 10 * time.Minute}
 
+var openMySQLDB = func(connectionString string) (*sql.DB, error) {
+	return sql.Open("mysql", connectionString)
+}
+
 func normalizeImportEngine(engine string) (string, error) {
 	engine = strings.ToLower(strings.TrimSpace(engine))
 	switch engine {
@@ -772,6 +776,7 @@ func runImport(args []string, stdout, stderr io.Writer) int {
 	targetConnectionStringEnv := fs.String("target-connection-string-env", defaultTargetConnectionStringEnv, "environment variable containing the TiDB/MySQL connection string")
 	importBatchSize := fs.Int("import-batch-size", 1000, "rows to commit per import transaction")
 	fieldsRaw := fs.String("fields", "", "comma-separated TiDB IMPORT INTO field list")
+	requireEmptyTarget := fs.Bool("require-empty-target", false, "preflight that the target table is empty before sql-insert import")
 	execute := fs.Bool("execute", false, "perform the import")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -812,6 +817,7 @@ func runImport(args []string, stdout, stderr io.Writer) int {
 			TargetConnectionStringEnv: *targetConnectionStringEnv,
 			ImportBatchSize:           *importBatchSize,
 			Fields:                    fields,
+			RequireEmptyTarget:        *requireEmptyTarget,
 		}); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
@@ -830,6 +836,9 @@ func runImport(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "source uri: %s\n", *sourceURI)
 	if len(fields) > 0 {
 		fmt.Fprintf(stdout, "fields: %s\n", strings.Join(fields, ","))
+	}
+	if *requireEmptyTarget {
+		fmt.Fprintln(stdout, "require empty target: true")
 	}
 	if strings.TrimSpace(*dependsOnExportChunk) != "" {
 		fmt.Fprintf(stdout, "depends on export chunk: %s\n", *dependsOnExportChunk)
@@ -1145,6 +1154,7 @@ type importExecuteSpec struct {
 	TargetConnectionStringEnv string
 	ImportBatchSize           int
 	Fields                    []string
+	RequireEmptyTarget        bool
 }
 
 func executeTiDBImport(ctx context.Context, spec importExecuteSpec) error {
@@ -1173,6 +1183,18 @@ func executeTiDBImport(ctx context.Context, spec importExecuteSpec) error {
 		return fmt.Errorf("executor import: target connection string env %s is not set", envName)
 	}
 
+	db, err := openMySQLDB(connectionString)
+	if err != nil {
+		return fmt.Errorf("executor import: open TiDB connection: %w", err)
+	}
+	defer db.Close()
+
+	if spec.RequireEmptyTarget {
+		if err := ensureTiDBImportTargetEmpty(ctx, db, spec.TargetObject); err != nil {
+			return fmt.Errorf("executor import: %w", err)
+		}
+	}
+
 	sourceReader, err := openParsedCSVImportSource(ctx, source)
 	if err != nil {
 		return fmt.Errorf("executor import: %w", err)
@@ -1187,12 +1209,6 @@ func executeTiDBImport(ctx context.Context, spec importExecuteSpec) error {
 	if err != nil {
 		return fmt.Errorf("executor import: %w", err)
 	}
-
-	db, err := sql.Open("mysql", connectionString)
-	if err != nil {
-		return fmt.Errorf("executor import: open TiDB connection: %w", err)
-	}
-	defer db.Close()
 
 	return insertCSVImportRows(ctx, db, insertSQL, reader, spec.ImportBatchSize)
 }
@@ -1220,13 +1236,13 @@ func executeTiDBImportInto(ctx context.Context, spec importExecuteSpec) error {
 		return fmt.Errorf("executor import: target connection string env %s is not set", envName)
 	}
 
-	db, err := sql.Open("mysql", connectionString)
+	db, err := openMySQLDB(connectionString)
 	if err != nil {
 		return fmt.Errorf("executor import: open TiDB connection: %w", err)
 	}
 	defer db.Close()
 
-	if err := ensureTiDBImportIntoTargetEmpty(ctx, db, spec.TargetObject); err != nil {
+	if err := ensureTiDBImportTargetEmpty(ctx, db, spec.TargetObject); err != nil {
 		return fmt.Errorf("executor import: %w", err)
 	}
 
@@ -1447,7 +1463,7 @@ func buildTiDBImportIntoStatement(targetObject, sourceURI string) (string, error
 	return buildTiDBImportIntoStatementWithFields(targetObject, sourceURI, nil)
 }
 
-func ensureTiDBImportIntoTargetEmpty(ctx context.Context, db *sql.DB, targetObject string) error {
+func ensureTiDBImportTargetEmpty(ctx context.Context, db *sql.DB, targetObject string) error {
 	query, err := buildTiDBImportIntoPreflightQuery(targetObject)
 	if err != nil {
 		return err
