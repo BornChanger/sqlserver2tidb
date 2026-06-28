@@ -208,6 +208,86 @@ func validateObjectStorageObjectURIPrefix(parsed *url.URL) error {
 	return nil
 }
 
+func validateImportPlanJobSourceURIs(engine string, jobs []dataImportJobState) error {
+	engine = normalizeImportEngine(engine)
+	for _, job := range jobs {
+		if err := validateImportPlanJobSourceURI(engine, job); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateImportPlanJobSourceURI(engine string, job dataImportJobState) error {
+	sourceURI := strings.TrimSpace(job.SourceURI)
+	parsed, err := url.Parse(sourceURI)
+	if err != nil {
+		return fmt.Errorf("import job %s source_uri parse: %w", job.ID, err)
+	}
+	switch engine {
+	case importEngineTiDBImportInto:
+		switch parsed.Scheme {
+		case "":
+			if filepath.IsAbs(filepath.Clean(sourceURI)) {
+				return nil
+			}
+			return fmt.Errorf("import job %s source_uri local path must be absolute for tidb-import-into", job.ID)
+		case "file":
+			if err := validateLocalFileImportSourceURI(parsed); err != nil {
+				return fmt.Errorf("import job %s source_uri: %w", job.ID, err)
+			}
+			return nil
+		case "s3", "gs":
+			if err := validateObjectStorageImportSourceURI(parsed); err != nil {
+				return fmt.Errorf("import job %s source_uri: %w", job.ID, err)
+			}
+			return nil
+		default:
+			return fmt.Errorf("import job %s source_uri scheme %s is not supported by tidb-import-into; supported schemes: file, s3, gs, or absolute local path", job.ID, parsed.Scheme)
+		}
+	default:
+		switch parsed.Scheme {
+		case "file":
+			if err := validateLocalFileImportSourceURI(parsed); err != nil {
+				return fmt.Errorf("import job %s source_uri: %w", job.ID, err)
+			}
+			return nil
+		case "http", "https":
+			if strings.TrimSpace(parsed.Host) == "" {
+				return fmt.Errorf("import job %s source_uri: %s source URI host is required", job.ID, parsed.Scheme)
+			}
+			return nil
+		case "":
+			return fmt.Errorf("import job %s source_uri must use file://, http://, or https:// for sql-insert", job.ID)
+		default:
+			return fmt.Errorf("import job %s source_uri scheme %s is not supported by sql-insert; supported schemes: file, http, https", job.ID, parsed.Scheme)
+		}
+	}
+}
+
+func validateLocalFileImportSourceURI(parsed *url.URL) error {
+	if parsed.Host != "" && parsed.Host != "localhost" {
+		return fmt.Errorf("file source URI host must be empty or localhost")
+	}
+	if strings.TrimSpace(parsed.Path) == "" {
+		return fmt.Errorf("file source URI path is required")
+	}
+	if !filepath.IsAbs(filepath.Clean(parsed.Path)) {
+		return fmt.Errorf("file source URI path must be absolute")
+	}
+	return nil
+}
+
+func validateObjectStorageImportSourceURI(parsed *url.URL) error {
+	if strings.TrimSpace(parsed.Host) == "" {
+		return fmt.Errorf("%s source URI bucket is required", parsed.Scheme)
+	}
+	if strings.Trim(strings.TrimSpace(parsed.Path), "/") == "" {
+		return fmt.Errorf("%s source URI object path is required", parsed.Scheme)
+	}
+	return nil
+}
+
 func buildDataExportTablePlan(project projectMetadata, databaseName, schemaName string, table SQLServerTable, prefixSchema bool, spec DataMovementPlanSpec) dataExportTablePlan {
 	targetTable := table.Name
 	if prefixSchema {

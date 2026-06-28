@@ -1426,7 +1426,10 @@ func validateImportPlanContent(path string) error {
 	if len(jobs) == 0 {
 		return nil
 	}
-	return validateImportPlanJobs(jobs)
+	if err := validateImportPlanJobs(jobs); err != nil {
+		return err
+	}
+	return validateImportPlanJobSourceURIs(engine, jobs)
 }
 
 func validateImportPlanExportDependencies(exportPlanPath, importPlanPath string) error {

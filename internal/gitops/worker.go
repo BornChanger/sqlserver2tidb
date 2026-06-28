@@ -321,11 +321,23 @@ func runDataWorker(root, sourceClusterID, projectID, stage string) (DataWorkerRe
 			return DataWorkerResult{}, err
 		}
 	case "import":
-		jobs, err := readImportPlanJobs(filepath.Join(projectDir, "plan", "import-plan.yaml"))
+		planPath := filepath.Join(projectDir, "plan", "import-plan.yaml")
+		engine, err := readPlanTopLevelScalar(planPath, "engine")
+		if err != nil {
+			return DataWorkerResult{}, err
+		}
+		engine = normalizeImportEngine(engine)
+		if err := validateSupportedImportEngine(engine); err != nil {
+			return DataWorkerResult{}, err
+		}
+		jobs, err := readImportPlanJobs(planPath)
 		if err != nil {
 			return DataWorkerResult{}, err
 		}
 		if err := validateImportPlanJobs(jobs); err != nil {
+			return DataWorkerResult{}, err
+		}
+		if err := validateImportPlanJobSourceURIs(engine, jobs); err != nil {
 			return DataWorkerResult{}, err
 		}
 		result.Items = len(jobs)

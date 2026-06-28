@@ -202,6 +202,9 @@ func prepareImportExecutorCommands(projectDir, binary, sourceClusterID, projectI
 	if err := validateImportPlanJobs(jobs); err != nil {
 		return nil, err
 	}
+	if err := validateImportPlanJobSourceURIs(engine, jobs); err != nil {
+		return nil, err
+	}
 	targetConnectionStringEnv := strings.TrimSpace(spec.TargetConnectionStringEnv)
 	commands := make([]WorkerExecutorCommand, 0, len(jobs))
 	for _, job := range jobs {
