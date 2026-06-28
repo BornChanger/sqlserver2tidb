@@ -860,10 +860,6 @@ func runWorkerExecutor(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprint(stdout, string(output))
 		}
 		cdcAppliedChanges, parseErr := workerExecutorCDCAppliedChanges(spec.Stage, string(output))
-		if parseErr != nil {
-			fmt.Fprintf(stderr, "worker executor: command %s: %v\n", command.ID, parseErr)
-			return 1
-		}
 		results = append(results, workerExecutorRunCommandEvidence{
 			ID:                command.ID,
 			Args:              args,
@@ -884,6 +880,13 @@ func runWorkerExecutor(args []string, stdout, stderr io.Writer) int {
 				fmt.Fprintf(stderr, "worker executor: %v\n", evidenceErr)
 			}
 			fmt.Fprintf(stderr, "worker executor: command %s failed: %v\n", command.ID, commandErr)
+			return 1
+		}
+		if parseErr != nil {
+			if _, evidenceErr := writeWorkerExecutorRunEvidence(*root, spec, "failed", results); evidenceErr != nil {
+				fmt.Fprintf(stderr, "worker executor: %v\n", evidenceErr)
+			}
+			fmt.Fprintf(stderr, "worker executor: command %s: %v\n", command.ID, parseErr)
 			return 1
 		}
 	}
@@ -1002,7 +1005,7 @@ func workerExecutorCDCAppliedChanges(stage, output string) (*int, error) {
 		}
 		return &appliedChanges, nil
 	}
-	return nil, nil
+	return nil, fmt.Errorf("CDC executor output must include applied changes: N")
 }
 
 func withExternalExecutorExecuteFlag(args []string) []string {
