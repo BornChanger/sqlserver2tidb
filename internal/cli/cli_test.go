@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -119,6 +120,74 @@ func TestRunValidateRepoCommandReportsInvalidRepository(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "missing required file: global/policies/execution-policy.yaml") {
 		t.Fatalf("validate-repo stderr = %q, want missing file message", stderr.String())
+	}
+}
+
+func TestRunDoctorCommandReportsRepositoryAndOptionalTools(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	if code := Run([]string{"init-repo", "--root", root}, &stdout, &stderr); code != 0 {
+		t.Fatalf("init-repo code = %d, stderr = %s", code, stderr.String())
+	}
+
+	restoreLookPath := stubLookPath(map[string]string{
+		"git": "/usr/bin/git",
+		"gh":  "/usr/bin/gh",
+	})
+	defer restoreLookPath()
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{"doctor", "--root", root}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("doctor code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "doctor completed") {
+		t.Fatalf("doctor stdout = %q, want completion header", output)
+	}
+	if !strings.Contains(output, "repository: valid") {
+		t.Fatalf("doctor stdout = %q, want repository validity", output)
+	}
+	if !strings.Contains(output, "git: found (/usr/bin/git)") {
+		t.Fatalf("doctor stdout = %q, want git found", output)
+	}
+	if !strings.Contains(output, "gh: found (/usr/bin/gh)") {
+		t.Fatalf("doctor stdout = %q, want gh found", output)
+	}
+	if !strings.Contains(output, "sqlserver2tidb-executor: missing") {
+		t.Fatalf("doctor stdout = %q, want missing executor warning", output)
+	}
+}
+
+func TestRunDoctorRequireToolsFailsOnMissingTool(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	if code := Run([]string{"init-repo", "--root", root}, &stdout, &stderr); code != 0 {
+		t.Fatalf("init-repo code = %d, stderr = %s", code, stderr.String())
+	}
+
+	restoreLookPath := stubLookPath(map[string]string{
+		"git": "/usr/bin/git",
+	})
+	defer restoreLookPath()
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{"doctor", "--root", root, "--require-tools"}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("doctor code = 0, want failure when required tools are missing\nstdout=%s", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "doctor: required tools missing") {
+		t.Fatalf("doctor stderr = %q, want missing tools error", stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "gh: missing") {
+		t.Fatalf("doctor stdout = %q, want missing gh", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "sqlserver2tidb-executor: missing") {
+		t.Fatalf("doctor stdout = %q, want missing executor", stdout.String())
 	}
 }
 
@@ -2396,5 +2465,18 @@ approved_at: "2026-06-26T00:00:00Z"
 `
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func stubLookPath(paths map[string]string) func() {
+	old := lookPath
+	lookPath = func(file string) (string, error) {
+		if path, ok := paths[file]; ok {
+			return path, nil
+		}
+		return "", exec.ErrNotFound
+	}
+	return func() {
+		lookPath = old
 	}
 }

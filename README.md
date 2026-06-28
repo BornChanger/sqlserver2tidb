@@ -12,6 +12,7 @@ This MVP provides:
 
 - A Go CLI named `sqlserver2tidb`.
 - Initialization of the GitOps metadata repository structure.
+- A local `doctor` preflight command for repository validation and optional `git`/`gh`/executor availability checks.
 - Validation of the GitOps metadata repository structure, including schema policy mappings, inventory JSON parseability/status, cluster/project identity consistency, source profile/state/evidence ownership, schema diff status/timestamps/summary counts, evidence status/timestamps, review plan statuses, approval metadata/audit timestamps, export/import/CDC work-item fields, required row-count and query-based validation plan fields, and unresolved TODO predicates.
 - SQL Server discovery dry-run planning without opening a database connection.
 - SQL Server catalog discovery using a connection string supplied through an environment variable.
@@ -135,6 +136,14 @@ Validate the repository metadata layout:
 ```bash
 go run ./cmd/sqlserver2tidb validate-repo --root .
 ```
+
+Run local preflight checks:
+
+```bash
+go run ./cmd/sqlserver2tidb doctor --root .
+```
+
+By default, missing local tools are reported as warnings. Add `--require-tools` when the environment must already have `git`, `gh`, and `sqlserver2tidb-executor` on `PATH`.
 
 Create an upstream SQL Server cluster:
 

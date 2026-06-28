@@ -18,6 +18,8 @@ import (
 	sqlservercatalog "github.com/BornChanger/sqlserver2tidb/internal/sqlserver"
 )
 
+var lookPath = exec.LookPath
+
 func Run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		printUsage(stderr)
@@ -27,6 +29,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "init-repo":
 		return runInitRepo(args[1:], stdout, stderr)
+	case "doctor":
+		return runDoctor(args[1:], stdout, stderr)
 	case "validate-repo":
 		return runValidateRepo(args[1:], stdout, stderr)
 	case "discover-sqlserver":
@@ -121,6 +125,54 @@ func runValidateRepo(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	fmt.Fprintf(stdout, "repository is valid at %s (%d dirs, %d files checked)\n", *root, report.CheckedDirs, report.CheckedFiles)
+	return 0
+}
+
+func runDoctor(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	root := fs.String("root", ".", "repository root")
+	requireTools := fs.Bool("require-tools", false, "return non-zero when local helper tools are missing")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	report, err := gitops.ValidateRepo(*root)
+	if err != nil {
+		fmt.Fprintf(stderr, "doctor: validate repo: %v\n", err)
+		return 1
+	}
+
+	fmt.Fprintln(stdout, "doctor completed")
+	if report.Valid {
+		fmt.Fprintf(stdout, "repository: valid (%d dirs, %d files checked)\n", report.CheckedDirs, report.CheckedFiles)
+	} else {
+		fmt.Fprintf(stdout, "repository: invalid (%d errors)\n", len(report.Errors))
+		for _, message := range report.Errors {
+			fmt.Fprintf(stdout, "- %s\n", message)
+		}
+	}
+
+	tools := []string{"git", "gh", "sqlserver2tidb-executor"}
+	missingTools := make([]string, 0, len(tools))
+	fmt.Fprintln(stdout, "tools:")
+	for _, tool := range tools {
+		path, err := lookPath(tool)
+		if err != nil {
+			fmt.Fprintf(stdout, "- %s: missing\n", tool)
+			missingTools = append(missingTools, tool)
+			continue
+		}
+		fmt.Fprintf(stdout, "- %s: found (%s)\n", tool, path)
+	}
+
+	if !report.Valid {
+		return 1
+	}
+	if *requireTools && len(missingTools) > 0 {
+		fmt.Fprintf(stderr, "doctor: required tools missing: %s\n", strings.Join(missingTools, ", "))
+		return 1
+	}
 	return 0
 }
 
@@ -1032,6 +1084,7 @@ func printUsage(w io.Writer) {
 Usage:
   sqlserver2tidb version
   sqlserver2tidb init-repo --root .
+  sqlserver2tidb doctor --root .
   sqlserver2tidb validate-repo --root .
   sqlserver2tidb discover-sqlserver --root . --source-cluster-id prod-sqlserver-a --dry-run
   sqlserver2tidb discover-sqlserver --root . --source-cluster-id prod-sqlserver-a --connection-string-env SQLSERVER2TIDB_SQLSERVER_DSN

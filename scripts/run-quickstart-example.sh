@@ -112,6 +112,9 @@ run_cli generate-pr-draft \
 run_cli worker-reconcile --root "${work_root}" --dry-run >"${work_root}/worker-reconcile.txt"
 grep -q "worker reconcile dry run" "${work_root}/worker-reconcile.txt"
 
+run_cli doctor --root "${work_root}" >"${work_root}/doctor.txt"
+grep -q "repository: valid" "${work_root}/doctor.txt"
+
 run_cli validate-repo --root "${work_root}"
 
 echo "quickstart example generated and validated at ${work_root}"
