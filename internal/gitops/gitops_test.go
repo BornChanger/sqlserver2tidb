@@ -4080,6 +4080,68 @@ func TestGenerateValidationPlanWithSpecWritesChecksumAndSampledHashChecks(t *tes
 	assertContains(t, plan, "WHERE CAST(`id` AS SIGNED) % 100 = 0")
 }
 
+func TestGenerateValidationPlanWithSpecWritesBucketedCountChecks(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, `{
+  "status": "discovered",
+  "databases": [
+    {
+      "name": "sales",
+      "schemas": [
+        {
+          "name": "dbo",
+          "tables": [
+            {
+              "name": "orders",
+              "row_count": 2500000,
+              "columns": [
+                {"name": "id", "type": "int"},
+                {"name": "total", "type": "decimal(18,2)"}
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+`)
+
+	result, err := GenerateValidationPlanWithSpec(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", ValidationPlanSpec{
+		IncludeBucketedCount: true,
+		BucketCount:          4,
+	})
+	if err != nil {
+		t.Fatalf("GenerateValidationPlanWithSpec() error = %v", err)
+	}
+	if result.Checks != 5 {
+		t.Fatalf("GenerateValidationPlanWithSpec() result = %+v, want row-count plus 4 bucketed counts", result)
+	}
+
+	plan := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/validation-plan.yaml")
+	assertContains(t, plan, "id: dbo.orders.bucket-count.0")
+	assertContains(t, plan, "type: bucketed_count")
+	assertContains(t, plan, "SELECT COUNT(*) FROM [sales].[dbo].[orders] WHERE ABS(CAST([id] AS BIGINT)) % 4 = 0")
+	assertContains(t, plan, "SELECT COUNT(*) FROM `app`.`orders` WHERE MOD(ABS(CAST(`id` AS SIGNED)), 4) = 0")
+	assertContains(t, plan, "id: dbo.orders.bucket-count.3")
+	assertContains(t, plan, "SELECT COUNT(*) FROM [sales].[dbo].[orders] WHERE ABS(CAST([id] AS BIGINT)) % 4 = 3")
+	assertContains(t, plan, "SELECT COUNT(*) FROM `app`.`orders` WHERE MOD(ABS(CAST(`id` AS SIGNED)), 4) = 3")
+}
+
+func TestGenerateValidationPlanWithSpecRejectsTooManyBucketedCountChecks(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+
+	_, err := GenerateValidationPlanWithSpec(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", ValidationPlanSpec{
+		IncludeBucketedCount: true,
+		BucketCount:          1025,
+	})
+	if err == nil {
+		t.Fatal("GenerateValidationPlanWithSpec() expected bucket count limit error")
+	}
+	assertContains(t, err.Error(), "bucket_count must be between 1 and 1024")
+}
+
 func TestGenerateValidationPlanWithSpecSkipsChecksumWhenNoExactNumericColumns(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, `{
@@ -4888,6 +4950,39 @@ checks:
 	assertContains(t, first.ShellCommand, "--target-sql 'SELECT BIT_XOR(CRC32(CONCAT(id, total))) FROM app.orders'")
 }
 
+func TestPrepareWorkerExecutorBuildsValidationBucketedCountCommandsWhenApprovedHashMatches(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/validation-plan.yaml", `status: reviewed
+checks:
+  - id: orders-bucket-0
+    type: bucketed_count
+    source_sql: "SELECT COUNT(*) FROM sales.dbo.orders WHERE ABS(CAST(id AS BIGINT)) % 4 = 0"
+    target_sql: "SELECT COUNT(*) FROM app.orders WHERE MOD(ABS(CAST(id AS SIGNED)), 4) = 0"
+`)
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "validation")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(validation) error = %v", err)
+	}
+	writeStageApproval(t, root, "validation", hash)
+
+	spec, err := PrepareWorkerExecutor(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "validation", WorkerExecutorPrepareSpec{})
+	if err != nil {
+		t.Fatalf("PrepareWorkerExecutor() error = %v", err)
+	}
+	if len(spec.Commands) != 1 {
+		t.Fatalf("executor commands = %+v, want 1 bucketed_count command", spec.Commands)
+	}
+	first := spec.Commands[0]
+	if first.ID != "orders-bucket-0" {
+		t.Fatalf("first command ID = %q, want validation check id", first.ID)
+	}
+	assertContains(t, first.ShellCommand, "sqlserver2tidb-executor validate-query")
+	assertContains(t, first.ShellCommand, "--check-id orders-bucket-0")
+	assertContains(t, first.ShellCommand, "--source-sql 'SELECT COUNT(*) FROM sales.dbo.orders WHERE ABS(CAST(id AS BIGINT)) % 4 = 0'")
+	assertContains(t, first.ShellCommand, "--target-sql 'SELECT COUNT(*) FROM app.orders WHERE MOD(ABS(CAST(id AS SIGNED)), 4) = 0'")
+}
+
 func TestPrepareWorkerExecutorAcceptsGeneratedChecksumValidationPlan(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
@@ -4952,7 +5047,7 @@ checks: []
 	if err == nil {
 		t.Fatal("PrepareWorkerExecutor() expected no validation command error")
 	}
-	assertContains(t, err.Error(), "validation plan contains no supported row_count, checksum, sampled_hash, or business_sql checks")
+	assertContains(t, err.Error(), "validation plan contains no supported row_count, checksum, sampled_hash, bucketed_count, or business_sql checks")
 }
 
 func TestRunImportWorkerWritesPlannedStateWhenApprovedHashMatches(t *testing.T) {
@@ -6100,6 +6195,10 @@ checks:
     type: sampled_hash
     source_sql: "SELECT COUNT(*) FROM sales.dbo.orders WHERE id % 100 = 0"
     target_sql: "SELECT COUNT(*) FROM app.orders WHERE id % 100 = 0"
+  - id: orders-bucket-0
+    type: bucketed_count
+    source_sql: "SELECT COUNT(*) FROM sales.dbo.orders WHERE ABS(CAST(id AS BIGINT)) % 4 = 0"
+    target_sql: "SELECT COUNT(*) FROM app.orders WHERE MOD(ABS(CAST(id AS SIGNED)), 4) = 0"
   - id: orders-total
     type: business_sql
     source_sql: "SELECT SUM(total) FROM sales.dbo.orders"
@@ -6119,7 +6218,7 @@ checks:
 		t.Fatalf("RunValidationWorker() Passed = false, checks = %+v", result.Checks)
 	}
 
-	wantSummary := "validation checks are structurally valid (1 row_count, 1 checksum, 1 sampled_hash, 1 business_sql)"
+	wantSummary := "validation checks are structurally valid (1 row_count, 1 checksum, 1 sampled_hash, 1 bucketed_count, 1 business_sql)"
 	state := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/validation-status.yaml")
 	assertContains(t, state, wantSummary)
 

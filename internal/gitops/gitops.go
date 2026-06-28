@@ -299,7 +299,7 @@ approval_required:
         "required": ["id", "type"],
         "properties": {
           "id": {"type": "string", "minLength": 1},
-          "type": {"enum": ["row_count", "row-count", "checksum", "sampled_hash", "business_sql"]},
+          "type": {"enum": ["row_count", "row-count", "checksum", "sampled_hash", "bucketed_count", "business_sql"]},
           "source_object": {"type": "string", "minLength": 1},
           "target_object": {"type": "string", "minLength": 1},
           "source_sql": {"type": "string", "minLength": 1},
@@ -314,7 +314,7 @@ approval_required:
             "then": {"required": ["source_object", "target_object"]}
           },
           {
-            "if": {"properties": {"type": {"enum": ["checksum", "sampled_hash", "business_sql"]}}},
+            "if": {"properties": {"type": {"enum": ["checksum", "sampled_hash", "bucketed_count", "business_sql"]}}},
             "then": {"required": ["source_sql", "target_sql"]}
           }
         ],

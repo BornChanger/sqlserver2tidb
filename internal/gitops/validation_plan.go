@@ -15,10 +15,17 @@ type ValidationPlanResult struct {
 }
 
 type ValidationPlanSpec struct {
-	IncludeChecksum    bool
-	IncludeSampledHash bool
-	SampleModulo       int
+	IncludeChecksum      bool
+	IncludeSampledHash   bool
+	IncludeBucketedCount bool
+	SampleModulo         int
+	BucketCount          int
 }
+
+const (
+	defaultValidationBucketCount = 16
+	maxValidationBucketCount     = 1024
+)
 
 type validationCheckPlan struct {
 	ID           string
@@ -39,6 +46,12 @@ func GenerateValidationPlanWithSpec(root, sourceClusterID, projectID string, spe
 	}
 	if spec.SampleModulo <= 0 {
 		spec.SampleModulo = 100
+	}
+	if spec.BucketCount <= 0 {
+		spec.BucketCount = defaultValidationBucketCount
+	}
+	if spec.IncludeBucketedCount && spec.BucketCount > maxValidationBucketCount {
+		return ValidationPlanResult{}, fmt.Errorf("bucket_count must be between 1 and %d", maxValidationBucketCount)
 	}
 
 	clusterDir := filepath.Join(root, "clusters", sourceClusterID)
@@ -98,6 +111,16 @@ func GenerateValidationPlanWithSpec(root, sourceClusterID, projectID string, spe
 						TargetSQL: buildTiDBValidationAggregateSQL(targetObject, numericColumns, buildTiDBSamplePredicate(sampleColumn, spec.SampleModulo)),
 					})
 				}
+				if spec.IncludeBucketedCount && sampleColumn != "" {
+					for bucket := 0; bucket < spec.BucketCount; bucket++ {
+						checks = append(checks, validationCheckPlan{
+							ID:        fmt.Sprintf("%s.bucket-count.%d", safeSQLFileName(joinObject(schema.Name, table.Name)), bucket),
+							Type:      "bucketed_count",
+							SourceSQL: buildSQLServerBucketedCountSQL(sourceObject, sampleColumn, spec.BucketCount, bucket),
+							TargetSQL: buildTiDBBucketedCountSQL(targetObject, sampleColumn, spec.BucketCount, bucket),
+						})
+					}
+				}
 			}
 		}
 	}
@@ -134,7 +157,7 @@ func renderValidationPlanYAML(sourceClusterID, projectID string, checks []valida
 		case "row_count":
 			fmt.Fprintf(&b, "    source_object: %s\n", check.SourceObject)
 			fmt.Fprintf(&b, "    target_object: %s\n", check.TargetObject)
-		case "checksum", "sampled_hash", "business_sql":
+		case "checksum", "sampled_hash", "bucketed_count", "business_sql":
 			fmt.Fprintf(&b, "    source_sql: %s\n", quoteYAML(check.SourceSQL))
 			fmt.Fprintf(&b, "    target_sql: %s\n", quoteYAML(check.TargetSQL))
 		}
@@ -225,6 +248,14 @@ func buildSQLServerSamplePredicate(column string, modulo int) string {
 
 func buildTiDBSamplePredicate(column string, modulo int) string {
 	return fmt.Sprintf("CAST(%s AS SIGNED) %% %d = 0", quoteTiDBIdentifier(column), modulo)
+}
+
+func buildSQLServerBucketedCountSQL(object, column string, bucketCount, bucket int) string {
+	return fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE ABS(CAST(%s AS BIGINT)) %% %d = %d", quoteSQLServerObject(object), quoteSQLServerIdentifier(column), bucketCount, bucket)
+}
+
+func buildTiDBBucketedCountSQL(object, column string, bucketCount, bucket int) string {
+	return fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE MOD(ABS(CAST(%s AS SIGNED)), %d) = %d", quoteTiDBObject(object), quoteTiDBIdentifier(column), bucketCount, bucket)
 }
 
 func quoteSQLServerObject(object string) string {

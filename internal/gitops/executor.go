@@ -306,7 +306,7 @@ func prepareValidationExecutorCommands(projectDir, binary, sourceClusterID, proj
 				args = append(args, "--target-connection-string-env", targetConnectionStringEnv)
 			}
 			commands = append(commands, newWorkerExecutorCommand(binary, check.ID, args))
-		case "checksum", "sampled_hash", "business_sql":
+		case "checksum", "sampled_hash", "bucketed_count", "business_sql":
 			if strings.TrimSpace(check.ID) == "" {
 				return nil, fmt.Errorf("validation %s check id is required", check.Type)
 			}
@@ -335,7 +335,7 @@ func prepareValidationExecutorCommands(projectDir, binary, sourceClusterID, proj
 		}
 	}
 	if len(commands) == 0 {
-		return nil, fmt.Errorf("validation plan contains no supported row_count, checksum, sampled_hash, or business_sql checks")
+		return nil, fmt.Errorf("validation plan contains no supported row_count, checksum, sampled_hash, bucketed_count, or business_sql checks")
 	}
 	return commands, nil
 }

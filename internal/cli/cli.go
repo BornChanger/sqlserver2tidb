@@ -461,14 +461,18 @@ func runGenerateValidationPlan(args []string, stdout, stderr io.Writer) int {
 	projectID := fs.String("project-id", "", "migration project id")
 	includeChecksum := fs.Bool("include-checksum", false, "include reviewed scalar-query checksum checks for tables with exact numeric columns")
 	includeSampledHash := fs.Bool("include-sampled-hash", false, "include reviewed scalar-query sampled_hash checks for tables with an integer sample column")
+	includeBucketedCount := fs.Bool("include-bucketed-count", false, "include reviewed scalar-query bucketed_count checks for tables with an integer bucket column")
 	sampleModulo := fs.Int("sample-modulo", 100, "modulo used by sampled_hash checks")
+	bucketCount := fs.Int("bucket-count", 16, "bucket count used by bucketed_count checks (max 1024)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	result, err := gitops.GenerateValidationPlanWithSpec(*root, *sourceClusterID, *projectID, gitops.ValidationPlanSpec{
-		IncludeChecksum:    *includeChecksum,
-		IncludeSampledHash: *includeSampledHash,
-		SampleModulo:       *sampleModulo,
+		IncludeChecksum:      *includeChecksum,
+		IncludeSampledHash:   *includeSampledHash,
+		IncludeBucketedCount: *includeBucketedCount,
+		SampleModulo:         *sampleModulo,
+		BucketCount:          *bucketCount,
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "generate validation plan: %v\n", err)

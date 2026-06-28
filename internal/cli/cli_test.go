@@ -1803,6 +1803,99 @@ func TestRunGenerateValidationPlanCommandIncludesChecksumChecks(t *testing.T) {
 	}
 }
 
+func TestRunGenerateValidationPlanCommandIncludesBucketedCountChecks(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	if code := Run([]string{"init-repo", "--root", root}, &stdout, &stderr); code != 0 {
+		t.Fatalf("init-repo code = %d, stderr = %s", code, stderr.String())
+	}
+	if code := Run([]string{
+		"create-cluster",
+		"--root", root,
+		"--cluster-id", "prod-sqlserver-a",
+		"--display-name", "prod SQL Server A",
+		"--listener", "sqlserver-a.internal",
+		"--secret-ref", "vault://migration/prod-sqlserver-a/readonly",
+		"--owner", "dba-team",
+	}, &stdout, &stderr); code != 0 {
+		t.Fatalf("create-cluster code = %d, stderr = %s", code, stderr.String())
+	}
+	if code := Run([]string{
+		"create-project",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--display-name", "sales DB to TiDB prod A",
+		"--source-database", "sales",
+		"--source-schema", "dbo",
+		"--target-name", "tidb-prod-a",
+		"--target-database", "app",
+		"--target-secret-ref", "vault://migration/tidb-prod-a/migrate-user",
+		"--owner", "dba-team",
+	}, &stdout, &stderr); code != 0 {
+		t.Fatalf("create-project code = %d, stderr = %s", code, stderr.String())
+	}
+	inventoryPath := filepath.Join(root, "clusters", "prod-sqlserver-a", "inventory", "inventory.json")
+	if err := os.WriteFile(inventoryPath, []byte(`{
+  "status": "discovered",
+  "databases": [
+    {
+      "name": "sales",
+      "schemas": [
+        {
+          "name": "dbo",
+          "tables": [
+            {
+              "name": "orders",
+              "row_count": 2500000,
+              "columns": [
+                {"name": "id", "type": "int"},
+                {"name": "total", "type": "decimal(18,2)"}
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"generate-validation-plan",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--include-bucketed-count",
+		"--bucket-count", "8",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("generate-validation-plan code = %d, stderr = %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "checks: 9") {
+		t.Fatalf("generate-validation-plan stdout = %q, want row-count plus 8 bucketed checks", stdout.String())
+	}
+	planPath := filepath.Join(root, "clusters", "prod-sqlserver-a", "projects", "sales-db-to-tidb-prod-a", "plan", "validation-plan.yaml")
+	plan, err := os.ReadFile(planPath)
+	if err != nil {
+		t.Fatalf("read validation plan: %v", err)
+	}
+	if !strings.Contains(string(plan), "type: bucketed_count") {
+		t.Fatalf("validation plan = %q, want bucketed_count check", string(plan))
+	}
+	if !strings.Contains(string(plan), "WHERE ABS(CAST([id] AS BIGINT)) % 8 = 7") {
+		t.Fatalf("validation plan = %q, want final SQL Server bucket predicate", string(plan))
+	}
+	if !strings.Contains(string(plan), "WHERE MOD(ABS(CAST(`id` AS SIGNED)), 8) = 7") {
+		t.Fatalf("validation plan = %q, want final TiDB bucket predicate", string(plan))
+	}
+}
+
 func TestRunWorkerExecutorValidationDryRunCommand(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer

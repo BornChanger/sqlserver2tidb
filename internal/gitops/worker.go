@@ -313,21 +313,22 @@ func summarizeValidationPlanCheckTypes(path string) (string, error) {
 		return "", err
 	}
 	counts := map[string]int{
-		"row_count":    0,
-		"checksum":     0,
-		"sampled_hash": 0,
-		"business_sql": 0,
+		"row_count":      0,
+		"checksum":       0,
+		"sampled_hash":   0,
+		"bucketed_count": 0,
+		"business_sql":   0,
 	}
 	for _, check := range checks {
 		switch check.Type {
 		case "row_count", "row-count":
 			counts["row_count"]++
-		case "checksum", "sampled_hash", "business_sql":
+		case "checksum", "sampled_hash", "bucketed_count", "business_sql":
 			counts[check.Type]++
 		}
 	}
 	parts := make([]string, 0, len(counts))
-	for _, checkType := range []string{"row_count", "checksum", "sampled_hash", "business_sql"} {
+	for _, checkType := range []string{"row_count", "checksum", "sampled_hash", "bucketed_count", "business_sql"} {
 		if counts[checkType] > 0 {
 			parts = append(parts, fmt.Sprintf("%d %s", counts[checkType], checkType))
 		}

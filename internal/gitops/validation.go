@@ -1531,7 +1531,7 @@ func validateValidationPlanContent(path string) error {
 	}
 	seenIDs := make(map[string]struct{}, len(checks))
 	for _, check := range checks {
-		if check.Type != "row_count" && check.Type != "row-count" && check.Type != "checksum" && check.Type != "sampled_hash" && check.Type != "business_sql" {
+		if check.Type != "row_count" && check.Type != "row-count" && check.Type != "checksum" && check.Type != "sampled_hash" && check.Type != "bucketed_count" && check.Type != "business_sql" {
 			continue
 		}
 		checkID := strings.TrimSpace(check.ID)
@@ -1556,7 +1556,7 @@ func validateValidationPlanContent(path string) error {
 			if containsTODOMarker(check.TargetPredicate) {
 				return fmt.Errorf("row_count check %s target_predicate still contains TODO", check.ID)
 			}
-		case "checksum", "sampled_hash", "business_sql":
+		case "checksum", "sampled_hash", "bucketed_count", "business_sql":
 			if strings.TrimSpace(check.SourceSQL) == "" {
 				return fmt.Errorf("%s check %s source_sql is required", check.Type, check.ID)
 			}
