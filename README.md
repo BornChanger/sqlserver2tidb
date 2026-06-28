@@ -166,7 +166,7 @@ Run local preflight checks:
 go run ./cmd/sqlserver2tidb doctor --root .
 ```
 
-By default, missing local tools are reported as warnings. Add `--require-tools` when the environment must already have `git`, `gh`, and `sqlserver2tidb-executor` on `PATH`.
+By default, missing local tools are reported as warnings. Add `--require-tools` when the environment must already have `git`, `gh`, and `sqlserver2tidb-executor` on `PATH`. Add `--json` to emit repository and tool status for CI/CD or monitoring integrations.
 
 Create an upstream SQL Server cluster:
 

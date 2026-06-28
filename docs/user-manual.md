@@ -347,6 +347,14 @@ bin/sqlserver2tidb doctor --root .
 bin/sqlserver2tidb doctor --root . --require-tools
 ```
 
+CI/CD 或监控系统可以使用 JSON 输出：
+
+```bash
+bin/sqlserver2tidb doctor --root . --json
+```
+
+JSON 输出包含 `repository.valid`、`repository.checked_dirs`、`repository.checked_files`、`repository.errors` 和 `tools[]`。
+
 如果缺少必需文件、必需目录、file schema policy 映射，或者 inventory JSON 无法解析或 status 不是 `pending` / `discovered`，或者 cluster/project 目录名与元数据 ID 不一致，或者 `source-profile.yaml`、cluster state、CDC checkpoint mode/phase/status/updated_at、worker lease phase、active worker lease 必需字段、project state phase/status/updated_at、export/import state phase/status/updated_at、validation status state/phase/updated_at、state payload hash、schema diff status/generated_at/summary counts、evidence JSON ownership/status/generated_at、executor evidence JSON、`plan/migration-plan.yaml`、approval 文件中的 `project_id` / `source_cluster_id` / action / mode / status / payload hash 与项目元数据不一致，或者 approval 的 `approved_at` 非空但不是 RFC3339，或者已 approved 的 approval 缺少 reviewer / `payload_hash` / `approved_at`，或者 export/import/CDC/validation plan 缺少 status 或 status 不是 `draft` / `reviewed` / `approved`，或者 export/import/CDC plan 中已有 work item 但缺少执行必需字段，或者 reviewed/approved CDC tracked table 缺少 `columns` 或 `key_columns`，或者 CDC key columns 不在 captured columns 中，或者 export plan 使用当前 executor 不支持的 `format`，或者 import plan 使用当前 executor 不支持的 `engine`，或者 export chunk / import job / CDC source / validation check 出现重复标识，或者 import job 引用了不存在的 export chunk，或者 import job 的 `source_uri` 与所依赖 export chunk 的 `output_uri` 不一致，或者 export chunk predicate 仍包含 `TODO`，或者 `plan/validation-plan.yaml` 中的 `row_count` / `row-count` 检查项缺少 `id`、`source_object`、`target_object`，或 predicate / target predicate 仍包含 `TODO`，或者 `checksum` / `sampled_hash` / `business_sql` 检查项缺少 `id`、`source_sql`、`target_sql`，或 source_sql / target_sql 仍包含 `TODO`，命令会返回非零退出码，并列出问题。空的 draft plan 列表仍然是合法的初始化状态；`phase: idle` 的 worker lease 可以为空闲占位文件，但 `export`、`import`、`cdc` 或 `validation` 这类 active phase 必须包含非空 `holder`、`lease_id`、`project_id`、`expires_at` 和 `renewed_at`，`project_id` 必须引用同一源集群下已存在的项目目录，两个时间字段必须是 RFC3339，且 `expires_at` 不能早于 `renewed_at`。示例：
 
 ```text

@@ -125,6 +125,9 @@ grep -q "worker agent poll" "${work_root}/worker-agent.txt"
 run_cli doctor --root "${work_root}" >"${work_root}/doctor.txt"
 grep -q "repository: valid" "${work_root}/doctor.txt"
 
+run_cli doctor --root "${work_root}" --json >"${work_root}/doctor.json"
+grep -q '"valid": true' "${work_root}/doctor.json"
+
 run_cli validate-repo --root "${work_root}"
 
 echo "quickstart example generated and validated at ${work_root}"

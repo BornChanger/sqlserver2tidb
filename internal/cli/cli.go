@@ -135,6 +135,7 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	root := fs.String("root", ".", "repository root")
 	requireTools := fs.Bool("require-tools", false, "return non-zero when local helper tools are missing")
+	jsonOutput := fs.Bool("json", false, "write doctor report as JSON")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -145,27 +146,65 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	fmt.Fprintln(stdout, "doctor completed")
-	if report.Valid {
-		fmt.Fprintf(stdout, "repository: valid (%d dirs, %d files checked)\n", report.CheckedDirs, report.CheckedFiles)
-	} else {
-		fmt.Fprintf(stdout, "repository: invalid (%d errors)\n", len(report.Errors))
-		for _, message := range report.Errors {
-			fmt.Fprintf(stdout, "- %s\n", message)
-		}
-	}
-
 	tools := []string{"git", "gh", "sqlserver2tidb-executor"}
+	type doctorToolReport struct {
+		Name  string `json:"name"`
+		Found bool   `json:"found"`
+		Path  string `json:"path,omitempty"`
+	}
+	doctorReport := struct {
+		Repository struct {
+			Valid        bool     `json:"valid"`
+			CheckedDirs  int      `json:"checked_dirs"`
+			CheckedFiles int      `json:"checked_files"`
+			Errors       []string `json:"errors"`
+		} `json:"repository"`
+		Tools []doctorToolReport `json:"tools"`
+	}{}
+	doctorReport.Repository.Valid = report.Valid
+	doctorReport.Repository.CheckedDirs = report.CheckedDirs
+	doctorReport.Repository.CheckedFiles = report.CheckedFiles
+	doctorReport.Repository.Errors = report.Errors
+
 	missingTools := make([]string, 0, len(tools))
-	fmt.Fprintln(stdout, "tools:")
 	for _, tool := range tools {
+		toolReport := doctorToolReport{Name: tool}
 		path, err := lookPath(tool)
 		if err != nil {
-			fmt.Fprintf(stdout, "- %s: missing\n", tool)
 			missingTools = append(missingTools, tool)
+			doctorReport.Tools = append(doctorReport.Tools, toolReport)
 			continue
 		}
-		fmt.Fprintf(stdout, "- %s: found (%s)\n", tool, path)
+		toolReport.Found = true
+		toolReport.Path = path
+		doctorReport.Tools = append(doctorReport.Tools, toolReport)
+	}
+
+	if *jsonOutput {
+		encoder := json.NewEncoder(stdout)
+		encoder.SetIndent("", "  ")
+		if err := encoder.Encode(doctorReport); err != nil {
+			fmt.Fprintf(stderr, "doctor json: %v\n", err)
+			return 1
+		}
+	} else {
+		fmt.Fprintln(stdout, "doctor completed")
+		if report.Valid {
+			fmt.Fprintf(stdout, "repository: valid (%d dirs, %d files checked)\n", report.CheckedDirs, report.CheckedFiles)
+		} else {
+			fmt.Fprintf(stdout, "repository: invalid (%d errors)\n", len(report.Errors))
+			for _, message := range report.Errors {
+				fmt.Fprintf(stdout, "- %s\n", message)
+			}
+		}
+		fmt.Fprintln(stdout, "tools:")
+		for _, tool := range doctorReport.Tools {
+			if !tool.Found {
+				fmt.Fprintf(stdout, "- %s: missing\n", tool.Name)
+				continue
+			}
+			fmt.Fprintf(stdout, "- %s: found (%s)\n", tool.Name, tool.Path)
+		}
 	}
 
 	if !report.Valid {

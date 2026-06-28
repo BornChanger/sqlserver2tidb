@@ -160,6 +160,44 @@ func TestRunDoctorCommandReportsRepositoryAndOptionalTools(t *testing.T) {
 	if !strings.Contains(output, "sqlserver2tidb-executor: missing") {
 		t.Fatalf("doctor stdout = %q, want missing executor warning", output)
 	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = Run([]string{"doctor", "--root", root, "--json"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("doctor json code = %d, stderr = %s", code, stderr.String())
+	}
+	var report struct {
+		Repository struct {
+			Valid        bool     `json:"valid"`
+			CheckedDirs  int      `json:"checked_dirs"`
+			CheckedFiles int      `json:"checked_files"`
+			Errors       []string `json:"errors"`
+		} `json:"repository"`
+		Tools []struct {
+			Name  string `json:"name"`
+			Found bool   `json:"found"`
+			Path  string `json:"path,omitempty"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("doctor json stdout = %q, unmarshal error = %v", stdout.String(), err)
+	}
+	if !report.Repository.Valid || report.Repository.CheckedFiles == 0 {
+		t.Fatalf("doctor json report = %+v, want valid repository with checked files", report)
+	}
+	if len(report.Tools) != 3 {
+		t.Fatalf("doctor json tools = %+v, want 3 tools", report.Tools)
+	}
+	if report.Tools[0].Name != "git" || !report.Tools[0].Found || report.Tools[0].Path != "/usr/bin/git" {
+		t.Fatalf("doctor json tools = %+v, want git found", report.Tools)
+	}
+	if report.Tools[2].Name != "sqlserver2tidb-executor" || report.Tools[2].Found {
+		t.Fatalf("doctor json tools = %+v, want executor missing", report.Tools)
+	}
+	if strings.Contains(stdout.String(), "doctor completed") {
+		t.Fatalf("doctor json stdout = %q, should not include text header", stdout.String())
+	}
 }
 
 func TestRunDoctorRequireToolsFailsOnMissingTool(t *testing.T) {
