@@ -29,6 +29,7 @@ This MVP provides:
 - Approved validation-only worker execution.
 - Read-only worker reconcile dry-run planning across source clusters and projects.
 - Lease-backed worker reconcile execute-next and bounded loop modes for approved metadata-only actions.
+- A `worker-agent` command that packages the bounded reconcile loop as a stable local/container worker entrypoint.
 - Worker state PR draft generation and a dry-run-by-default branch/commit/push/GitHub PR wrapper.
 - An offline quickstart example that generates and validates a sample migration metadata repository without connecting to SQL Server, TiDB, GitHub, or object storage.
 - A multi-stage Dockerfile for building a non-root CLI image with `sqlserver2tidb` and `sqlserver2tidb-executor`.
@@ -53,7 +54,7 @@ This MVP provides:
   ```
 
 - JSON Schema files for core metadata, including cluster, project, migration, export, import, CDC, and validation plan metadata.
-- Tests for repository initialization, validation, cluster/project metadata consistency, source profile/state/evidence/approval ownership checks, validation plan content checks, executor-supported data plan format checks, discovery planning and execution, compatibility analysis, schema draft generation, data movement, CDC, and validation plan generation, PR draft generation, GitHub PR create dry-runs, DDL/export/import/CDC/validation worker gates, external executor command dry-runs, executor binary dry-runs, DDL apply checks, CSV export/import execution checks, row-count and query-based validation command checks, worker reconcile dry-runs, execute-next state PR drafts, and bounded loops, worker state PR create dry-runs, executor evidence PR drafts and dry-runs, upstream SQL Server cluster creation, and migration project creation.
+- Tests for repository initialization, validation, cluster/project metadata consistency, source profile/state/evidence/approval ownership checks, validation plan content checks, executor-supported data plan format checks, discovery planning and execution, compatibility analysis, schema draft generation, data movement, CDC, and validation plan generation, PR draft generation, GitHub PR create dry-runs, DDL/export/import/CDC/validation worker gates, external executor command dry-runs, executor binary dry-runs, DDL apply checks, CSV export/import execution checks, row-count and query-based validation command checks, worker reconcile dry-runs, execute-next state PR drafts, bounded loops, and worker-agent runs, worker state PR create dry-runs, executor evidence PR drafts and dry-runs, upstream SQL Server cluster creation, and migration project creation.
 
 This MVP connects to SQL Server for read-only catalog discovery and, when `sqlserver2tidb-executor export --execute` is explicitly used, for a minimal CSV export path to local `file://` output or HTTP(S) output such as a presigned object storage URL. It connects to TiDB when `sqlserver2tidb-executor apply-ddl --execute` is explicitly used with a reviewed DDL file, or when `sqlserver2tidb-executor import --execute` is explicitly used with a TiDB/MySQL connection string environment variable. Import supports the default `sql-insert` engine for local `file://` or HTTP(S) CSV streaming with batched inserts, and the explicit `tidb-import-into` engine for TiDB `IMPORT INTO ... FROM FILE` over a local path, `file://`, `s3://`, or `gs://` file location. CSV export writes a header plus an internal `__sqlserver2tidb_null_bitmap` column so `sql-insert` import can restore SQL NULL values; `tidb-import-into` reads local/file CSV headers or uses reviewed import-plan `fields`, maps that internal tail column to a TiDB user variable so it is skipped, and preflights the target table with `COUNT(*)` before executing `IMPORT INTO`. It can also connect to both SQL Server and TiDB for explicit `sqlserver2tidb-executor validate-count --execute` row-count comparison and `sqlserver2tidb-executor validate-query --execute` reviewed scalar-query comparison for `checksum`, `sampled_hash`, and `business_sql` validation checks. The included `sqlserver2tidb-executor cdc-lsn --execute` path can query SQL Server CDC max LSN and, when a source object is provided, the capture instance min LSN. The included `sqlserver2tidb-executor cdc --execute` path can apply one explicit SQL Server CDC LSN range to TiDB after validating source/target connection strings, captured columns, and key columns. It does **not** execute native object storage export IO, TiDB Lightning, automated checkpoint-driven CDC streaming, cutover, cleanup, or native generated checksum/sample-hash strategies.
 
@@ -400,6 +401,19 @@ go run ./cmd/sqlserver2tidb worker-reconcile \
 ```
 
 Loop mode repeatedly executes ready metadata-only actions with the same lease holder until no ready metadata action remains or `--max-iterations` is reached. `--max-iterations 0` means continue until the repository has no ready metadata-only actions. It still does not execute DDL, external executor commands, GitHub PR creation, or database IO.
+
+Run the packaged worker agent entrypoint:
+
+```bash
+go run ./cmd/sqlserver2tidb worker-agent \
+  --root . \
+  --holder agent-a \
+  --max-iterations 0 \
+  --interval 5s \
+  --state-pr-draft
+```
+
+`worker-agent` is the same deterministic metadata-only loop packaged as a stable process entrypoint for local runs and containers. It requires a holder, uses the source-cluster lease, can emit state PR drafts, and stops only when no ready metadata-only action remains unless `--max-iterations` is set.
 
 Prepare the git and GitHub commands for a worker state write-back PR:
 

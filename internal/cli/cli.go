@@ -73,6 +73,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runAdvanceCDCCheckpoint(args[1:], stdout, stderr)
 	case "worker-reconcile":
 		return runWorkerReconcile(args[1:], stdout, stderr)
+	case "worker-agent":
+		return runWorkerAgent(args[1:], stdout, stderr)
 	case "create-cluster":
 		return runCreateCluster(args[1:], stdout, stderr)
 	case "create-project":
@@ -1051,6 +1053,39 @@ func runWorkerReconcileLoop(root string, spec gitops.WorkerReconcileExecuteSpec,
 	return 0
 }
 
+func runWorkerAgent(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("worker-agent", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	root := fs.String("root", ".", "repository root")
+	holder := fs.String("holder", "", "worker lease holder id")
+	leaseTTL := fs.Duration("lease-ttl", 15*time.Minute, "worker lease ttl")
+	maxIterations := fs.Int("max-iterations", 0, "maximum loop iterations; 0 means continue until no ready metadata-only actions remain")
+	interval := fs.Duration("interval", 5*time.Second, "sleep interval between loop iterations")
+	statePRDraft := fs.Bool("state-pr-draft", false, "write PR drafts for worker state and evidence changes")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if strings.TrimSpace(*holder) == "" {
+		fmt.Fprintln(stderr, "worker-agent requires --holder")
+		return 2
+	}
+	if *maxIterations < 0 {
+		fmt.Fprintln(stderr, "worker-agent --max-iterations must be non-negative")
+		return 2
+	}
+	if *interval < 0 {
+		fmt.Fprintln(stderr, "worker-agent --interval must be non-negative")
+		return 2
+	}
+	fmt.Fprintln(stdout, "worker agent")
+	fmt.Fprintf(stdout, "holder: %s\n", *holder)
+	return runWorkerReconcileLoop(*root, gitops.WorkerReconcileExecuteSpec{
+		Holder:        *holder,
+		LeaseTTL:      *leaseTTL,
+		CreatePRDraft: *statePRDraft,
+	}, *maxIterations, *interval, stdout, stderr)
+}
+
 func runCreateCluster(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("create-cluster", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -1170,6 +1205,7 @@ Usage:
   sqlserver2tidb worker-reconcile --root . --dry-run
   sqlserver2tidb worker-reconcile --root . --execute-next --holder agent-a --state-pr-draft
   sqlserver2tidb worker-reconcile --root . --loop --holder agent-a --max-iterations 10 --interval 5s
+  sqlserver2tidb worker-agent --root . --holder agent-a --max-iterations 0 --interval 5s --state-pr-draft
   sqlserver2tidb create-cluster --cluster-id prod-sqlserver-a --display-name "prod SQL Server A" --listener sqlserver-a.internal --secret-ref vault://...
   sqlserver2tidb create-project --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --source-database sales --source-schema dbo --target-name tidb-prod-a --target-database app --target-secret-ref vault://...
 `)
