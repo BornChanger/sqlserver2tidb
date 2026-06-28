@@ -98,7 +98,7 @@ Limit local release builds to selected `GOOS/GOARCH` targets:
 DIST_TARGETS="linux/amd64 darwin/arm64" make dist VERSION=v0.1.0
 ```
 
-Pushing a tag like `v0.1.0` runs the release workflow, builds Linux/macOS/Windows archives, publishes checksums, and creates a GitHub Release.
+Pushing a tag like `v0.1.0` runs the release workflow, builds Linux/macOS/Windows archives, publishes checksums, and creates a GitHub Release. The container workflow also publishes `ghcr.io/bornchanger/sqlserver2tidb:v0.1.0` and updates `ghcr.io/bornchanger/sqlserver2tidb:latest`.
 
 Build a local container image:
 

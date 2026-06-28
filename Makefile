@@ -6,7 +6,7 @@ BINDIR ?= $(PREFIX)/bin
 BUILDINFO_PACKAGE := github.com/BornChanger/sqlserver2tidb/internal/buildinfo
 LDFLAGS := -X $(BUILDINFO_PACKAGE).Version=$(VERSION) -X $(BUILDINFO_PACKAGE).Commit=$(COMMIT) -X $(BUILDINFO_PACKAGE).BuildDate=$(BUILD_DATE)
 
-.PHONY: test vet check build install dist dist-check dockerfile-check example-check validate-repo ci fmt fmt-check script-check smoke-check
+.PHONY: test vet check build install dist dist-check dockerfile-check workflow-check example-check validate-repo ci fmt fmt-check script-check smoke-check
 
 test:
 	go test -count=1 ./...
@@ -63,10 +63,15 @@ dockerfile-check:
 	grep -q '^FROM golang:' Dockerfile
 	grep -q '^USER sqlserver2tidb' Dockerfile
 
+workflow-check:
+	test -s .github/workflows/container.yml
+	grep -q 'packages: write' .github/workflows/container.yml
+	grep -q 'GITHUB_REPOSITORY,,' .github/workflows/container.yml
+
 example-check:
 	bash scripts/run-quickstart-example.sh
 
 validate-repo: build
 	bin/sqlserver2tidb validate-repo --root .
 
-ci: fmt-check script-check test vet check build smoke-check dist-check dockerfile-check example-check validate-repo
+ci: fmt-check script-check test vet check build smoke-check dist-check dockerfile-check workflow-check example-check validate-repo
