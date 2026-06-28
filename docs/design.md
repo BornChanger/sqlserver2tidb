@@ -49,7 +49,7 @@ The wrapper does not merge PRs, approve PRs, bypass branch protection, or inspec
 
 - requires `clusters/<source_cluster_id>/projects/<project_id>/prs/reconcile-<stage>-state-pr.md`;
 - requires the worker-written state/evidence files and source-cluster `state/worker-lease.yaml`;
-- validates and includes `evidence/executor-<stage>-run.json` when executor run evidence exists, using the same approval, payload hash, reviewed instruction, status, command ID, args, exit-code, and timing checks as executor evidence PRs;
+- validates and includes `evidence/executor-<stage>-run.json` when executor run evidence exists, using the same approval, payload hash, reviewed instruction, status, command ID, args, exit-code, command-error, and timing checks as executor evidence PRs;
 - includes source-cluster `state/cdc-checkpoint.yaml` for CDC state PRs;
 - reports stale PR body file lists during dry-run and refreshes the body before commit in `--execute` mode;
 - reconstructs deterministic `git switch`, `git add`, `git commit`, `git push`, and `gh pr create` commands;
@@ -69,7 +69,7 @@ This command creates a local branch, commits files, pushes the branch, and opens
 - require every command record to include RFC3339Nano `started_at` and `completed_at`, plus non-negative `duration_ms`, reject completion timestamps earlier than start timestamps, and require optional `cdc_applied_changes` values to be non-negative;
 - reject `succeeded` evidence when any command has a non-zero `exit_code`;
 - reject `failed` evidence when no command has a non-zero `exit_code`;
-- render command IDs, exit codes, timestamps, durations, and whitespace-normalized output summaries directly into the generated PR body for review;
+- render command IDs, exit codes, command errors when present, timestamps, durations, and whitespace-normalized output summaries directly into the generated PR body for review;
 - reject stale executor evidence PR bodies whose content no longer matches the current evidence and approval context;
 - write or consume `clusters/<source_cluster_id>/projects/<project_id>/prs/executor-<stage>-evidence-pr.md`;
 - reconstruct deterministic `git switch`, `git add`, `git commit`, `git push`, and `gh pr create` commands.

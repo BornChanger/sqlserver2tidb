@@ -883,6 +883,7 @@ func runWorkerExecutor(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		if parseErr != nil {
+			results[len(results)-1].Error = parseErr.Error()
 			if _, evidenceErr := writeWorkerExecutorRunEvidence(*root, spec, "failed", results); evidenceErr != nil {
 				fmt.Fprintf(stderr, "worker executor: %v\n", evidenceErr)
 			}
@@ -915,6 +916,7 @@ type workerExecutorRunCommandEvidence struct {
 	ShellCommand      string   `json:"shell_command"`
 	ExitCode          int      `json:"exit_code"`
 	Output            string   `json:"output"`
+	Error             string   `json:"error,omitempty"`
 	StartedAt         string   `json:"started_at"`
 	CompletedAt       string   `json:"completed_at"`
 	DurationMs        int64    `json:"duration_ms"`

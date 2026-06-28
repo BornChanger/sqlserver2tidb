@@ -1596,6 +1596,9 @@ func TestRunWorkerExecutorCDCExecuteFailsWithEvidenceWhenAppliedChangesMissing(t
 	if !strings.Contains(evidence, `"exit_code": 0`) {
 		t.Fatalf("executor evidence = %q, want successful process exit code recorded", evidence)
 	}
+	if !strings.Contains(evidence, `"error": "CDC executor output must include applied changes: N"`) {
+		t.Fatalf("executor evidence = %q, want command error", evidence)
+	}
 	if strings.Contains(evidence, `"cdc_applied_changes"`) {
 		t.Fatalf("executor evidence = %q, want no structured CDC applied changes", evidence)
 	}

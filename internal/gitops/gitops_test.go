@@ -3323,6 +3323,48 @@ func TestGenerateExecutorEvidencePRDraftIncludesCDCAppliedChanges(t *testing.T) 
 	assertContains(t, body, "| sales.dbo.orders | 0 | 2026-01-02T03:04:05Z | 2026-01-02T03:04:06Z | 1000 | applied changes: 2 | 2 |")
 }
 
+func TestGenerateExecutorEvidencePRDraftAllowsFailedCommandErrorWithZeroExitCode(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateCDCPlanOnly(root))
+	setCDCPlanLSNRange(t, root, "0x00000027000001f40001", "0x00000027000001f40002")
+	setReviewPlanStatus(t, root, "cdc", "reviewed")
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "cdc")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(cdc) error = %v", err)
+	}
+	writeStageApproval(t, root, "cdc", hash)
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-cdc-run.json", `{
+  "stage": "cdc",
+  "status": "failed",
+  "project_id": "sales-db-to-tidb-prod-a",
+  "source_cluster_id": "prod-sqlserver-a",
+  "payload_hash": "`+hash+`",
+  "commands": [
+    {
+      "id": "sales.dbo.orders",
+      "args": ["sqlserver2tidb-executor", "cdc", "--execute"],
+      "shell_command": "sqlserver2tidb-executor cdc --execute",
+      "exit_code": 0,
+      "output": "executor cdc completed without applied-change summary\n",
+      "error": "CDC executor output must include applied changes: N",
+      "started_at": "2026-01-02T03:04:05Z",
+      "completed_at": "2026-01-02T03:04:06Z",
+      "duration_ms": 1000
+    }
+  ]
+}
+`)
+
+	draft, err := GenerateExecutorEvidencePRDraft(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "cdc")
+	if err != nil {
+		t.Fatalf("GenerateExecutorEvidencePRDraft() error = %v", err)
+	}
+	body := readFile(t, root, draft.BodyFile)
+	assertContains(t, body, "| Command ID | Exit code | Started at | Completed at | Duration ms | Output summary | Command error |")
+	assertContains(t, body, "| sales.dbo.orders | 0 | 2026-01-02T03:04:05Z | 2026-01-02T03:04:06Z | 1000 | executor cdc completed without applied-change summary | CDC executor output must include applied changes: N |")
+}
+
 func TestGenerateExecutorEvidencePRDraftIncludesValidationOutputSummary(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
@@ -3562,7 +3604,7 @@ func TestGenerateExecutorEvidencePRDraftRejectsFailedStatusWithoutFailedCommand(
 	if err == nil {
 		t.Fatal("GenerateExecutorEvidencePRDraft() expected failed status conflict error")
 	}
-	assertContains(t, err.Error(), "executor evidence status failed requires at least one non-zero command exit_code")
+	assertContains(t, err.Error(), "executor evidence status failed requires at least one non-zero command exit_code or command error")
 }
 
 func TestGenerateExecutorEvidencePRDraftRejectsCommandWithoutTiming(t *testing.T) {
