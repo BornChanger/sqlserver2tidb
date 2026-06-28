@@ -295,8 +295,14 @@ func prepareValidationExecutorCommands(projectDir, binary, sourceClusterID, proj
 			if strings.TrimSpace(check.SourceObject) == "" {
 				return nil, fmt.Errorf("validation row_count check %q source_object is required", check.ID)
 			}
+			if err := validateSQLServerSourceObjectName("validation row_count check "+check.ID+" source_object", check.SourceObject); err != nil {
+				return nil, err
+			}
 			if strings.TrimSpace(check.TargetObject) == "" {
 				return nil, fmt.Errorf("validation row_count check %q target_object is required", check.ID)
+			}
+			if err := validateTiDBTargetObjectName("validation row_count check "+check.ID+" target_object", check.TargetObject); err != nil {
+				return nil, err
 			}
 			args := []string{
 				"validate-count",

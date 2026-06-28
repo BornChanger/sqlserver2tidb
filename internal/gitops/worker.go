@@ -585,8 +585,14 @@ func validateExportPlanChunks(chunks []dataExportChunkState) error {
 		if strings.TrimSpace(chunk.SourceObject) == "" {
 			return fmt.Errorf("export chunk %s source_object is required", chunk.ID)
 		}
+		if err := validateSQLServerSourceObjectName("export chunk "+chunk.ID+" source_object", chunk.SourceObject); err != nil {
+			return err
+		}
 		if strings.TrimSpace(chunk.TargetObject) == "" {
 			return fmt.Errorf("export chunk %s target_object is required", chunk.ID)
+		}
+		if err := validateTiDBTargetObjectName("export chunk "+chunk.ID+" target_object", chunk.TargetObject); err != nil {
+			return err
 		}
 		if strings.TrimSpace(chunk.OutputURI) == "" {
 			return fmt.Errorf("export chunk %s output_uri is required", chunk.ID)
@@ -651,6 +657,9 @@ func validateImportPlanJobs(jobs []dataImportJobState) error {
 		seenIDs[jobID] = struct{}{}
 		if strings.TrimSpace(job.TargetObject) == "" {
 			return fmt.Errorf("import job %s target_object is required", job.ID)
+		}
+		if err := validateTiDBTargetObjectName("import job "+job.ID+" target_object", job.TargetObject); err != nil {
+			return err
 		}
 		if strings.TrimSpace(job.SourceURI) == "" {
 			return fmt.Errorf("import job %s source_uri is required", job.ID)
@@ -776,12 +785,18 @@ func validateCDCPlanSummaryForExecutionWithLSN(plan cdcPlanSummary, requireKeyCo
 		if sourceObject == "" {
 			return fmt.Errorf("cdc tracked table source_object is required")
 		}
+		if err := validateSQLServerSourceObjectName("cdc tracked table "+table.SourceObject+" source_object", table.SourceObject); err != nil {
+			return err
+		}
 		if _, ok := seenSources[sourceObject]; ok {
 			return fmt.Errorf("duplicate cdc tracked source_object %s", sourceObject)
 		}
 		seenSources[sourceObject] = struct{}{}
 		if strings.TrimSpace(table.TargetObject) == "" {
 			return fmt.Errorf("cdc tracked table %s target_object is required", table.SourceObject)
+		}
+		if err := validateTiDBTargetObjectName("cdc tracked table "+table.SourceObject+" target_object", table.TargetObject); err != nil {
+			return err
 		}
 		if table.ApplyBatchSize <= 0 {
 			return fmt.Errorf("cdc tracked table %s apply_batch_size must be positive", table.SourceObject)

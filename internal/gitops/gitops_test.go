@@ -2275,6 +2275,31 @@ tables:
 	assertContains(t, strings.Join(report.Errors, "\n"), "invalid export plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/export-plan.yaml: export chunk dbo.orders.000001 output_uri scheme s3 is not supported by sqlserver2tidb-executor")
 }
 
+func TestValidateRepoReportsInvalidExportPlanSourceObjectName(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/export-plan.yaml", `status: reviewed
+format: csv
+tables:
+  - source_object: orders
+    target_object: app.orders
+    chunks:
+      - id: dbo.orders.000001
+        estimated_rows: 10
+        predicate: id >= 1 and id < 11
+        output_uri: file:///tmp/dbo.orders.000001.csv
+`)
+
+	report, err := ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("ValidateRepo() valid = true, want false")
+	}
+	assertContains(t, strings.Join(report.Errors, "\n"), "invalid export plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/export-plan.yaml: export chunk dbo.orders.000001 source_object must be schema.table or database.schema.table")
+}
+
 func TestValidateRepoReportsTODOExportPredicate(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
@@ -2503,6 +2528,27 @@ jobs:
 	assertContains(t, strings.Join(report.Errors, "\n"), "invalid import plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml: duplicate import job id import-dbo.orders.000001")
 }
 
+func TestValidateRepoReportsInvalidImportPlanTargetObjectName(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml", `status: reviewed
+jobs:
+  - id: import-dbo.orders.000001
+    target_object: app.sales.orders
+    source_uri: file:///tmp/dbo.orders.000001.csv
+    depends_on_export_chunk: dbo.orders.000001
+`)
+
+	report, err := ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("ValidateRepo() valid = true, want false")
+	}
+	assertContains(t, strings.Join(report.Errors, "\n"), "invalid import plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml: import job import-dbo.orders.000001 target_object must be table or database.table")
+}
+
 func TestValidateRepoReportsImportJobMissingExportDependency(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
@@ -2583,6 +2629,32 @@ tracked_tables:
 		t.Fatalf("ValidateRepo() valid = true, want false")
 	}
 	assertContains(t, strings.Join(report.Errors, "\n"), "invalid cdc plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/cdc-plan.yaml: cdc tracked table sales.dbo.orders apply_batch_size must be positive")
+}
+
+func TestValidateRepoReportsInvalidCDCPlanTargetObjectName(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/cdc-plan.yaml", `status: reviewed
+mode: sqlserver-cdc
+tracked_tables:
+  - source_object: sales.dbo.orders
+    target_object: app.sales.orders
+    columns:
+      - id
+      - customer_name
+    key_columns:
+      - id
+    apply_batch_size: 1000
+`)
+
+	report, err := ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("ValidateRepo() valid = true, want false")
+	}
+	assertContains(t, strings.Join(report.Errors, "\n"), "invalid cdc plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/cdc-plan.yaml: cdc tracked table sales.dbo.orders target_object must be table or database.table")
 }
 
 func TestValidateRepoReportsMissingCDCKeyColumnsForReviewedPlan(t *testing.T) {
@@ -2729,6 +2801,49 @@ checks:
 		t.Fatalf("ValidateRepo() valid = true, want false")
 	}
 	assertContains(t, strings.Join(report.Errors, "\n"), "invalid validation plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/validation-plan.yaml: row_count check orders-row-count target_object is required")
+}
+
+func TestValidateRepoReportsInvalidValidationPlanTargetObjectName(t *testing.T) {
+	root := t.TempDir()
+	must(t, InitRepo(root))
+	must(t, CreateCluster(root, ClusterSpec{
+		ClusterID:              "prod-sqlserver-a",
+		DisplayName:            "prod SQL Server A",
+		Listener:               "sqlserver-a.internal",
+		Port:                   1433,
+		SecretRef:              "vault://migration/prod-sqlserver-a/readonly",
+		CDCMode:                "sqlserver-cdc",
+		RetentionHoursRequired: 168,
+		Owners:                 []string{"dba-team"},
+	}))
+	must(t, CreateProject(root, ProjectSpec{
+		SourceClusterID: "prod-sqlserver-a",
+		ProjectID:       "sales-db-to-tidb-prod-a",
+		DisplayName:     "sales DB to TiDB prod A",
+		SourceDatabase:  "sales",
+		SourceSchemas:   []string{"dbo"},
+		TargetName:      "tidb-prod-a",
+		TargetDatabase:  "app",
+		TargetSecretRef: "vault://migration/tidb-prod-a/migrate-user",
+		Mode:            "short-downtime",
+		Owners:          []string{"dba-team"},
+	}))
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/validation-plan.yaml", `status: reviewed
+checks:
+  - id: orders-row-count
+    type: row_count
+    source_object: sales.dbo.orders
+    target_object: app.sales.orders
+`)
+
+	report, err := ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("ValidateRepo() valid = true, want false")
+	}
+	assertContains(t, strings.Join(report.Errors, "\n"), "invalid validation plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/validation-plan.yaml: row_count check orders-row-count target_object must be table or database.table")
 }
 
 func TestValidateRepoReportsInvalidValidationPlanBusinessSQLCheck(t *testing.T) {
@@ -5663,6 +5778,29 @@ checks:
 	assertContains(t, first.ShellCommand, "--target-predicate 'id >= 1'")
 	assertContains(t, first.ShellCommand, "--source-connection-string-env SQLSERVER_VALIDATE_DSN")
 	assertContains(t, first.ShellCommand, "--target-connection-string-env TIDB_VALIDATE_DSN")
+}
+
+func TestPrepareWorkerExecutorRejectsInvalidValidationTargetObjectName(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/validation-plan.yaml", `status: reviewed
+checks:
+  - id: orders-row-count
+    type: row_count
+    source_object: sales.dbo.orders
+    target_object: app.sales.orders
+`)
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "validation")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(validation) error = %v", err)
+	}
+	writeStageApproval(t, root, "validation", hash)
+
+	_, err = PrepareWorkerExecutor(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "validation", WorkerExecutorPrepareSpec{})
+	if err == nil {
+		t.Fatal("PrepareWorkerExecutor() error = nil, want invalid target object error")
+	}
+	assertContains(t, err.Error(), "validation row_count check orders-row-count target_object must be table or database.table")
 }
 
 func TestPrepareWorkerExecutorBuildsValidationBusinessSQLCommandsWhenApprovedHashMatches(t *testing.T) {

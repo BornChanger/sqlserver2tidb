@@ -1395,8 +1395,14 @@ func validateExportPlanContent(path string) error {
 		if strings.TrimSpace(chunk.SourceObject) == "" {
 			return fmt.Errorf("export chunk %s source_object is required", chunk.ID)
 		}
+		if err := validateSQLServerSourceObjectName("export chunk "+chunk.ID+" source_object", chunk.SourceObject); err != nil {
+			return err
+		}
 		if strings.TrimSpace(chunk.TargetObject) == "" {
 			return fmt.Errorf("export chunk %s target_object is required", chunk.ID)
+		}
+		if err := validateTiDBTargetObjectName("export chunk "+chunk.ID+" target_object", chunk.TargetObject); err != nil {
+			return err
 		}
 		if strings.TrimSpace(chunk.OutputURI) == "" {
 			return fmt.Errorf("export chunk %s output_uri is required", chunk.ID)
@@ -1556,8 +1562,14 @@ func validateValidationPlanContent(path string) error {
 			if strings.TrimSpace(check.SourceObject) == "" {
 				return fmt.Errorf("row_count check %s source_object is required", check.ID)
 			}
+			if err := validateSQLServerSourceObjectName("row_count check "+check.ID+" source_object", check.SourceObject); err != nil {
+				return err
+			}
 			if strings.TrimSpace(check.TargetObject) == "" {
 				return fmt.Errorf("row_count check %s target_object is required", check.ID)
+			}
+			if err := validateTiDBTargetObjectName("row_count check "+check.ID+" target_object", check.TargetObject); err != nil {
+				return err
 			}
 			if containsTODOMarker(check.Predicate) {
 				return fmt.Errorf("row_count check %s predicate still contains TODO", check.ID)
