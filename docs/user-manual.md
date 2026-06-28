@@ -2046,6 +2046,8 @@ bin/sqlserver2tidb-executor export \
   --output-uri https://object-store.example/migration/prod/full/dbo.orders.000001.csv
 ```
 
+导出 dry-run 会校验 `--output-uri` 是否为当前 executor 支持的 `file://`、`http://` 或 `https://` CSV 输出，并拒绝仍包含 `TODO` 的 predicate；它不会打开 SQL Server，也不会写 CSV。
+
 导出执行到本地 CSV：
 
 ```bash
@@ -2201,7 +2203,7 @@ bin/sqlserver2tidb-executor cdc \
   --apply-batch-size 1000
 ```
 
-当前 binary 默认只做参数解析、engine/source URI 兼容性校验和 dry-run 输出。`export --execute` 会连接 SQL Server，并把 CSV 写到本地 `file://` 或 HTTP(S) URL；它会在 header 尾部增加内部 `__sqlserver2tidb_null_bitmap` 列，用来保留每行 NULL 位置。它不会使用原生 S3/GCS/Azure Blob SDK，也不会生成 Parquet。`import --execute --engine sql-insert` 会连接 TiDB，并从本地 `file://` 或 HTTP(S) CSV 流式逐行插入，按 batch size 分批提交，HTTP(S) source URI 必须包含 host；如果 CSV 带内部 null bitmap 尾列，会恢复 NULL 并不把该内部列写入目标表；GitOps import job `fields` 只允许用于 `tidb-import-into`，不会传给 `sql-insert`；如果显式加 `--require-empty-target`，会先用 `COUNT(*)` 预检目标表为空。`import --execute --engine tidb-import-into` 会连接 TiDB，先用 `COUNT(*)` 预检目标表为空，再执行 `IMPORT INTO ... FROM FILE`，支持绝对本地路径、本地 `file://`、`s3://`、`gs://`，其中 S3/GCS source URI 必须包含 bucket 和对象路径，本地/file CSV 会读取 header 并跳过内部 null bitmap 尾列，远端对象存储 CSV 可通过 `--fields` 显式列名/user variable 列表跳过该尾列。它不会调用 Lightning。`validate-count --execute` 会连接 SQL Server 和 TiDB，比较单对象 `COUNT(*)`。`validate-query --execute` 会连接 SQL Server 和 TiDB，比较已 review 的单行单列标量查询结果，并在成功输出里带上 `check-id`。`cdc-lsn --execute` 会连接 SQL Server，读取 CDC max LSN，并在提供源对象时读取 capture instance min LSN。`cdc --execute` 会先校验 captured columns、key columns、LSN range 和源端/目标端连接串环境变量，然后调用 SQL Server CDC change function 并把 delete/upsert 变更写入 TiDB。`advance-cdc-checkpoint` 可以基于成功 CDC executor evidence 推进 GitHub metadata checkpoint；`prepare-cdc-range` 和 `prepare-cdc-iteration` 可以基于 checkpoint 派生下一段 plan 的 `from_lsn`。当前还没有长周期 streaming loop 或自动审批 GitHub CDC range PR。
+当前 binary 默认只做参数解析、export output URI / import engine/source URI 兼容性校验和 dry-run 输出。`export --execute` 会连接 SQL Server，并把 CSV 写到本地 `file://` 或 HTTP(S) URL；它会在 header 尾部增加内部 `__sqlserver2tidb_null_bitmap` 列，用来保留每行 NULL 位置。它不会使用原生 S3/GCS/Azure Blob SDK，也不会生成 Parquet。`import --execute --engine sql-insert` 会连接 TiDB，并从本地 `file://` 或 HTTP(S) CSV 流式逐行插入，按 batch size 分批提交，HTTP(S) source URI 必须包含 host；如果 CSV 带内部 null bitmap 尾列，会恢复 NULL 并不把该内部列写入目标表；GitOps import job `fields` 只允许用于 `tidb-import-into`，不会传给 `sql-insert`；如果显式加 `--require-empty-target`，会先用 `COUNT(*)` 预检目标表为空。`import --execute --engine tidb-import-into` 会连接 TiDB，先用 `COUNT(*)` 预检目标表为空，再执行 `IMPORT INTO ... FROM FILE`，支持绝对本地路径、本地 `file://`、`s3://`、`gs://`，其中 S3/GCS source URI 必须包含 bucket 和对象路径，本地/file CSV 会读取 header 并跳过内部 null bitmap 尾列，远端对象存储 CSV 可通过 `--fields` 显式列名/user variable 列表跳过该尾列。它不会调用 Lightning。`validate-count --execute` 会连接 SQL Server 和 TiDB，比较单对象 `COUNT(*)`。`validate-query --execute` 会连接 SQL Server 和 TiDB，比较已 review 的单行单列标量查询结果，并在成功输出里带上 `check-id`。`cdc-lsn --execute` 会连接 SQL Server，读取 CDC max LSN，并在提供源对象时读取 capture instance min LSN。`cdc --execute` 会先校验 captured columns、key columns、LSN range 和源端/目标端连接串环境变量，然后调用 SQL Server CDC change function 并把 delete/upsert 变更写入 TiDB。`advance-cdc-checkpoint` 可以基于成功 CDC executor evidence 推进 GitHub metadata checkpoint；`prepare-cdc-range` 和 `prepare-cdc-iteration` 可以基于 checkpoint 派生下一段 plan 的 `from_lsn`。当前还没有长周期 streaming loop 或自动审批 GitHub CDC range PR。
 
 ### 16.20 worker-reconcile
 

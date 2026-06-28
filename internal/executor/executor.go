@@ -454,6 +454,14 @@ func runExport(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
+	if containsTODO(*predicate) {
+		fmt.Fprintln(stderr, "executor export: predicate still contains TODO")
+		return 1
+	}
+	if _, err := parseExportOutputURI(*outputURI); err != nil {
+		fmt.Fprintf(stderr, "executor export: %v\n", err)
+		return 1
+	}
 	if *execute {
 		if err := executeSQLServerExport(context.Background(), exportExecuteSpec{
 			SourceObject:              *sourceObject,
@@ -588,7 +596,7 @@ func parseExportOutputURI(outputURI string) (exportOutputURI, error) {
 			uri:    parsed.String(),
 		}, nil
 	default:
-		return exportOutputURI{}, fmt.Errorf("only file://, http://, and https:// output URIs are supported for --execute")
+		return exportOutputURI{}, fmt.Errorf("only file://, http://, and https:// output URIs are supported for CSV export")
 	}
 }
 

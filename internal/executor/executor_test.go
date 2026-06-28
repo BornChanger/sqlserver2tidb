@@ -159,6 +159,45 @@ func TestRunExportDryRunCommand(t *testing.T) {
 	assertOutputContains(t, output, "No CSV output write will be attempted.")
 }
 
+func TestRunExportDryRunRejectsUnsupportedOutputURI(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"export",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--chunk-id", "dbo.orders.000001",
+		"--source-object", "sales.dbo.orders",
+		"--target-object", "app.orders",
+		"--output-uri", "s3://migration/prod/full/dbo.orders.000001.csv",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("export dry-run code = 0, want non-zero; stdout = %s", stdout.String())
+	}
+	assertOutputContains(t, stderr.String(), "executor export: only file://, http://, and https:// output URIs are supported for CSV export")
+}
+
+func TestRunExportDryRunRejectsTODOExportPredicate(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"export",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--chunk-id", "dbo.orders.000001",
+		"--source-object", "sales.dbo.orders",
+		"--target-object", "app.orders",
+		"--output-uri", "file:///tmp/dbo.orders.000001.csv",
+		"--predicate", "TODO: choose stable split predicate",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("export dry-run code = 0, want non-zero; stdout = %s", stdout.String())
+	}
+	assertOutputContains(t, stderr.String(), "executor export: predicate still contains TODO")
+}
+
 func TestRunImportDryRunCommand(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 
@@ -1604,7 +1643,7 @@ func TestRunExportExecuteRejectsNonFileOutputURI(t *testing.T) {
 	if code == 0 {
 		t.Fatalf("export execute code = 0, want non-zero")
 	}
-	assertOutputContains(t, stderr.String(), "executor export: only file://, http://, and https:// output URIs are supported for --execute")
+	assertOutputContains(t, stderr.String(), "executor export: only file://, http://, and https:// output URIs are supported for CSV export")
 }
 
 func TestRunExportExecuteAcceptsHTTPOutputURIBeforeConnectionStringEnv(t *testing.T) {
