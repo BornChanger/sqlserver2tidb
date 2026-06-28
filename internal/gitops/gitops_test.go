@@ -3633,6 +3633,43 @@ func TestGenerateExecutorEvidencePRDraftRejectsCommandWithoutArgs(t *testing.T) 
 	assertContains(t, err.Error(), "executor evidence command schema/tidb-ddl/dbo.orders.sql args must contain at least one argument")
 }
 
+func TestGenerateExecutorEvidencePRDraftRejectsShellCommandMismatch(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateSchemaDraftOnly(root))
+	setSchemaDiffStatus(t, root, "reviewed")
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "ddl")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(ddl) error = %v", err)
+	}
+	writeStageApproval(t, root, "ddl", hash)
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-ddl-run.json", `{
+  "stage": "ddl",
+  "status": "succeeded",
+  "project_id": "sales-db-to-tidb-prod-a",
+  "source_cluster_id": "prod-sqlserver-a",
+  "payload_hash": "`+hash+`",
+  "commands": [
+    {
+      "id": "schema/tidb-ddl/dbo.orders.sql",
+      "args": ["sqlserver2tidb-executor", "apply-ddl", "--execute"],
+      "shell_command": "sqlserver2tidb-executor apply-ddl --dry-run",
+      "exit_code": 0,
+      "started_at": "2026-01-02T03:04:05Z",
+      "completed_at": "2026-01-02T03:04:06Z",
+      "duration_ms": 1000
+    }
+  ]
+}
+`)
+
+	_, err = GenerateExecutorEvidencePRDraft(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "ddl")
+	if err == nil {
+		t.Fatal("GenerateExecutorEvidencePRDraft() expected shell command mismatch error")
+	}
+	assertContains(t, err.Error(), "executor evidence command schema/tidb-ddl/dbo.orders.sql shell_command does not match args")
+}
+
 func TestGenerateExecutorEvidencePRDraftRejectsDuplicateCommandIDs(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
@@ -5352,7 +5389,7 @@ func TestAdvanceCDCCheckpointFromExecutorEvidenceWritesCheckpointSnapshot(t *tes
         "--to-lsn",
         "0x00000027000001f40002"
       ],
-      "shell_command": "sqlserver2tidb-executor cdc --execute --source-object sales.dbo.orders --target-object app.orders --from-lsn 0x00000027000001f40001 --to-lsn 0x00000027000001f40002",
+      "shell_command": "sqlserver2tidb-executor cdc --execute --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --source-object sales.dbo.orders --target-object app.orders --from-lsn 0x00000027000001f40001 --to-lsn 0x00000027000001f40002",
       "exit_code": 0,
       "output": "applied changes: 2\n",
       "started_at": "2026-01-02T03:04:05Z",

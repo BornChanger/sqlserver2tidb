@@ -251,6 +251,10 @@ func validateExecutorEvidenceCommands(status string, commands []executorEvidence
 				return fmt.Errorf("executor evidence command %s args[%d] is required", commandID, argIndex)
 			}
 		}
+		expectedShellCommand := renderShellCommand(command.Args)
+		if command.ShellCommand != expectedShellCommand {
+			return fmt.Errorf("executor evidence command %s shell_command does not match args; want %q", commandID, expectedShellCommand)
+		}
 		startedAt, err := parseExecutorEvidenceCommandTime(commandID, "started_at", command.StartedAt)
 		if err != nil {
 			return err
