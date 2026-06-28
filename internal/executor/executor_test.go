@@ -668,6 +668,80 @@ func TestRunValidateQueryDryRunCommand(t *testing.T) {
 	assertOutputContains(t, output, "No TiDB connection will be opened.")
 }
 
+func TestRunValidateCountDryRunRejectsTODOPredicate(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"validate-count",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--source-object", "sales.dbo.orders",
+		"--target-object", "app.orders",
+		"--predicate", "TODO: choose predicate",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("validate-count dry-run code = 0, want non-zero; stdout = %s", stdout.String())
+	}
+	assertOutputContains(t, stderr.String(), "executor validate-count: predicate still contains TODO")
+}
+
+func TestRunValidateCountDryRunRejectsTODOTargetPredicate(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"validate-count",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--source-object", "sales.dbo.orders",
+		"--target-object", "app.orders",
+		"--target-predicate", "TODO: choose target predicate",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("validate-count dry-run code = 0, want non-zero; stdout = %s", stdout.String())
+	}
+	assertOutputContains(t, stderr.String(), "executor validate-count: target predicate still contains TODO")
+}
+
+func TestRunValidateQueryDryRunRejectsTODOSourceSQL(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"validate-query",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--check-id", "orders-total",
+		"--source-sql", "TODO: choose source SQL",
+		"--target-sql", "SELECT SUM(total) FROM app.orders",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("validate-query dry-run code = 0, want non-zero; stdout = %s", stdout.String())
+	}
+	assertOutputContains(t, stderr.String(), "check-id=orders-total")
+	assertOutputContains(t, stderr.String(), "source_sql still contains TODO")
+}
+
+func TestRunValidateQueryDryRunRejectsTODOTargetSQL(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"validate-query",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--check-id", "orders-total",
+		"--source-sql", "SELECT SUM(total) FROM sales.dbo.orders",
+		"--target-sql", "TODO: choose target SQL",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("validate-query dry-run code = 0, want non-zero; stdout = %s", stdout.String())
+	}
+	assertOutputContains(t, stderr.String(), "check-id=orders-total")
+	assertOutputContains(t, stderr.String(), "target_sql still contains TODO")
+}
+
 func TestRenderValidateQueryMatchedIncludesCheckID(t *testing.T) {
 	output := renderValidateQueryMatched("orders-total", validateQueryResult{
 		SourceValue: "42",

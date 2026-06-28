@@ -2143,7 +2143,7 @@ bin/sqlserver2tidb-executor validate-count \
   --target-predicate "id >= 1"
 ```
 
-也可以分别用 `--source-connection-string-env <ENV_NAME>` 和 `--target-connection-string-env <ENV_NAME>` 指定其他环境变量。执行模式会拒绝仍包含 `TODO` 的 source predicate 或 target predicate，并在源端和目标端的 `COUNT(*)` 不一致时返回非零退出码。
+也可以分别用 `--source-connection-string-env <ENV_NAME>` 和 `--target-connection-string-env <ENV_NAME>` 指定其他环境变量。dry-run 和执行模式都会拒绝仍包含 `TODO` 的 source predicate 或 target predicate；执行模式还会在源端和目标端的 `COUNT(*)` 不一致时返回非零退出码。
 
 reviewed scalar-query 校验 dry-run：
 
@@ -2170,7 +2170,7 @@ bin/sqlserver2tidb-executor validate-query \
   --target-sql "SELECT SUM(total) FROM app.orders"
 ```
 
-执行模式要求源端和目标端 SQL 都只返回一行一列。命令会把两边标量结果归一化为字符串后比较；不一致时返回非零退出码。也可以分别用 `--source-connection-string-env <ENV_NAME>` 和 `--target-connection-string-env <ENV_NAME>` 指定其他环境变量。
+dry-run 和执行模式都会拒绝仍包含 `TODO` 的 source SQL 或 target SQL。执行模式要求源端和目标端 SQL 都只返回一行一列。命令会把两边标量结果归一化为字符串后比较；不一致时返回非零退出码。也可以分别用 `--source-connection-string-env <ENV_NAME>` 和 `--target-connection-string-env <ENV_NAME>` 指定其他环境变量。
 
 读取 SQL Server CDC LSN 边界：
 

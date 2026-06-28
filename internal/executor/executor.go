@@ -903,6 +903,10 @@ func runValidateCount(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
+	if err := validateCountInputsNoTODO(*predicate, *targetPredicate); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
 	if *execute {
 		result, err := executeValidateCount(context.Background(), validateCountExecuteSpec{
 			SourceObject:              *sourceObject,
@@ -962,6 +966,10 @@ func runValidateQuery(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
+	if err := validateQueryInputsNoTODO(*sourceSQL, *targetSQL); err != nil {
+		fmt.Fprintf(stderr, "executor validate-query failed: check-id=%s error=%v\n", *checkID, err)
+		return 1
+	}
 	if *execute {
 		result, err := executeValidateQuery(context.Background(), validateQueryExecuteSpec{
 			SourceSQL:                 *sourceSQL,
@@ -1019,12 +1027,29 @@ type validateQueryResult struct {
 	TargetValue string
 }
 
-func executeValidateCount(ctx context.Context, spec validateCountExecuteSpec) (validateCountResult, error) {
-	if strings.Contains(strings.ToUpper(spec.Predicate), "TODO") {
-		return validateCountResult{}, fmt.Errorf("executor validate-count: predicate still contains TODO")
+func validateCountInputsNoTODO(predicate, targetPredicate string) error {
+	if containsTODO(predicate) {
+		return fmt.Errorf("executor validate-count: predicate still contains TODO")
 	}
-	if strings.Contains(strings.ToUpper(spec.TargetPredicate), "TODO") {
-		return validateCountResult{}, fmt.Errorf("executor validate-count: target predicate still contains TODO")
+	if containsTODO(targetPredicate) {
+		return fmt.Errorf("executor validate-count: target predicate still contains TODO")
+	}
+	return nil
+}
+
+func validateQueryInputsNoTODO(sourceSQL, targetSQL string) error {
+	if containsTODO(sourceSQL) {
+		return fmt.Errorf("executor validate-query: source_sql still contains TODO")
+	}
+	if containsTODO(targetSQL) {
+		return fmt.Errorf("executor validate-query: target_sql still contains TODO")
+	}
+	return nil
+}
+
+func executeValidateCount(ctx context.Context, spec validateCountExecuteSpec) (validateCountResult, error) {
+	if err := validateCountInputsNoTODO(spec.Predicate, spec.TargetPredicate); err != nil {
+		return validateCountResult{}, err
 	}
 
 	sourceEnvName := strings.TrimSpace(spec.SourceConnectionStringEnv)
@@ -1081,11 +1106,8 @@ func executeValidateCount(ctx context.Context, spec validateCountExecuteSpec) (v
 }
 
 func executeValidateQuery(ctx context.Context, spec validateQueryExecuteSpec) (validateQueryResult, error) {
-	if strings.Contains(strings.ToUpper(spec.SourceSQL), "TODO") {
-		return validateQueryResult{}, fmt.Errorf("executor validate-query: source_sql still contains TODO")
-	}
-	if strings.Contains(strings.ToUpper(spec.TargetSQL), "TODO") {
-		return validateQueryResult{}, fmt.Errorf("executor validate-query: target_sql still contains TODO")
+	if err := validateQueryInputsNoTODO(spec.SourceSQL, spec.TargetSQL); err != nil {
+		return validateQueryResult{}, err
 	}
 
 	sourceEnvName := strings.TrimSpace(spec.SourceConnectionStringEnv)
