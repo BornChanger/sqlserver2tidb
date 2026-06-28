@@ -1381,6 +1381,13 @@ func validateExportPlanContent(path string) error {
 	if format != "" && format != "csv" {
 		return fmt.Errorf("export format %s is not supported by sqlserver2tidb-executor; supported format: csv", format)
 	}
+	compression, err := readPlanTopLevelScalar(path, "compression")
+	if err != nil {
+		return err
+	}
+	if err := validateSupportedCompression(compression); err != nil {
+		return err
+	}
 	chunks, err := readExportPlanChunks(path)
 	if err != nil {
 		return err
@@ -1429,6 +1436,13 @@ func validateImportPlanContent(path string) error {
 		return err
 	}
 	if err := validateSupportedImportEngine(engine); err != nil {
+		return err
+	}
+	compression, err := readPlanTopLevelScalar(path, "compression")
+	if err != nil {
+		return err
+	}
+	if err := validateCompressionForImportEngine(compression, engine); err != nil {
 		return err
 	}
 	jobs, err := readImportPlanJobs(path)

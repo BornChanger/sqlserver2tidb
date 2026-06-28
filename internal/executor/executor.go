@@ -2,6 +2,7 @@ package executor
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"database/sql"
 	"encoding/csv"
@@ -33,6 +34,11 @@ const (
 	importEngineImportInto     = "import-into"
 )
 
+const (
+	compressionNone = "none"
+	compressionGzip = "gzip"
+)
+
 var csvHTTPClient = &http.Client{Timeout: 10 * time.Minute}
 
 var openMySQLDB = func(connectionString string) (*sql.DB, error) {
@@ -51,6 +57,25 @@ func normalizeImportEngine(engine string) (string, error) {
 	default:
 		return "", fmt.Errorf("executor import: import engine %s is not supported; supported engines: %s, %s", engine, importEngineSQLInsert, importEngineTiDBImportInto)
 	}
+}
+
+func normalizeCompression(compression string) (string, error) {
+	compression = strings.ToLower(strings.TrimSpace(compression))
+	switch compression {
+	case "":
+		return compressionNone, nil
+	case compressionNone, compressionGzip:
+		return compression, nil
+	default:
+		return "", fmt.Errorf("compression %s is not supported; supported compression: %s, %s", compression, compressionNone, compressionGzip)
+	}
+}
+
+func validateCompressionForImportEngine(compression, engine string) error {
+	if compression != compressionNone && engine == importEngineTiDBImportInto {
+		return fmt.Errorf("compression %s is only supported with %s import", compression, importEngineSQLInsert)
+	}
+	return nil
 }
 
 func Run(args []string, stdout, stderr io.Writer) int {
@@ -450,6 +475,7 @@ func runExport(args []string, stdout, stderr io.Writer) int {
 	targetObject := fs.String("target-object", "", "target object")
 	outputURI := fs.String("output-uri", "", "export output URI")
 	predicate := fs.String("predicate", "", "source split predicate")
+	compression := fs.String("compression", compressionNone, "export compression: none or gzip")
 	sourceConnectionStringEnv := fs.String("source-connection-string-env", defaultSourceConnectionStringEnv, "environment variable containing the SQL Server connection string")
 	execute := fs.Bool("execute", false, "perform the export")
 	if err := fs.Parse(args); err != nil {
@@ -470,6 +496,11 @@ func runExport(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "executor export: predicate still contains TODO")
 		return 1
 	}
+	normalizedCompression, err := normalizeCompression(*compression)
+	if err != nil {
+		fmt.Fprintf(stderr, "executor export: %v\n", err)
+		return 1
+	}
 	if _, err := parseExportOutputURI(*outputURI); err != nil {
 		fmt.Fprintf(stderr, "executor export: %v\n", err)
 		return 1
@@ -483,6 +514,7 @@ func runExport(args []string, stdout, stderr io.Writer) int {
 			SourceObject:              *sourceObject,
 			OutputURI:                 *outputURI,
 			Predicate:                 *predicate,
+			Compression:               normalizedCompression,
 			SourceConnectionStringEnv: *sourceConnectionStringEnv,
 		}); err != nil {
 			fmt.Fprintln(stderr, err)
@@ -500,6 +532,9 @@ func runExport(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "source object: %s\n", *sourceObject)
 	fmt.Fprintf(stdout, "target object: %s\n", *targetObject)
 	fmt.Fprintf(stdout, "output uri: %s\n", *outputURI)
+	if normalizedCompression != compressionNone {
+		fmt.Fprintf(stdout, "compression: %s\n", normalizedCompression)
+	}
 	if strings.TrimSpace(*predicate) != "" {
 		fmt.Fprintf(stdout, "predicate: %s\n", *predicate)
 	}
@@ -512,10 +547,15 @@ type exportExecuteSpec struct {
 	SourceObject              string
 	OutputURI                 string
 	Predicate                 string
+	Compression               string
 	SourceConnectionStringEnv string
 }
 
 func executeSQLServerExport(ctx context.Context, spec exportExecuteSpec) error {
+	compression, err := normalizeCompression(spec.Compression)
+	if err != nil {
+		return fmt.Errorf("executor export: %w", err)
+	}
 	if strings.Contains(strings.ToUpper(spec.Predicate), "TODO") {
 		return fmt.Errorf("executor export: predicate still contains TODO")
 	}
@@ -553,7 +593,7 @@ func executeSQLServerExport(ctx context.Context, spec exportExecuteSpec) error {
 		return fmt.Errorf("executor export: query source object %s: %w", spec.SourceObject, err)
 	}
 
-	outputWriter, err := openCSVExportOutput(ctx, output)
+	outputWriter, err := openCSVExportOutput(ctx, output, compression)
 	if err != nil {
 		rows.Close()
 		return fmt.Errorf("executor export: %w", err)
@@ -626,18 +666,57 @@ func prepareExportOutputURI(output exportOutputURI) error {
 	return nil
 }
 
-func openCSVExportOutput(ctx context.Context, output exportOutputURI) (io.WriteCloser, error) {
+func openCSVExportOutput(ctx context.Context, output exportOutputURI, compression string) (io.WriteCloser, error) {
 	switch output.scheme {
 	case "file":
 		file, err := os.Create(output.path)
 		if err != nil {
 			return nil, fmt.Errorf("create output file: %w", err)
 		}
-		return file, nil
+		return wrapCSVExportWriter(file, compression)
 	case "http", "https":
-		return newHTTPExportWriter(ctx, output.uri)
+		writer, err := newHTTPExportWriter(ctx, output.uri, compression)
+		if err != nil {
+			return nil, err
+		}
+		return wrapCSVExportWriter(writer, compression)
 	default:
 		return nil, fmt.Errorf("unsupported output URI scheme %q", output.scheme)
+	}
+}
+
+type compressedWriteCloser struct {
+	writer io.WriteCloser
+	base   io.Closer
+}
+
+func (w compressedWriteCloser) Write(p []byte) (int, error) {
+	return w.writer.Write(p)
+}
+
+func (w compressedWriteCloser) Close() error {
+	writerErr := w.writer.Close()
+	baseErr := w.base.Close()
+	return errors.Join(writerErr, baseErr)
+}
+
+func wrapCSVExportWriter(base io.WriteCloser, compression string) (io.WriteCloser, error) {
+	compression, err := normalizeCompression(compression)
+	if err != nil {
+		base.Close()
+		return nil, err
+	}
+	switch compression {
+	case compressionNone:
+		return base, nil
+	case compressionGzip:
+		return compressedWriteCloser{
+			writer: gzip.NewWriter(base),
+			base:   base,
+		}, nil
+	default:
+		base.Close()
+		return nil, fmt.Errorf("unsupported compression %q", compression)
 	}
 }
 
@@ -646,7 +725,7 @@ type httpExportWriter struct {
 	done   chan error
 }
 
-func newHTTPExportWriter(ctx context.Context, outputURI string) (*httpExportWriter, error) {
+func newHTTPExportWriter(ctx context.Context, outputURI, compression string) (*httpExportWriter, error) {
 	reader, writer := io.Pipe()
 	request, err := http.NewRequestWithContext(ctx, http.MethodPut, outputURI, reader)
 	if err != nil {
@@ -655,6 +734,9 @@ func newHTTPExportWriter(ctx context.Context, outputURI string) (*httpExportWrit
 		return nil, fmt.Errorf("create CSV output request: %w", err)
 	}
 	request.Header.Set("Content-Type", "text/csv")
+	if compression == compressionGzip {
+		request.Header.Set("Content-Encoding", "gzip")
+	}
 
 	done := make(chan error, 1)
 	go func() {
@@ -801,6 +883,7 @@ func runImport(args []string, stdout, stderr io.Writer) int {
 	importBatchSize := fs.Int("import-batch-size", 1000, "rows to commit per import transaction")
 	fieldsRaw := fs.String("fields", "", "comma-separated TiDB IMPORT INTO field list")
 	requireEmptyTarget := fs.Bool("require-empty-target", false, "preflight that the target table is empty before sql-insert import")
+	compression := fs.String("compression", compressionNone, "import source compression: none or gzip")
 	execute := fs.Bool("execute", false, "perform the import")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -818,6 +901,15 @@ func runImport(args []string, stdout, stderr io.Writer) int {
 	normalizedEngine, err := normalizeImportEngine(*engine)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	normalizedCompression, err := normalizeCompression(*compression)
+	if err != nil {
+		fmt.Fprintf(stderr, "executor import: %v\n", err)
+		return 1
+	}
+	if err := validateCompressionForImportEngine(normalizedCompression, normalizedEngine); err != nil {
+		fmt.Fprintf(stderr, "executor import: %v\n", err)
 		return 1
 	}
 	fields, err := parseImportFields(*fieldsRaw)
@@ -856,6 +948,7 @@ func runImport(args []string, stdout, stderr io.Writer) int {
 			ImportBatchSize:           *importBatchSize,
 			Fields:                    fields,
 			RequireEmptyTarget:        *requireEmptyTarget,
+			Compression:               normalizedCompression,
 		}); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
@@ -872,6 +965,9 @@ func runImport(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "engine: %s\n", normalizedEngine)
 	fmt.Fprintf(stdout, "target object: %s\n", *targetObject)
 	fmt.Fprintf(stdout, "source uri: %s\n", *sourceURI)
+	if normalizedCompression != compressionNone {
+		fmt.Fprintf(stdout, "compression: %s\n", normalizedCompression)
+	}
 	if len(fields) > 0 {
 		fmt.Fprintf(stdout, "fields: %s\n", strings.Join(fields, ","))
 	}
@@ -1236,12 +1332,20 @@ type importExecuteSpec struct {
 	ImportBatchSize           int
 	Fields                    []string
 	RequireEmptyTarget        bool
+	Compression               string
 }
 
 func executeTiDBImport(ctx context.Context, spec importExecuteSpec) error {
 	engine, err := normalizeImportEngine(spec.ImportEngine)
 	if err != nil {
 		return err
+	}
+	compression, err := normalizeCompression(spec.Compression)
+	if err != nil {
+		return fmt.Errorf("executor import: %w", err)
+	}
+	if err := validateCompressionForImportEngine(compression, engine); err != nil {
+		return fmt.Errorf("executor import: %w", err)
 	}
 	if engine == importEngineTiDBImportInto {
 		return executeTiDBImportInto(ctx, spec)
@@ -1280,6 +1384,12 @@ func executeTiDBImport(ctx context.Context, spec importExecuteSpec) error {
 	if err != nil {
 		return fmt.Errorf("executor import: %w", err)
 	}
+	rawSourceReader := sourceReader
+	sourceReader, err = wrapCSVImportReader(rawSourceReader, compression)
+	if err != nil {
+		rawSourceReader.Close()
+		return fmt.Errorf("executor import: %w", err)
+	}
 	defer sourceReader.Close()
 
 	reader, err := newCSVImportReader(sourceReader)
@@ -1295,6 +1405,13 @@ func executeTiDBImport(ctx context.Context, spec importExecuteSpec) error {
 }
 
 func executeTiDBImportInto(ctx context.Context, spec importExecuteSpec) error {
+	compression, err := normalizeCompression(spec.Compression)
+	if err != nil {
+		return fmt.Errorf("executor import: %w", err)
+	}
+	if err := validateCompressionForImportEngine(compression, importEngineTiDBImportInto); err != nil {
+		return fmt.Errorf("executor import: %w", err)
+	}
 	fields := spec.Fields
 	if err := requireTiDBImportIntoFieldsForRemoteSource(spec.SourceURI, fields); err != nil {
 		return fmt.Errorf("executor import: %w", err)
@@ -1337,11 +1454,24 @@ func executeTiDBImportInto(ctx context.Context, spec importExecuteSpec) error {
 }
 
 func openCSVImportFile(sourceURI string) (io.ReadCloser, error) {
+	return openCSVImportFileWithCompression(sourceURI, compressionNone)
+}
+
+func openCSVImportFileWithCompression(sourceURI, compression string) (io.ReadCloser, error) {
 	source, err := parseImportSourceURI(sourceURI)
 	if err != nil {
 		return nil, err
 	}
-	return openParsedCSVImportSource(context.Background(), source)
+	reader, err := openParsedCSVImportSource(context.Background(), source)
+	if err != nil {
+		return nil, err
+	}
+	wrapped, err := wrapCSVImportReader(reader, compression)
+	if err != nil {
+		reader.Close()
+		return nil, err
+	}
+	return wrapped, nil
 }
 
 type importSourceURI struct {
@@ -1416,6 +1546,45 @@ func openParsedCSVImportSource(ctx context.Context, source importSourceURI) (io.
 		return response.Body, nil
 	default:
 		return nil, fmt.Errorf("unsupported source URI scheme %q", source.scheme)
+	}
+}
+
+type compressedReadCloser struct {
+	reader io.Reader
+	closer io.Closer
+	base   io.Closer
+}
+
+func (r compressedReadCloser) Read(p []byte) (int, error) {
+	return r.reader.Read(p)
+}
+
+func (r compressedReadCloser) Close() error {
+	closeErr := r.closer.Close()
+	baseErr := r.base.Close()
+	return errors.Join(closeErr, baseErr)
+}
+
+func wrapCSVImportReader(base io.ReadCloser, compression string) (io.ReadCloser, error) {
+	compression, err := normalizeCompression(compression)
+	if err != nil {
+		return nil, err
+	}
+	switch compression {
+	case compressionNone:
+		return base, nil
+	case compressionGzip:
+		gzipReader, err := gzip.NewReader(base)
+		if err != nil {
+			return nil, fmt.Errorf("open gzip CSV source: %w", err)
+		}
+		return compressedReadCloser{
+			reader: gzipReader,
+			closer: gzipReader,
+			base:   base,
+		}, nil
+	default:
+		return nil, fmt.Errorf("unsupported compression %q", compression)
 	}
 }
 

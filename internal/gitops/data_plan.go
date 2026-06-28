@@ -15,6 +15,7 @@ type DataMovementPlanSpec struct {
 	ChunkSizeRows   int64
 	ExportFormat    string
 	ImportEngine    string
+	Compression     string
 }
 
 type DataMovementPlanResult struct {
@@ -64,6 +65,9 @@ func GenerateDataMovementPlans(root, sourceClusterID, projectID string, spec Dat
 		return DataMovementPlanResult{}, fmt.Errorf("export format %s is not supported by sqlserver2tidb-executor; supported format: csv", spec.ExportFormat)
 	}
 	if err := validateSupportedImportEngine(spec.ImportEngine); err != nil {
+		return DataMovementPlanResult{}, err
+	}
+	if err := validateCompressionForImportEngine(spec.Compression, spec.ImportEngine); err != nil {
 		return DataMovementPlanResult{}, err
 	}
 	if err := validateExecutableObjectURIPrefix(spec.ObjectURIPrefix, spec.ImportEngine); err != nil {
@@ -151,6 +155,7 @@ func normalizeDataMovementPlanSpec(spec DataMovementPlanSpec) DataMovementPlanSp
 		spec.ExportFormat = "csv"
 	}
 	spec.ImportEngine = normalizeImportEngine(spec.ImportEngine)
+	spec.Compression = normalizeCompression(spec.Compression)
 	return spec
 }
 
@@ -432,6 +437,7 @@ func buildDataExportTablePlan(project projectMetadata, databaseName, schemaName 
 	chunkCount := chunkCountForRows(table.RowCount, spec.ChunkSizeRows)
 	chunkPrefix := safeSQLFileName(joinObject(schemaName, table.Name))
 	outputPrefix := strings.TrimRight(spec.ObjectURIPrefix, "/")
+	outputExtension := compressedExportFileExtension(spec.ExportFormat, spec.Compression)
 	for i := int64(1); i <= chunkCount; i++ {
 		chunkID := fmt.Sprintf("%s.%06d", chunkPrefix, i)
 		predicate := "1 = 1"
@@ -442,7 +448,7 @@ func buildDataExportTablePlan(project projectMetadata, databaseName, schemaName 
 			ID:            chunkID,
 			EstimatedRows: estimatedRowsForChunk(table.RowCount, spec.ChunkSizeRows, i),
 			Predicate:     predicate,
-			OutputURI:     fmt.Sprintf("%s/%s.%s", outputPrefix, chunkID, spec.ExportFormat),
+			OutputURI:     fmt.Sprintf("%s/%s.%s", outputPrefix, chunkID, outputExtension),
 		})
 	}
 	return tablePlan
@@ -484,6 +490,9 @@ func renderExportPlanYAML(sourceClusterID, projectID string, spec DataMovementPl
 	fmt.Fprintf(&b, "project_id: %s\n", projectID)
 	fmt.Fprintf(&b, "source_cluster_id: %s\n", sourceClusterID)
 	fmt.Fprintf(&b, "format: %s\n", spec.ExportFormat)
+	if spec.Compression != "" && spec.Compression != compressionNone {
+		fmt.Fprintf(&b, "compression: %s\n", spec.Compression)
+	}
 	fmt.Fprintf(&b, "object_uri_prefix: %s\n", spec.ObjectURIPrefix)
 	fmt.Fprintf(&b, "chunk_size_rows: %d\n", spec.ChunkSizeRows)
 	if len(tables) == 0 {
@@ -512,6 +521,9 @@ func renderImportPlanYAML(sourceClusterID, projectID string, spec DataMovementPl
 	fmt.Fprintf(&b, "project_id: %s\n", projectID)
 	fmt.Fprintf(&b, "source_cluster_id: %s\n", sourceClusterID)
 	fmt.Fprintf(&b, "engine: %s\n", spec.ImportEngine)
+	if spec.Compression != "" && spec.Compression != compressionNone {
+		fmt.Fprintf(&b, "compression: %s\n", spec.Compression)
+	}
 	b.WriteString("mode: append\n")
 	if len(jobs) == 0 {
 		b.WriteString("jobs: []\n")

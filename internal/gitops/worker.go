@@ -307,7 +307,15 @@ func runDataWorker(root, sourceClusterID, projectID, stage string) (DataWorkerRe
 	}
 	switch stage {
 	case "export":
-		chunks, err := readExportPlanChunks(filepath.Join(projectDir, "plan", "export-plan.yaml"))
+		planPath := filepath.Join(projectDir, "plan", "export-plan.yaml")
+		compression, err := readPlanTopLevelScalar(planPath, "compression")
+		if err != nil {
+			return DataWorkerResult{}, err
+		}
+		if err := validateSupportedCompression(compression); err != nil {
+			return DataWorkerResult{}, err
+		}
+		chunks, err := readExportPlanChunks(planPath)
 		if err != nil {
 			return DataWorkerResult{}, err
 		}
@@ -331,6 +339,13 @@ func runDataWorker(root, sourceClusterID, projectID, stage string) (DataWorkerRe
 		}
 		engine = normalizeImportEngine(engine)
 		if err := validateSupportedImportEngine(engine); err != nil {
+			return DataWorkerResult{}, err
+		}
+		compression, err := readPlanTopLevelScalar(planPath, "compression")
+		if err != nil {
+			return DataWorkerResult{}, err
+		}
+		if err := validateCompressionForImportEngine(compression, engine); err != nil {
 			return DataWorkerResult{}, err
 		}
 		jobs, err := readImportPlanJobs(planPath)

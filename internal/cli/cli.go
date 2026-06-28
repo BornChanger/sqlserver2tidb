@@ -344,6 +344,7 @@ func runGenerateDataPlans(args []string, stdout, stderr io.Writer) int {
 	chunkSizeRows := fs.Int64("chunk-size-rows", 1000000, "estimated rows per export chunk")
 	exportFormat := fs.String("export-format", "csv", "export file format")
 	importEngine := fs.String("import-engine", "sql-insert", "TiDB import engine")
+	compression := fs.String("compression", "none", "export/import compression: none or gzip")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -352,6 +353,7 @@ func runGenerateDataPlans(args []string, stdout, stderr io.Writer) int {
 		ChunkSizeRows:   *chunkSizeRows,
 		ExportFormat:    *exportFormat,
 		ImportEngine:    *importEngine,
+		Compression:     *compression,
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "generate data plans: %v\n", err)
@@ -1551,7 +1553,7 @@ Usage:
   sqlserver2tidb discover-sqlserver --root . --source-cluster-id prod-sqlserver-a --connection-string-env SQLSERVER2TIDB_SQLSERVER_DSN
   sqlserver2tidb analyze-compatibility --root . --source-cluster-id prod-sqlserver-a
   sqlserver2tidb generate-schema-draft --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
-  sqlserver2tidb generate-data-plans --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --object-uri-prefix https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full
+  sqlserver2tidb generate-data-plans --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --object-uri-prefix https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full --compression gzip
   sqlserver2tidb generate-cdc-plan --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
   sqlserver2tidb prepare-cdc-range --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --to-lsn 0x00000027000001f40003
   sqlserver2tidb prepare-cdc-iteration --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --max-lsn 0x00000027000001f40004 --pr-draft

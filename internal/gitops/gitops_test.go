@@ -38,8 +38,11 @@ func TestInitRepoCreatesGlobalStructure(t *testing.T) {
 	assertContains(t, policyYAML, "cdc_plan: global/schemas/cdc-plan.schema.json")
 	assertContains(t, policyYAML, "validation_plan: global/schemas/validation-plan.schema.json")
 
+	exportSchema := readFile(t, root, "global/schemas/export-plan.schema.json")
+	assertContains(t, exportSchema, `"compression": {"enum": ["none", "gzip"]}`)
 	importSchema := readFile(t, root, "global/schemas/import-plan.schema.json")
 	assertContains(t, importSchema, `"engine": {"enum": ["sql-insert", "tidb-import-into", "import-into"]}`)
+	assertContains(t, importSchema, `"compression": {"enum": ["none", "gzip"]}`)
 	assertContains(t, importSchema, `"fields": {`)
 }
 
@@ -2371,6 +2374,32 @@ tables:
 	assertContains(t, strings.Join(report.Errors, "\n"), "invalid export plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/export-plan.yaml: export format parquet is not supported by sqlserver2tidb-executor")
 }
 
+func TestValidateRepoReportsUnsupportedExportCompression(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/export-plan.yaml", `status: reviewed
+format: csv
+compression: zstd
+tables:
+  - source_object: sales.dbo.orders
+    target_object: app.orders
+    chunks:
+      - id: dbo.orders.000001
+        estimated_rows: 10
+        predicate: id >= 1 and id < 11
+        output_uri: file:///tmp/dbo.orders.000001.csv.zst
+`)
+
+	report, err := ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("ValidateRepo() valid = true, want false")
+	}
+	assertContains(t, strings.Join(report.Errors, "\n"), "invalid export plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/export-plan.yaml: compression zstd is not supported")
+}
+
 func TestValidateRepoReportsInvalidImportPlanContent(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
@@ -2411,6 +2440,29 @@ jobs:
 		t.Fatalf("ValidateRepo() valid = true, want false")
 	}
 	assertContains(t, strings.Join(report.Errors, "\n"), "invalid import plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml: import engine lightning is not supported by sqlserver2tidb-executor")
+}
+
+func TestValidateRepoReportsUnsupportedImportCompression(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml", `status: reviewed
+engine: sql-insert
+compression: zstd
+jobs:
+  - id: import-dbo.orders.000001
+    target_object: app.orders
+    source_uri: file:///tmp/dbo.orders.000001.csv.zst
+    depends_on_export_chunk: dbo.orders.000001
+`)
+
+	report, err := ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("ValidateRepo() valid = true, want false")
+	}
+	assertContains(t, strings.Join(report.Errors, "\n"), "invalid import plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml: compression zstd is not supported")
 }
 
 func TestValidateRepoReportsSQLInsertImportJobFields(t *testing.T) {
@@ -4387,6 +4439,33 @@ func TestGenerateDataMovementPlansWritesExportAndImportPlans(t *testing.T) {
 	assertContains(t, importPlan, "depends_on_export_chunk: dbo.orders.000003")
 }
 
+func TestGenerateDataMovementPlansSupportsGzipCompression(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+
+	result, err := GenerateDataMovementPlans(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", DataMovementPlanSpec{
+		ObjectURIPrefix: "https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full",
+		ChunkSizeRows:   1000000,
+		ExportFormat:    "csv",
+		ImportEngine:    "sql-insert",
+		Compression:     "gzip",
+	})
+	if err != nil {
+		t.Fatalf("GenerateDataMovementPlans() error = %v", err)
+	}
+	if result.ExportChunks != 3 || result.ImportJobs != 3 {
+		t.Fatalf("GenerateDataMovementPlans() result = %+v, want 3 chunks and 3 jobs", result)
+	}
+
+	exportPlan := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/export-plan.yaml")
+	assertContains(t, exportPlan, "compression: gzip")
+	assertContains(t, exportPlan, "output_uri: https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full/dbo.orders.000001.csv.gz")
+
+	importPlan := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml")
+	assertContains(t, importPlan, "compression: gzip")
+	assertContains(t, importPlan, "source_uri: https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full/dbo.orders.000001.csv.gz")
+}
+
 func TestGenerateDataMovementPlansUsesTrivialPredicateForSingleChunkTable(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, `{
@@ -4478,6 +4557,23 @@ func TestGenerateDataMovementPlansRejectsUnsupportedExportFormat(t *testing.T) {
 	assertContains(t, err.Error(), "export format parquet is not supported by sqlserver2tidb-executor")
 }
 
+func TestGenerateDataMovementPlansRejectsUnsupportedCompression(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, `{"status":"discovered","databases":[]}`)
+
+	_, err := GenerateDataMovementPlans(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", DataMovementPlanSpec{
+		ObjectURIPrefix: "https://object-store.example/migration/prod/full",
+		ChunkSizeRows:   1000000,
+		ExportFormat:    "csv",
+		ImportEngine:    "sql-insert",
+		Compression:     "zstd",
+	})
+	if err == nil {
+		t.Fatal("GenerateDataMovementPlans() expected unsupported compression error")
+	}
+	assertContains(t, err.Error(), "compression zstd is not supported")
+}
+
 func TestGenerateDataMovementPlansRejectsUnsupportedImportEngine(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, `{"status":"discovered","databases":[]}`)
@@ -4514,6 +4610,23 @@ func TestGenerateDataMovementPlansSupportsTiDBImportIntoEngine(t *testing.T) {
 	assertContains(t, importPlan, "engine: tidb-import-into")
 	assertContains(t, importPlan, "source_uri: file:///tmp/sqlserver2tidb/full/dbo.orders.000001.csv")
 	assertContains(t, importPlan, "fields:\n      - \"id\"\n      - \"customer_name\"\n      - \"@sqlserver2tidb_null_bitmap\"")
+}
+
+func TestGenerateDataMovementPlansRejectsGzipCompressionForTiDBImportIntoEngine(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+
+	_, err := GenerateDataMovementPlans(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", DataMovementPlanSpec{
+		ObjectURIPrefix: "file:///tmp/sqlserver2tidb/full",
+		ChunkSizeRows:   1000000,
+		ExportFormat:    "csv",
+		ImportEngine:    "tidb-import-into",
+		Compression:     "gzip",
+	})
+	if err == nil {
+		t.Fatal("GenerateDataMovementPlans() expected gzip import-into error")
+	}
+	assertContains(t, err.Error(), "compression gzip is only supported with sql-insert import")
 }
 
 func TestGenerateDataMovementPlansRejectsHTTPPrefixForTiDBImportIntoEngine(t *testing.T) {
@@ -5061,6 +5174,38 @@ func TestPrepareWorkerExecutorBuildsExportCommandsWhenApprovedHashMatches(t *tes
 	assertContains(t, first.ShellCommand, "--output-uri https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full/dbo.orders.000001.csv")
 }
 
+func TestPrepareWorkerExecutorPassesExportGzipCompression(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	_, err := GenerateDataMovementPlans(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", DataMovementPlanSpec{
+		ObjectURIPrefix: "https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full",
+		ChunkSizeRows:   1000000,
+		ExportFormat:    "csv",
+		ImportEngine:    "sql-insert",
+		Compression:     "gzip",
+	})
+	if err != nil {
+		t.Fatalf("GenerateDataMovementPlans() error = %v", err)
+	}
+	reviewExportPlanPredicates(t, root)
+	setReviewPlanStatus(t, root, "export", "reviewed")
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(export) error = %v", err)
+	}
+	writeStageApproval(t, root, "export", hash)
+
+	spec, err := PrepareWorkerExecutor(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export", WorkerExecutorPrepareSpec{})
+	if err != nil {
+		t.Fatalf("PrepareWorkerExecutor() error = %v", err)
+	}
+	if len(spec.Commands) == 0 {
+		t.Fatal("Commands is empty")
+	}
+	assertContains(t, spec.Commands[0].ShellCommand, "--compression gzip")
+	assertContains(t, spec.Commands[0].ShellCommand, "--output-uri https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full/dbo.orders.000001.csv.gz")
+}
+
 func TestPrepareWorkerExecutorRejectsUnsupportedExportFormat(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
@@ -5192,6 +5337,38 @@ func TestPrepareWorkerExecutorBuildsImportCommandsWhenApprovedHashMatches(t *tes
 	assertContains(t, first.ShellCommand, "--target-object app.orders")
 	assertContains(t, first.ShellCommand, "--source-uri https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full/dbo.orders.000001.csv")
 	assertContains(t, first.ShellCommand, "--depends-on-export-chunk dbo.orders.000001")
+}
+
+func TestPrepareWorkerExecutorPassesImportGzipCompression(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateSchemaDraftOnly(root))
+	_, err := GenerateDataMovementPlans(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", DataMovementPlanSpec{
+		ObjectURIPrefix: "https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full",
+		ChunkSizeRows:   1000000,
+		ExportFormat:    "csv",
+		ImportEngine:    "sql-insert",
+		Compression:     "gzip",
+	})
+	if err != nil {
+		t.Fatalf("GenerateDataMovementPlans() error = %v", err)
+	}
+	setReviewPlanStatus(t, root, "import", "reviewed")
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(import) error = %v", err)
+	}
+	writeStageApproval(t, root, "import", hash)
+
+	spec, err := PrepareWorkerExecutor(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import", WorkerExecutorPrepareSpec{})
+	if err != nil {
+		t.Fatalf("PrepareWorkerExecutor() error = %v", err)
+	}
+	if len(spec.Commands) == 0 {
+		t.Fatal("Commands is empty")
+	}
+	assertContains(t, spec.Commands[0].ShellCommand, "--compression gzip")
+	assertContains(t, spec.Commands[0].ShellCommand, "--source-uri https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full/dbo.orders.000001.csv.gz")
 }
 
 func TestPrepareWorkerExecutorBuildsTiDBImportIntoCommandsWhenApprovedHashMatches(t *testing.T) {

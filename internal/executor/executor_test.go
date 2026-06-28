@@ -2,6 +2,7 @@ package executor
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"database/sql"
 	"database/sql/driver"
@@ -159,6 +160,46 @@ func TestRunExportDryRunCommand(t *testing.T) {
 	assertOutputContains(t, output, "No CSV output write will be attempted.")
 }
 
+func TestRunExportDryRunAcceptsGzipCompression(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"export",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--chunk-id", "dbo.orders.000001",
+		"--source-object", "sales.dbo.orders",
+		"--target-object", "app.orders",
+		"--output-uri", "file:///tmp/dbo.orders.000001.csv.gz",
+		"--compression", "gzip",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("export code = %d, stderr = %s", code, stderr.String())
+	}
+	assertOutputContains(t, stdout.String(), "compression: gzip")
+}
+
+func TestRunExportDryRunRejectsUnsupportedCompression(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"export",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--chunk-id", "dbo.orders.000001",
+		"--source-object", "sales.dbo.orders",
+		"--target-object", "app.orders",
+		"--output-uri", "file:///tmp/dbo.orders.000001.csv.zst",
+		"--compression", "zstd",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("export dry-run code = 0, want non-zero; stdout = %s", stdout.String())
+	}
+	assertOutputContains(t, stderr.String(), "executor export: compression zstd is not supported")
+}
+
 func TestRunExportDryRunRejectsUnsupportedOutputURI(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 
@@ -240,6 +281,47 @@ func TestRunImportDryRunCommand(t *testing.T) {
 	assertOutputContains(t, output, "source uri: https://object-store.example/migration/prod/full/dbo.orders.000001.csv")
 	assertOutputContains(t, output, "depends on export chunk: dbo.orders.000001")
 	assertOutputContains(t, output, "No TiDB connection will be opened.")
+}
+
+func TestRunImportDryRunAcceptsGzipCompression(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"import",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--job-id", "import-dbo.orders.000001",
+		"--target-object", "app.orders",
+		"--source-uri", "file:///tmp/dbo.orders.000001.csv.gz",
+		"--depends-on-export-chunk", "dbo.orders.000001",
+		"--compression", "gzip",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("import code = %d, stderr = %s", code, stderr.String())
+	}
+	assertOutputContains(t, stdout.String(), "compression: gzip")
+}
+
+func TestRunImportDryRunRejectsTiDBImportIntoGzipCompression(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"import",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--job-id", "import-dbo.orders.000001",
+		"--engine", "tidb-import-into",
+		"--target-object", "app.orders",
+		"--source-uri", "file:///tmp/dbo.orders.000001.csv.gz",
+		"--depends-on-export-chunk", "dbo.orders.000001",
+		"--compression", "gzip",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("import dry-run code = 0, want non-zero; stdout = %s", stdout.String())
+	}
+	assertOutputContains(t, stderr.String(), "executor import: compression gzip is only supported with sql-insert import")
 }
 
 func TestRunImportDryRunRejectsUnsupportedSQLInsertSourceURI(t *testing.T) {
@@ -1106,6 +1188,44 @@ func TestReadCSVImportFile(t *testing.T) {
 	}
 	if records[1][0] != "2" || records[1][1] != "" {
 		t.Fatalf("records[1] = %v, want [2 \"\"]", records[1])
+	}
+}
+
+func TestReadCSVImportGzipFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "orders.csv.gz")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create gzip fixture: %v", err)
+	}
+	gzipWriter := gzip.NewWriter(file)
+	if _, err := gzipWriter.Write([]byte("id,name\n1,Ada\n2,Lin\n")); err != nil {
+		t.Fatalf("write gzip fixture: %v", err)
+	}
+	if err := gzipWriter.Close(); err != nil {
+		t.Fatalf("close gzip writer: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close gzip file: %v", err)
+	}
+
+	source, err := openCSVImportFileWithCompression("file://"+path, "gzip")
+	if err != nil {
+		t.Fatalf("openCSVImportFileWithCompression() error = %v", err)
+	}
+	defer source.Close()
+
+	columns, records, err := readCSVImportRecords(source)
+	if err != nil {
+		t.Fatalf("readCSVImportRecords() error = %v", err)
+	}
+	if strings.Join(columns, ",") != "id,name" {
+		t.Fatalf("columns = %v, want [id name]", columns)
+	}
+	if len(records) != 2 {
+		t.Fatalf("records len = %d, want 2", len(records))
+	}
+	if records[1][0] != "2" || records[1][1] != "Lin" {
+		t.Fatalf("records[1] = %v, want [2 Lin]", records[1])
 	}
 }
 
@@ -2019,7 +2139,7 @@ func TestWriteCSVExportRowsHTTPOutput(t *testing.T) {
 	output, err := openCSVExportOutput(context.Background(), exportOutputURI{
 		scheme: "http",
 		uri:    server.URL + "/dbo.orders.000001.csv",
-	})
+	}, compressionNone)
 	if err != nil {
 		t.Fatalf("openCSVExportOutput() error = %v", err)
 	}
@@ -2050,6 +2170,60 @@ func TestWriteCSVExportRowsHTTPOutput(t *testing.T) {
 	}
 	if !rows.closed {
 		t.Fatalf("rows closed = false, want true")
+	}
+}
+
+func TestWriteCSVExportRowsHTTPGzipOutput(t *testing.T) {
+	var contentEncoding string
+	var body bytes.Buffer
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		contentEncoding = r.Header.Get("Content-Encoding")
+		if _, err := io.Copy(&body, r.Body); err != nil {
+			t.Fatalf("read request body: %v", err)
+		}
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+
+	output, err := openCSVExportOutput(context.Background(), exportOutputURI{
+		scheme: "http",
+		uri:    server.URL + "/dbo.orders.000001.csv.gz",
+	}, compressionGzip)
+	if err != nil {
+		t.Fatalf("openCSVExportOutput() error = %v", err)
+	}
+	rows := &fakeExportRows{
+		columns: []string{"id", "name"},
+		values: [][]any{
+			{int64(1), "Ada"},
+			{int64(2), nil},
+		},
+	}
+
+	if err := writeCSVExportRows(output, rows); err != nil {
+		t.Fatalf("writeCSVExportRows() error = %v", err)
+	}
+	if err := output.Close(); err != nil {
+		t.Fatalf("output.Close() error = %v", err)
+	}
+
+	if contentEncoding != "gzip" {
+		t.Fatalf("Content-Encoding = %q, want gzip", contentEncoding)
+	}
+	gzipReader, err := gzip.NewReader(bytes.NewReader(body.Bytes()))
+	if err != nil {
+		t.Fatalf("open gzip HTTP body: %v", err)
+	}
+	decompressed, err := io.ReadAll(gzipReader)
+	if err != nil {
+		t.Fatalf("read gzip HTTP body: %v", err)
+	}
+	if err := gzipReader.Close(); err != nil {
+		t.Fatalf("close gzip reader: %v", err)
+	}
+	want := "id,name,__sqlserver2tidb_null_bitmap\n1,Ada,00\n2,,01\n"
+	if string(decompressed) != want {
+		t.Fatalf("decompressed HTTP body = %q, want %q", string(decompressed), want)
 	}
 }
 

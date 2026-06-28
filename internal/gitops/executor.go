@@ -154,6 +154,14 @@ func prepareExportExecutorCommands(projectDir, binary, sourceClusterID, projectI
 	if format != "" && format != "csv" {
 		return nil, fmt.Errorf("export format %s is not supported by sqlserver2tidb-executor; supported format: csv", format)
 	}
+	compression, err := readPlanTopLevelScalar(planPath, "compression")
+	if err != nil {
+		return nil, err
+	}
+	compression = normalizeCompression(compression)
+	if err := validateSupportedCompression(compression); err != nil {
+		return nil, err
+	}
 	chunks, err := readExportPlanChunks(planPath)
 	if err != nil {
 		return nil, err
@@ -180,6 +188,9 @@ func prepareExportExecutorCommands(projectDir, binary, sourceClusterID, projectI
 		if chunk.Predicate != "" {
 			args = append(args, "--predicate", chunk.Predicate)
 		}
+		if compression != compressionNone {
+			args = append(args, "--compression", compression)
+		}
 		if sourceConnectionStringEnv != "" {
 			args = append(args, "--source-connection-string-env", sourceConnectionStringEnv)
 		}
@@ -196,6 +207,14 @@ func prepareImportExecutorCommands(projectDir, binary, sourceClusterID, projectI
 	}
 	engine = normalizeImportEngine(engine)
 	if err := validateSupportedImportEngine(engine); err != nil {
+		return nil, err
+	}
+	compression, err := readPlanTopLevelScalar(planPath, "compression")
+	if err != nil {
+		return nil, err
+	}
+	compression = normalizeCompression(compression)
+	if err := validateCompressionForImportEngine(compression, engine); err != nil {
 		return nil, err
 	}
 	jobs, err := readImportPlanJobs(planPath)
@@ -227,6 +246,9 @@ func prepareImportExecutorCommands(projectDir, binary, sourceClusterID, projectI
 		}
 		if targetConnectionStringEnv != "" {
 			args = append(args, "--target-connection-string-env", targetConnectionStringEnv)
+		}
+		if compression != compressionNone {
+			args = append(args, "--compression", compression)
 		}
 		if spec.ImportBatchSize > 0 {
 			args = append(args, "--import-batch-size", strconv.Itoa(spec.ImportBatchSize))

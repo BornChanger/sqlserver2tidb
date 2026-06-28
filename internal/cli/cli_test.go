@@ -530,6 +530,7 @@ func TestRunGenerateDataPlansCommand(t *testing.T) {
 		"--chunk-size-rows", "1000000",
 		"--export-format", "csv",
 		"--import-engine", "sql-insert",
+		"--compression", "gzip",
 	}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("generate-data-plans code = %d, stderr = %s", code, stderr.String())
@@ -546,6 +547,10 @@ func TestRunGenerateDataPlansCommand(t *testing.T) {
 	}
 	assertExists(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/export-plan.yaml")
 	assertExists(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml")
+	gzipExportPlan := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/export-plan.yaml")
+	if !strings.Contains(gzipExportPlan, "compression: gzip") || !strings.Contains(gzipExportPlan, ".csv.gz") {
+		t.Fatalf("export plan = %q, want gzip compression and .csv.gz object names", gzipExportPlan)
+	}
 
 	stdout.Reset()
 	stderr.Reset()

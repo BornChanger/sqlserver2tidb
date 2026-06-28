@@ -834,7 +834,8 @@ bin/sqlserver2tidb generate-data-plans \
   --object-uri-prefix https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full \
   --chunk-size-rows 1000000 \
   --export-format csv \
-  --import-engine sql-insert
+  --import-engine sql-insert \
+  --compression gzip
 ```
 
 输入：
@@ -845,6 +846,7 @@ bin/sqlserver2tidb generate-data-plans \
 - `--chunk-size-rows`
 - `--export-format`
 - `--import-engine`
+- `--compression`
 
 输出：
 
@@ -856,7 +858,7 @@ bin/sqlserver2tidb generate-data-plans \
 - 只处理 `project.yaml` 中指定的 source database 和 source schemas。
 - 根据 inventory 中的 `row_count` 和 `--chunk-size-rows` 估算 export chunk 数。
 - 为每个 export chunk 生成对应 import job。
-- 只生成当前内置 executor 支持的计划：`--export-format csv`；默认 `--import-engine sql-insert` 支持本地 `file://`、`http://`、`https://` URI 前缀，HTTP(S) 前缀必须包含 host；显式 `--import-engine tidb-import-into` 支持本地绝对 `file://`、`s3://`、`gs://` URI 前缀，S3/GCS 前缀必须包含 bucket，并会在每个 import job 写入从 inventory 列名生成的 `fields` 列表。
+- 只生成当前内置 executor 支持的计划：`--export-format csv`；默认 `--import-engine sql-insert` 支持本地 `file://`、`http://`、`https://` URI 前缀，HTTP(S) 前缀必须包含 host；`--compression gzip` 会在 export/import plan 写入 `compression: gzip` 并生成 `.csv.gz` 对象名，worker-executor 会把它透传给 executor；显式 `--import-engine tidb-import-into` 支持本地绝对 `file://`、`s3://`、`gs://` URI 前缀，S3/GCS 前缀必须包含 bucket，并会在每个 import job 写入从 inventory 列名生成的 `fields` 列表，但当前不支持与 `--compression gzip` 组合。
 - 单 schema project 默认保留原表名；多 schema project 会用 `<schema>_<table>` 作为目标表名。
 - 单 chunk 表会生成 `1 = 1` predicate；需要拆成多个 chunk 的表仍会先写成 `TODO` split predicate，必须由 DBA 或 operator 根据主键、唯一键、时间列或分桶策略 review；approval 后 `worker-export` 和 `worker-executor --stage export` 会拒绝仍包含 `TODO` 的 predicate。
 - 不连接 SQL Server，不连接 TiDB，不读取业务数据，不写对象存储，也不执行 `IMPORT INTO`。
@@ -868,6 +870,7 @@ status: draft
 project_id: sales-db-to-tidb-prod-a
 source_cluster_id: prod-sqlserver-a
 format: csv
+compression: gzip
 object_uri_prefix: https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full
 chunk_size_rows: 1000000
 tables:
@@ -878,7 +881,7 @@ tables:
       - id: dbo.orders.000001
         estimated_rows: 1000000
         predicate: "TODO: choose stable split predicate for sales.dbo.orders chunk 1"
-        output_uri: https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full/dbo.orders.000001.csv
+        output_uri: https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full/dbo.orders.000001.csv.gz
 ```
 
 示例 `plan/import-plan.yaml`：
@@ -888,15 +891,16 @@ status: draft
 project_id: sales-db-to-tidb-prod-a
 source_cluster_id: prod-sqlserver-a
 engine: sql-insert
+compression: gzip
 mode: append
 jobs:
   - id: import-dbo.orders.000001
     target_object: app.orders
-    source_uri: https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full/dbo.orders.000001.csv
+    source_uri: https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full/dbo.orders.000001.csv.gz
     depends_on_export_chunk: dbo.orders.000001
 ```
 
-如果使用 `--import-engine tidb-import-into`，生成的 import job 会额外带 `fields`，用于把内部 null bitmap 尾列映射成 TiDB user variable。默认 `sql-insert` 计划依赖 CSV header，不允许在 import job 里带 `fields`；`validate-repo`、`worker-import` 和 `worker-executor` 都会拒绝这种组合。`tidb-import-into` 的 `fields` 也必须非空、列名不重复、user variable 不重复，并且 user variable 只能使用简单 `@name` 字符集；`s3://` / `gs://` source URI 不能远程读 header，因此必须带 reviewed `fields`：
+如果使用 `--import-engine tidb-import-into`，生成的 import job 会额外带 `fields`，用于把内部 null bitmap 尾列映射成 TiDB user variable。默认 `sql-insert` 计划依赖 CSV header，不允许在 import job 里带 `fields`；`validate-repo`、`worker-import` 和 `worker-executor` 都会拒绝这种组合。`tidb-import-into` 当前必须使用 `compression: none`；如果 plan 写了 `compression: gzip` 会被生成、校验和执行器准备阶段拒绝。`tidb-import-into` 的 `fields` 也必须非空、列名不重复、user variable 不重复，并且 user variable 只能使用简单 `@name` 字符集；`s3://` / `gs://` source URI 不能远程读 header，因此必须带 reviewed `fields`：
 
 ```yaml
 engine: tidb-import-into
@@ -1782,10 +1786,11 @@ bin/sqlserver2tidb generate-data-plans \
   --object-uri-prefix https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full \
   --chunk-size-rows 1000000 \
   --export-format csv \
-  --import-engine sql-insert
+  --import-engine sql-insert \
+  --compression gzip
 ```
 
-该命令读取源集群 inventory 和项目 metadata，写回项目目录下的 `plan/export-plan.yaml` 和 `plan/import-plan.yaml`。它只生成当前内置 executor 支持的 CSV 草稿。默认 `--import-engine sql-insert` 时，`--object-uri-prefix` 必须使用本地 `file://`、`http://` 或 `https://` 前缀，HTTP(S) 前缀必须包含 host，生成的 import job 不带 `fields`；显式 `--import-engine tidb-import-into` 时，`--object-uri-prefix` 必须使用本地绝对 `file://`、`s3://` 或 `gs://` 前缀，以匹配 TiDB `IMPORT INTO ... FROM FILE` 支持的 file location，S3/GCS 前缀必须包含 bucket，并会在每个 import job 中写入 `fields`，内容是 inventory 列名加上 `@sqlserver2tidb_null_bitmap`。不连接 SQL Server 或 TiDB，不执行导出或导入。`--chunk-size-rows` 默认是 `1000000`，`--export-format` 默认是 `csv`，`--import-engine` 默认是 `sql-insert`。
+该命令读取源集群 inventory 和项目 metadata，写回项目目录下的 `plan/export-plan.yaml` 和 `plan/import-plan.yaml`。它只生成当前内置 executor 支持的 CSV 草稿。默认 `--import-engine sql-insert` 时，`--object-uri-prefix` 必须使用本地 `file://`、`http://` 或 `https://` 前缀，HTTP(S) 前缀必须包含 host，生成的 import job 不带 `fields`；`--compression gzip` 会生成 `.csv.gz` 对象名，并在 plan 中写入 `compression: gzip`，后续 worker-executor 会透传为 executor `--compression gzip`。显式 `--import-engine tidb-import-into` 时，`--object-uri-prefix` 必须使用本地绝对 `file://`、`s3://` 或 `gs://` 前缀，以匹配 TiDB `IMPORT INTO ... FROM FILE` 支持的 file location，S3/GCS 前缀必须包含 bucket，并会在每个 import job 中写入 `fields`，内容是 inventory 列名加上 `@sqlserver2tidb_null_bitmap`；当前 `tidb-import-into` 不支持 `--compression gzip`。不连接 SQL Server 或 TiDB，不执行导出或导入。`--chunk-size-rows` 默认是 `1000000`，`--export-format` 默认是 `csv`，`--import-engine` 默认是 `sql-insert`，`--compression` 默认是 `none`。
 
 ### 16.9 generate-cdc-plan
 
@@ -2097,7 +2102,7 @@ bin/sqlserver2tidb-executor import \
   --import-batch-size 1000
 ```
 
-也可以用 `--target-connection-string-env <ENV_NAME>` 指定其他环境变量。即使不加 `--execute`，executor import dry-run 也会校验所选 engine 与 `--source-uri` 是否兼容，并校验 `tidb-import-into` 字段列表；它不会打开 TiDB，也不会打开 CSV source。默认 `--engine sql-insert` 会读取 CSV header 作为目标列名；如果 header 最后一列是内部 `__sqlserver2tidb_null_bitmap`，import 会把该列从目标列中排除，并根据 bitmap 把对应字段恢复为 NULL。`sql-insert` 不需要 GitOps import job `fields`，相关 metadata gate 会拒绝 `sql-insert + fields`。随后它流式读取 CSV 行，并按 `--import-batch-size` 分批事务提交 `INSERT`。如果为 `sql-insert` 增加 `--require-empty-target`，executor 会先连接 TiDB 并对目标表执行带引用保护的 `COUNT(*)`；如果目标表已有数据，会在打开 CSV source 前失败。默认不启用该检查，因为同一目标表的多 chunk 导入需要第二个及后续 job 在非空表上继续插入。
+也可以用 `--target-connection-string-env <ENV_NAME>` 指定其他环境变量。即使不加 `--execute`，executor import dry-run 也会校验所选 engine 与 `--source-uri` 是否兼容，并校验 `--compression` 和 `tidb-import-into` 字段列表；它不会打开 TiDB，也不会打开 CSV source。默认 `--engine sql-insert` 会读取 CSV header 作为目标列名；如果 header 最后一列是内部 `__sqlserver2tidb_null_bitmap`，import 会把该列从目标列中排除，并根据 bitmap 把对应字段恢复为 NULL。`sql-insert` 不需要 GitOps import job `fields`，相关 metadata gate 会拒绝 `sql-insert + fields`。如果 source 是 gzip CSV，使用 `--compression gzip` 后会边解压边流式读取，不会把完整文件载入内存。随后它流式读取 CSV 行，并按 `--import-batch-size` 分批事务提交 `INSERT`。如果为 `sql-insert` 增加 `--require-empty-target`，executor 会先连接 TiDB 并对目标表执行带引用保护的 `COUNT(*)`；如果目标表已有数据，会在打开 CSV source 前失败。默认不启用该检查，因为同一目标表的多 chunk 导入需要第二个及后续 job 在非空表上继续插入。
 
 使用 TiDB 原生 `IMPORT INTO`：
 
@@ -2207,7 +2212,7 @@ bin/sqlserver2tidb-executor cdc \
 
 CDC dry-run 会校验 `columns`、`key-columns`、key column 是否属于 captured columns、`from-lsn` / `to-lsn` 是否为 10-byte hex 且 `from-lsn <= to-lsn`；它不会启动 CDC reader，也不会连接 TiDB 执行 apply。
 
-当前 binary 默认只做参数解析、对象名格式预检、DDL 文件 review 状态检查、export output URI / import engine/source URI / CDC LSN range 兼容性校验和 dry-run 输出。`export --execute` 会连接 SQL Server，并把 CSV 写到本地 `file://` 或 HTTP(S) URL；它会在 header 尾部增加内部 `__sqlserver2tidb_null_bitmap` 列，用来保留每行 NULL 位置。它不会使用原生 S3/GCS/Azure Blob SDK，也不会生成 Parquet。`import --execute --engine sql-insert` 会连接 TiDB，并从本地 `file://` 或 HTTP(S) CSV 流式逐行插入，按 batch size 分批提交，HTTP(S) source URI 必须包含 host；如果 CSV 带内部 null bitmap 尾列，会恢复 NULL 并不把该内部列写入目标表；GitOps import job `fields` 只允许用于 `tidb-import-into`，不会传给 `sql-insert`；如果显式加 `--require-empty-target`，会先用 `COUNT(*)` 预检目标表为空。`import --execute --engine tidb-import-into` 会连接 TiDB，先用 `COUNT(*)` 预检目标表为空，再执行 `IMPORT INTO ... FROM FILE`，支持绝对本地路径、本地 `file://`、`s3://`、`gs://`，其中 S3/GCS source URI 必须包含 bucket 和对象路径，本地/file CSV 会读取 header 并跳过内部 null bitmap 尾列，远端对象存储 CSV 可通过 `--fields` 显式列名/user variable 列表跳过该尾列。它不会调用 Lightning。`validate-count --execute` 会连接 SQL Server 和 TiDB，比较单对象 `COUNT(*)`。`validate-query --execute` 会连接 SQL Server 和 TiDB，比较已 review 的单行单列标量查询结果，并在成功输出里带上 `check-id`。`cdc-lsn --execute` 会连接 SQL Server，读取 CDC max LSN，并在提供源对象时读取 capture instance min LSN。`cdc --execute` 会先校验 captured columns、key columns、LSN range 和源端/目标端连接串环境变量，然后调用 SQL Server CDC change function 并把 delete/upsert 变更写入 TiDB。`advance-cdc-checkpoint` 可以基于成功 CDC executor evidence 推进 GitHub metadata checkpoint；`prepare-cdc-range` 和 `prepare-cdc-iteration` 可以基于 checkpoint 派生下一段 plan 的 `from_lsn`。当前还没有长周期 streaming loop 或自动审批 GitHub CDC range PR。
+当前 binary 默认只做参数解析、对象名格式预检、DDL 文件 review 状态检查、export output URI / import engine/source URI / compression / CDC LSN range 兼容性校验和 dry-run 输出。`export --execute` 会连接 SQL Server，并把 CSV 写到本地 `file://` 或 HTTP(S) URL；它会在 header 尾部增加内部 `__sqlserver2tidb_null_bitmap` 列，用来保留每行 NULL 位置。加 `--compression gzip` 时会写 gzip CSV；HTTP(S) export 上传会设置 `Content-Encoding: gzip`。它不会使用原生 S3/GCS/Azure Blob SDK，也不会生成 Parquet。`import --execute --engine sql-insert` 会连接 TiDB，并从本地 `file://` 或 HTTP(S) CSV 流式逐行插入，按 batch size 分批提交，HTTP(S) source URI 必须包含 host；加 `--compression gzip` 时会流式解压 gzip CSV；如果 CSV 带内部 null bitmap 尾列，会恢复 NULL 并不把该内部列写入目标表；GitOps import job `fields` 只允许用于 `tidb-import-into`，不会传给 `sql-insert`；如果显式加 `--require-empty-target`，会先用 `COUNT(*)` 预检目标表为空。`import --execute --engine tidb-import-into` 会连接 TiDB，先用 `COUNT(*)` 预检目标表为空，再执行 `IMPORT INTO ... FROM FILE`，支持绝对本地路径、本地 `file://`、`s3://`、`gs://`，其中 S3/GCS source URI 必须包含 bucket 和对象路径，本地/file CSV 会读取 header 并跳过内部 null bitmap 尾列，远端对象存储 CSV 可通过 `--fields` 显式列名/user variable 列表跳过该尾列；当前该 engine 不接受 `--compression gzip`。它不会调用 Lightning。`validate-count --execute` 会连接 SQL Server 和 TiDB，比较单对象 `COUNT(*)`。`validate-query --execute` 会连接 SQL Server 和 TiDB，比较已 review 的单行单列标量查询结果，并在成功输出里带上 `check-id`。`cdc-lsn --execute` 会连接 SQL Server，读取 CDC max LSN，并在提供源对象时读取 capture instance min LSN。`cdc --execute` 会先校验 captured columns、key columns、LSN range 和源端/目标端连接串环境变量，然后调用 SQL Server CDC change function 并把 delete/upsert 变更写入 TiDB。`advance-cdc-checkpoint` 可以基于成功 CDC executor evidence 推进 GitHub metadata checkpoint；`prepare-cdc-range` 和 `prepare-cdc-iteration` 可以基于 checkpoint 派生下一段 plan 的 `from_lsn`。当前还没有长周期 streaming loop 或自动审批 GitHub CDC range PR。
 
 ### 16.20 worker-reconcile
 
