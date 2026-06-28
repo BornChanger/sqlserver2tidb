@@ -112,6 +112,9 @@ run_cli generate-pr-draft \
 run_cli worker-reconcile --root "${work_root}" --dry-run >"${work_root}/worker-reconcile.txt"
 grep -q "worker reconcile dry run" "${work_root}/worker-reconcile.txt"
 
+run_cli worker-reconcile --root "${work_root}" --loop --holder quickstart-agent --max-iterations 1 --interval 1ms >"${work_root}/worker-reconcile-loop.txt"
+grep -q "worker reconcile loop" "${work_root}/worker-reconcile-loop.txt"
+
 run_cli doctor --root "${work_root}" >"${work_root}/doctor.txt"
 grep -q "repository: valid" "${work_root}/doctor.txt"
 

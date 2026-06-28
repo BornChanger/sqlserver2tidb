@@ -5576,6 +5576,32 @@ func TestExecuteNextWorkerReconcileAcquiresLeaseAndRunsFirstReadyAction(t *testi
 	assertContains(t, evidence, `"status": "planned"`)
 }
 
+func TestPlanWorkerReconcileBlocksAlreadyPlannedStageForSamePayloadHash(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateDataPlansOnly(root))
+	reviewExportPlanPredicates(t, root)
+	setReviewPlanStatus(t, root, "export", "reviewed")
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(export) error = %v", err)
+	}
+	writeStageApproval(t, root, "export", hash)
+	if _, err := ExecuteNextWorkerReconcile(root, WorkerReconcileExecuteSpec{Holder: "agent-a"}); err != nil {
+		t.Fatalf("ExecuteNextWorkerReconcile() error = %v", err)
+	}
+
+	report, err := PlanWorkerReconcile(root)
+	if err != nil {
+		t.Fatalf("PlanWorkerReconcile() error = %v", err)
+	}
+	export := findReconcileAction(t, report.Actions, "export")
+	if export.Status != "blocked" {
+		t.Fatalf("export action = %+v, want blocked after planned state", export)
+	}
+	assertContains(t, export.Reason, "export already has planned state for approved payload")
+}
+
 func TestExecuteNextWorkerReconcileWritesStatePRDraftWhenRequested(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())

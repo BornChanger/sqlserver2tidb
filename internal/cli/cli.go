@@ -934,15 +934,39 @@ func runWorkerReconcile(args []string, stdout, stderr io.Writer) int {
 	root := fs.String("root", ".", "repository root")
 	dryRun := fs.Bool("dry-run", false, "plan worker actions without executing them")
 	executeNext := fs.Bool("execute-next", false, "execute the first ready metadata-only worker action")
-	holder := fs.String("holder", "", "worker lease holder id for --execute-next")
-	leaseTTL := fs.Duration("lease-ttl", 15*time.Minute, "worker lease ttl for --execute-next")
-	statePRDraft := fs.Bool("state-pr-draft", false, "write a PR draft for worker state and evidence changes after --execute-next")
+	loop := fs.Bool("loop", false, "execute ready metadata-only worker actions until none remain or max iterations is reached")
+	maxIterations := fs.Int("max-iterations", 0, "maximum loop iterations; 0 means continue until no ready metadata-only actions remain")
+	interval := fs.Duration("interval", 5*time.Second, "sleep interval between loop iterations")
+	holder := fs.String("holder", "", "worker lease holder id for --execute-next or --loop")
+	leaseTTL := fs.Duration("lease-ttl", 15*time.Minute, "worker lease ttl for --execute-next or --loop")
+	statePRDraft := fs.Bool("state-pr-draft", false, "write PR drafts for worker state and evidence changes after --execute-next or --loop")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if *dryRun == *executeNext {
-		fmt.Fprintln(stderr, "worker-reconcile requires exactly one of --dry-run or --execute-next")
+	selectedModes := 0
+	for _, enabled := range []bool{*dryRun, *executeNext, *loop} {
+		if enabled {
+			selectedModes++
+		}
+	}
+	if selectedModes != 1 {
+		fmt.Fprintln(stderr, "worker-reconcile requires exactly one of --dry-run, --execute-next, or --loop")
 		return 2
+	}
+	if *loop {
+		if *maxIterations < 0 {
+			fmt.Fprintln(stderr, "worker-reconcile --max-iterations must be non-negative")
+			return 2
+		}
+		if *interval < 0 {
+			fmt.Fprintln(stderr, "worker-reconcile --interval must be non-negative")
+			return 2
+		}
+		return runWorkerReconcileLoop(*root, gitops.WorkerReconcileExecuteSpec{
+			Holder:        *holder,
+			LeaseTTL:      *leaseTTL,
+			CreatePRDraft: *statePRDraft,
+		}, *maxIterations, *interval, stdout, stderr)
 	}
 	if *executeNext {
 		result, err := gitops.ExecuteNextWorkerReconcile(*root, gitops.WorkerReconcileExecuteSpec{
@@ -989,6 +1013,41 @@ func runWorkerReconcile(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stdout, "  command: %s\n", action.Command)
 		}
 	}
+	return 0
+}
+
+func runWorkerReconcileLoop(root string, spec gitops.WorkerReconcileExecuteSpec, maxIterations int, interval time.Duration, stdout, stderr io.Writer) int {
+	fmt.Fprintln(stdout, "worker reconcile loop")
+	executed := 0
+	for iteration := 1; maxIterations == 0 || iteration <= maxIterations; iteration++ {
+		result, err := gitops.ExecuteNextWorkerReconcile(root, spec)
+		if err != nil {
+			message := err.Error()
+			if strings.Contains(message, "no ready worker actions") || strings.Contains(message, "no ready metadata worker actions") {
+				fmt.Fprintf(stdout, "iteration %d: %s\n", iteration, message)
+				fmt.Fprintf(stdout, "executed actions: %d\n", executed)
+				return 0
+			}
+			fmt.Fprintf(stderr, "worker reconcile loop: %v\n", err)
+			return 1
+		}
+		executed++
+		fmt.Fprintf(stdout, "iteration %d: selected %s/%s %s\n", iteration, result.Action.SourceClusterID, result.Action.ProjectID, result.Action.Stage)
+		fmt.Fprintf(stdout, "  status: %s\n", result.Status)
+		fmt.Fprintf(stdout, "  payload hash: %s\n", result.Action.PayloadHash)
+		fmt.Fprintf(stdout, "  lease id: %s\n", result.LeaseID)
+		fmt.Fprintf(stdout, "  wrote %s\n", result.StateFile)
+		fmt.Fprintf(stdout, "  wrote %s\n", result.EvidenceFile)
+		fmt.Fprintf(stdout, "  wrote %s\n", result.LeaseFile)
+		if result.PRBodyFile != "" {
+			fmt.Fprintf(stdout, "  state PR draft: %s\n", result.PRBodyFile)
+			fmt.Fprintf(stdout, "  branch: %s\n", result.BranchName)
+		}
+		if maxIterations == 0 || iteration < maxIterations {
+			time.Sleep(interval)
+		}
+	}
+	fmt.Fprintf(stdout, "executed actions: %d\n", executed)
 	return 0
 }
 
@@ -1110,6 +1169,7 @@ Usage:
   sqlserver2tidb advance-cdc-checkpoint --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --status running
   sqlserver2tidb worker-reconcile --root . --dry-run
   sqlserver2tidb worker-reconcile --root . --execute-next --holder agent-a --state-pr-draft
+  sqlserver2tidb worker-reconcile --root . --loop --holder agent-a --max-iterations 10 --interval 5s
   sqlserver2tidb create-cluster --cluster-id prod-sqlserver-a --display-name "prod SQL Server A" --listener sqlserver-a.internal --secret-ref vault://...
   sqlserver2tidb create-project --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --source-database sales --source-schema dbo --target-name tidb-prod-a --target-database app --target-secret-ref vault://...
 `)

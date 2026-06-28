@@ -2149,6 +2149,57 @@ func TestRunWorkerReconcileExecuteNextCommand(t *testing.T) {
 	}
 }
 
+func TestRunWorkerReconcileLoopExecutesUntilNoReadyMetadataActions(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createCLIProjectWithOneExportChunk(t, root, &stdout, &stderr)
+	reviewCLIExportPlanPredicates(t, root)
+	setCLIReviewPlanStatus(t, root, "export", "reviewed")
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"compute-payload-hash",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "export",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("compute-payload-hash export code = %d, stderr = %s", code, stderr.String())
+	}
+	writeCLIStageApproval(t, root, "export", parsePayloadHash(t, stdout.String()))
+
+	stdout.Reset()
+	stderr.Reset()
+	code = Run([]string{
+		"worker-reconcile",
+		"--root", root,
+		"--loop",
+		"--max-iterations", "3",
+		"--interval", "1ms",
+		"--holder", "agent-a",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("worker-reconcile loop code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "worker reconcile loop") {
+		t.Fatalf("worker-reconcile loop stdout = %q, want loop header", output)
+	}
+	if !strings.Contains(output, "iteration 1: selected prod-sqlserver-a/sales-db-to-tidb-prod-a export") {
+		t.Fatalf("worker-reconcile loop stdout = %q, want selected export", output)
+	}
+	if !strings.Contains(output, "iteration 2: no ready worker actions") {
+		t.Fatalf("worker-reconcile loop stdout = %q, want no ready stop", output)
+	}
+	if !strings.Contains(output, "executed actions: 1") {
+		t.Fatalf("worker-reconcile loop stdout = %q, want executed count", output)
+	}
+	assertExists(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/export-chunks.yaml")
+}
+
 func TestRunExecutorEvidencePRDraftAndCreateDryRunCommands(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer

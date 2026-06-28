@@ -177,10 +177,66 @@ func planWorkerReconcileAction(root, sourceClusterID, projectID, stage string) W
 			action.Reason = err.Error()
 			return action
 		}
+		reason, err := reconcileStageStateBlockReason(root, sourceClusterID, projectID, stage, payloadHash)
+		if err != nil {
+			action.Reason = err.Error()
+			return action
+		}
+		if reason != "" {
+			action.Reason = reason
+			return action
+		}
 	}
 	action.Status = "ready"
 	action.PayloadHash = payloadHash
 	return action
+}
+
+func reconcileStageStateBlockReason(root, sourceClusterID, projectID, stage, payloadHash string) (string, error) {
+	stateRel := reconcileStageStateFile(stage)
+	if stateRel == "" {
+		return "", nil
+	}
+	path := filepath.Join(root, "clusters", sourceClusterID, "projects", projectID, filepath.FromSlash(stateRel))
+	if info, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("stat %s state: %w", stage, err)
+	} else if info.IsDir() {
+		return "", nil
+	}
+	statePayloadHash, err := readPlanTopLevelScalar(path, "payload_hash")
+	if err != nil {
+		return "", err
+	}
+	if statePayloadHash != payloadHash {
+		return "", nil
+	}
+	status, err := readPlanTopLevelScalar(path, "status")
+	if err != nil {
+		return "", err
+	}
+	status = strings.TrimSpace(status)
+	if status == "" || status == "not_started" {
+		return "", nil
+	}
+	return fmt.Sprintf("%s already has %s state for approved payload %s", stage, status, payloadHash), nil
+}
+
+func reconcileStageStateFile(stage string) string {
+	switch stage {
+	case "export":
+		return "state/export-chunks.yaml"
+	case "import":
+		return "state/import-jobs.yaml"
+	case "cdc":
+		return "state/migration-state.yaml"
+	case "validation":
+		return "state/validation-status.yaml"
+	default:
+		return ""
+	}
 }
 
 func acquireWorkerLease(root string, action WorkerReconcileAction, spec WorkerReconcileExecuteSpec) (workerLeaseMetadata, error) {
