@@ -432,6 +432,25 @@ func TestRunImportRejectsDuplicateTiDBImportIntoFields(t *testing.T) {
 	assertOutputContains(t, stderr.String(), "executor import: fields contains duplicate column \"ID\"")
 }
 
+func TestRunImportRejectsRemoteTiDBImportIntoSourceWithoutFields(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"import",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--job-id", "import-dbo.orders.000001",
+		"--target-object", "app.orders",
+		"--source-uri", "s3://migration/prod/full/dbo.orders.000001.csv",
+		"--engine", "tidb-import-into",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("import dry-run code = 0, want non-zero; stdout = %s", stdout.String())
+	}
+	assertOutputContains(t, stderr.String(), "executor import: fields are required for s3 tidb-import-into source URI because remote header inspection is not implemented")
+}
+
 func TestExecuteTiDBImportValidatesBatchSizeBeforeSourceURI(t *testing.T) {
 	err := executeTiDBImport(context.Background(), importExecuteSpec{
 		TargetObject:              "app.orders",
@@ -443,6 +462,18 @@ func TestExecuteTiDBImportValidatesBatchSizeBeforeSourceURI(t *testing.T) {
 		t.Fatal("executeTiDBImport() error = nil, want import batch size error")
 	}
 	assertOutputContains(t, err.Error(), "executor import: import batch size must be positive")
+}
+
+func TestExecuteTiDBImportIntoRejectsRemoteSourceWithoutFieldsBeforeConnectionString(t *testing.T) {
+	err := executeTiDBImportInto(context.Background(), importExecuteSpec{
+		TargetObject:              "app.orders",
+		SourceURI:                 "s3://migration/prod/full/dbo.orders.000001.csv",
+		TargetConnectionStringEnv: "MISSING_TIDB_DSN",
+	})
+	if err == nil {
+		t.Fatal("executeTiDBImportInto() error = nil, want remote fields error")
+	}
+	assertOutputContains(t, err.Error(), "executor import: fields are required for s3 tidb-import-into source URI because remote header inspection is not implemented")
 }
 
 func TestRunImportExecuteRequireEmptyTargetRejectsNonEmptyTargetBeforeOpeningSource(t *testing.T) {

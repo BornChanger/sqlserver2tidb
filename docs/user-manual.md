@@ -896,7 +896,7 @@ jobs:
     depends_on_export_chunk: dbo.orders.000001
 ```
 
-如果使用 `--import-engine tidb-import-into`，生成的 import job 会额外带 `fields`，用于把内部 null bitmap 尾列映射成 TiDB user variable。默认 `sql-insert` 计划依赖 CSV header，不允许在 import job 里带 `fields`；`validate-repo`、`worker-import` 和 `worker-executor` 都会拒绝这种组合。`tidb-import-into` 的 `fields` 也必须非空、列名不重复、user variable 不重复，并且 user variable 只能使用简单 `@name` 字符集：
+如果使用 `--import-engine tidb-import-into`，生成的 import job 会额外带 `fields`，用于把内部 null bitmap 尾列映射成 TiDB user variable。默认 `sql-insert` 计划依赖 CSV header，不允许在 import job 里带 `fields`；`validate-repo`、`worker-import` 和 `worker-executor` 都会拒绝这种组合。`tidb-import-into` 的 `fields` 也必须非空、列名不重复、user variable 不重复，并且 user variable 只能使用简单 `@name` 字符集；`s3://` / `gs://` source URI 不能远程读 header，因此必须带 reviewed `fields`：
 
 ```yaml
 engine: tidb-import-into
@@ -1107,7 +1107,7 @@ evidence/import-summary.json
 - 文件 checksum 已确认。
 - TiDB 集群容量已确认。
 
-当前 MVP 的 `worker-import` 只在 import approval 和 payload hash 匹配后，把 `plan/import-plan.yaml` 写成 planned 状态和 evidence；如果 `tidb-import-into` import job 带有 `fields`，会原样写入 `state/import-jobs.yaml`。它会拒绝没有 jobs、缺少必需字段、import job `source_uri` 与所选 import engine 不匹配、`sql-insert` import job 带有 `fields`，或 `tidb-import-into` import job 的 `fields` 为空、重复、包含不安全 user variable 的 import plan。它不执行 TiDB Lightning 或 `IMPORT INTO`，也不连接 TiDB。
+当前 MVP 的 `worker-import` 只在 import approval 和 payload hash 匹配后，把 `plan/import-plan.yaml` 写成 planned 状态和 evidence；如果 `tidb-import-into` import job 带有 `fields`，会原样写入 `state/import-jobs.yaml`。它会拒绝没有 jobs、缺少必需字段、import job `source_uri` 与所选 import engine 不匹配、`sql-insert` import job 带有 `fields`，或 `tidb-import-into` import job 的 `fields` 为空、重复、包含不安全 user variable；当 `source_uri` 是 `s3://` 或 `gs://` 时，缺少 `fields` 也会被拒绝。它不执行 TiDB Lightning 或 `IMPORT INTO`，也不连接 TiDB。
 
 先计算 import payload hash：
 
@@ -1922,7 +1922,7 @@ bin/sqlserver2tidb worker-import \
   --project-id sales-db-to-tidb-prod-a
 ```
 
-该命令先检查 `approvals/import-approval.yaml`，只有 approval 通过且 payload hash 匹配时才读取 `plan/import-plan.yaml`，并写回 `state/import-jobs.yaml` 和 `evidence/import-summary.json`。如果 `tidb-import-into` import job 带有 `fields`，planned state 会保留该字段列表，便于后续 executor PR 审计；`sql-insert` import job 带 `fields`、或 `tidb-import-into` fields 为空/重复/包含不安全 user variable 会被拒绝。它只写 planned 状态，不执行真实导入。
+该命令先检查 `approvals/import-approval.yaml`，只有 approval 通过且 payload hash 匹配时才读取 `plan/import-plan.yaml`，并写回 `state/import-jobs.yaml` 和 `evidence/import-summary.json`。如果 `tidb-import-into` import job 带有 `fields`，planned state 会保留该字段列表，便于后续 executor PR 审计；`sql-insert` import job 带 `fields`、`tidb-import-into` fields 为空/重复/包含不安全 user variable，或 `s3://` / `gs://` source URI 缺少 `fields` 会被拒绝。它只写 planned 状态，不执行真实导入。
 
 ### 16.15 worker-cdc
 
@@ -2109,7 +2109,7 @@ bin/sqlserver2tidb-executor import \
   --source-uri file:///tmp/sqlserver2tidb/dbo.orders.000001.csv
 ```
 
-`tidb-import-into` 会执行形如 `IMPORT INTO app.orders FROM '<fileLocation>' FORMAT 'csv' WITH skip_rows=1` 的 TiDB SQL。根据 TiDB 官方文档，目标表必须已经存在且为空，执行过程不支持事务回滚；详见 https://docs.pingcap.com/tidb/stable/sql-statement-import-into/ 。当前实现支持绝对本地路径、本地 `file://`、`s3://`、`gs://` file location，并拒绝相对本地路径、带远端 host 的 `file://`、缺 bucket 的 `s3://`/`gs://`，以及缺对象路径的 `s3://`/`gs://`。执行 `IMPORT INTO` 前，executor 会先对目标表执行带引用保护的 `COUNT(*)` 预检；如果目标表不存在、无查询权限或行数非 0，会在发起 `IMPORT INTO` 前失败。该预检不能替代导入期间禁止并发 DDL/DML 的操作要求。对于本地路径和 `file://`，executor 会读取 CSV header，并把内部 `__sqlserver2tidb_null_bitmap` 尾列映射到 TiDB user variable 以跳过该字段；对于 `s3://` 和 `gs://`，当前不会远程读取 header，因此应使用 `generate-data-plans --import-engine tidb-import-into` 生成并 review import job `fields`，worker-executor 会把它透传为 `--fields id,name,@sqlserver2tidb_null_bitmap`。字段列表会在 GitOps 和 executor dry-run 阶段校验，拒绝空字段、重复列名、重复 user variable，以及包含空格、分号、括号等不安全字符的 user variable。
+`tidb-import-into` 会执行形如 `IMPORT INTO app.orders FROM '<fileLocation>' FORMAT 'csv' WITH skip_rows=1` 的 TiDB SQL。根据 TiDB 官方文档，目标表必须已经存在且为空，执行过程不支持事务回滚；详见 https://docs.pingcap.com/tidb/stable/sql-statement-import-into/ 。当前实现支持绝对本地路径、本地 `file://`、`s3://`、`gs://` file location，并拒绝相对本地路径、带远端 host 的 `file://`、缺 bucket 的 `s3://`/`gs://`，以及缺对象路径的 `s3://`/`gs://`。执行 `IMPORT INTO` 前，executor 会先对目标表执行带引用保护的 `COUNT(*)` 预检；如果目标表不存在、无查询权限或行数非 0，会在发起 `IMPORT INTO` 前失败。该预检不能替代导入期间禁止并发 DDL/DML 的操作要求。对于本地路径和 `file://`，executor 会读取 CSV header，并把内部 `__sqlserver2tidb_null_bitmap` 尾列映射到 TiDB user variable 以跳过该字段；对于 `s3://` 和 `gs://`，当前不会远程读取 header，因此必须使用 `generate-data-plans --import-engine tidb-import-into` 生成并 review import job `fields`，worker-executor 会把它透传为 `--fields id,name,@sqlserver2tidb_null_bitmap`。字段列表会在 GitOps 和 executor dry-run 阶段校验，拒绝空字段、重复列名、重复 user variable、远端对象存储 source 缺少 fields，以及包含空格、分号、括号等不安全字符的 user variable。
 
 行数校验 dry-run：
 

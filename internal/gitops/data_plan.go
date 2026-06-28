@@ -235,6 +235,9 @@ func validateImportPlanJobFields(engine string, jobs []dataImportJobState) error
 }
 
 func validateTiDBImportIntoPlanFields(job dataImportJobState) error {
+	if err := validateTiDBImportIntoPlanFieldsForSource(job); err != nil {
+		return err
+	}
 	seenColumns := make(map[string]struct{}, len(job.Fields))
 	seenVariables := make(map[string]struct{}, len(job.Fields))
 	for _, raw := range job.Fields {
@@ -260,6 +263,27 @@ func validateTiDBImportIntoPlanFields(job dataImportJobState) error {
 		seenColumns[normalized] = struct{}{}
 	}
 	return nil
+}
+
+func validateTiDBImportIntoPlanFieldsForSource(job dataImportJobState) error {
+	scheme, ok := objectStorageSourceURIScheme(job.SourceURI)
+	if !ok || len(job.Fields) > 0 {
+		return nil
+	}
+	return fmt.Errorf("import job %s fields are required for %s tidb-import-into source_uri because remote header inspection is not implemented", job.ID, scheme)
+}
+
+func objectStorageSourceURIScheme(sourceURI string) (string, bool) {
+	parsed, err := url.Parse(strings.TrimSpace(sourceURI))
+	if err != nil {
+		return "", false
+	}
+	switch parsed.Scheme {
+	case "s3", "gs":
+		return parsed.Scheme, true
+	default:
+		return "", false
+	}
 }
 
 func isValidTiDBImportIntoUserVariableField(field string) bool {

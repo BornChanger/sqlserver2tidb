@@ -805,6 +805,12 @@ func runImport(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "executor import: fields is only supported with tidb-import-into")
 		return 1
 	}
+	if normalizedEngine == importEngineTiDBImportInto {
+		if err := requireTiDBImportIntoFieldsForRemoteSource(*sourceURI, fields); err != nil {
+			fmt.Fprintf(stderr, "executor import: %v\n", err)
+			return 1
+		}
+	}
 	if *execute && *importBatchSize <= 0 {
 		fmt.Fprintln(stderr, "executor import: import batch size must be positive")
 		return 1
@@ -1215,6 +1221,9 @@ func executeTiDBImport(ctx context.Context, spec importExecuteSpec) error {
 
 func executeTiDBImportInto(ctx context.Context, spec importExecuteSpec) error {
 	fields := spec.Fields
+	if err := requireTiDBImportIntoFieldsForRemoteSource(spec.SourceURI, fields); err != nil {
+		return fmt.Errorf("executor import: %w", err)
+	}
 	if len(fields) == 0 {
 		var err error
 		fields, err = readTiDBImportIntoFieldsFromLocalSource(spec.SourceURI)
@@ -1569,6 +1578,20 @@ func validateTiDBImportIntoFields(fields []string, label string) error {
 			return fmt.Errorf("%s contains duplicate column %q", label, field)
 		}
 		seenColumns[normalized] = struct{}{}
+	}
+	return nil
+}
+
+func requireTiDBImportIntoFieldsForRemoteSource(sourceURI string, fields []string) error {
+	parsed, err := url.Parse(strings.TrimSpace(sourceURI))
+	if err != nil {
+		return fmt.Errorf("parse IMPORT INTO source URI: %w", err)
+	}
+	switch parsed.Scheme {
+	case "s3", "gs":
+		if len(fields) == 0 {
+			return fmt.Errorf("fields are required for %s tidb-import-into source URI because remote header inspection is not implemented", parsed.Scheme)
+		}
 	}
 	return nil
 }
