@@ -43,16 +43,28 @@ type executorEvidenceSummary struct {
 }
 
 type executorEvidenceCommandSummary struct {
-	ID                string   `json:"id"`
-	Args              []string `json:"args"`
-	ShellCommand      string   `json:"shell_command"`
-	ExitCode          *int     `json:"exit_code"`
-	Output            string   `json:"output"`
-	Error             string   `json:"error"`
-	StartedAt         string   `json:"started_at"`
-	CompletedAt       string   `json:"completed_at"`
-	DurationMs        *int64   `json:"duration_ms"`
-	CDCAppliedChanges *int     `json:"cdc_applied_changes"`
+	ID                string                                  `json:"id"`
+	Args              []string                                `json:"args"`
+	ShellCommand      string                                  `json:"shell_command"`
+	ExitCode          *int                                    `json:"exit_code"`
+	Output            string                                  `json:"output"`
+	Error             string                                  `json:"error"`
+	AttemptCount      *int                                    `json:"attempt_count"`
+	Attempts          []executorEvidenceCommandAttemptSummary `json:"attempts"`
+	StartedAt         string                                  `json:"started_at"`
+	CompletedAt       string                                  `json:"completed_at"`
+	DurationMs        *int64                                  `json:"duration_ms"`
+	CDCAppliedChanges *int                                    `json:"cdc_applied_changes"`
+}
+
+type executorEvidenceCommandAttemptSummary struct {
+	Attempt     int    `json:"attempt"`
+	ExitCode    *int   `json:"exit_code"`
+	Output      string `json:"output"`
+	Error       string `json:"error"`
+	StartedAt   string `json:"started_at"`
+	CompletedAt string `json:"completed_at"`
+	DurationMs  *int64 `json:"duration_ms"`
 }
 
 func GenerateExecutorEvidencePRDraft(root, sourceClusterID, projectID, stage string) (ExecutorEvidencePRDraft, error) {
@@ -302,9 +314,54 @@ func validateExecutorEvidenceCommands(status string, commands []executorEvidence
 		if command.CDCAppliedChanges != nil && *command.CDCAppliedChanges < 0 {
 			return fmt.Errorf("executor evidence command %s cdc_applied_changes must be non-negative", commandID)
 		}
+		if err := validateExecutorEvidenceCommandAttempts(commandID, command.AttemptCount, command.Attempts); err != nil {
+			return err
+		}
 	}
 	if strings.TrimSpace(status) == "failed" && !hasFailedCommand {
 		return fmt.Errorf("executor evidence status failed requires at least one non-zero command exit_code or command error")
+	}
+	return nil
+}
+
+func validateExecutorEvidenceCommandAttempts(commandID string, attemptCount *int, attempts []executorEvidenceCommandAttemptSummary) error {
+	if attemptCount == nil {
+		if len(attempts) > 0 {
+			return fmt.Errorf("executor evidence command %s attempts require attempt_count", commandID)
+		}
+		return nil
+	}
+	if *attemptCount < 1 {
+		return fmt.Errorf("executor evidence command %s attempt_count must be at least 1", commandID)
+	}
+	if len(attempts) > 0 && len(attempts) != *attemptCount {
+		return fmt.Errorf("executor evidence command %s attempt_count %d does not match attempts length %d", commandID, *attemptCount, len(attempts))
+	}
+	for i, attempt := range attempts {
+		expectedAttempt := i + 1
+		if attempt.Attempt != expectedAttempt {
+			return fmt.Errorf("executor evidence command %s attempts[%d].attempt = %d, want %d", commandID, i, attempt.Attempt, expectedAttempt)
+		}
+		if attempt.ExitCode == nil {
+			return fmt.Errorf("executor evidence command %s attempt %d exit_code is required", commandID, expectedAttempt)
+		}
+		startedAt, err := parseExecutorEvidenceCommandTime(commandID, fmt.Sprintf("attempt %d started_at", expectedAttempt), attempt.StartedAt)
+		if err != nil {
+			return err
+		}
+		completedAt, err := parseExecutorEvidenceCommandTime(commandID, fmt.Sprintf("attempt %d completed_at", expectedAttempt), attempt.CompletedAt)
+		if err != nil {
+			return err
+		}
+		if completedAt.Before(startedAt) {
+			return fmt.Errorf("executor evidence command %s attempt %d completed_at is before started_at", commandID, expectedAttempt)
+		}
+		if attempt.DurationMs == nil {
+			return fmt.Errorf("executor evidence command %s attempt %d duration_ms is required", commandID, expectedAttempt)
+		}
+		if *attempt.DurationMs < 0 {
+			return fmt.Errorf("executor evidence command %s attempt %d duration_ms must be non-negative", commandID, expectedAttempt)
+		}
 	}
 	return nil
 }
@@ -439,95 +496,91 @@ func writeExecutorEvidenceCommandTable(b *strings.Builder, commands []executorEv
 	b.WriteString("\n## Executor Commands\n\n")
 	includeCDC := executorEvidenceTableIncludesCDCAppliedChanges(commands)
 	includeError := executorEvidenceTableIncludesCommandError(commands)
-	b.WriteString("| Command ID | Exit code | Started at | Completed at | Duration ms | Output summary")
+	includeAttempts := executorEvidenceTableIncludesAttempts(commands)
+	headers := []string{"Command ID", "Exit code"}
+	alignments := []string{"---", "---:"}
+	if includeAttempts {
+		headers = append(headers, "Attempts")
+		alignments = append(alignments, "---:")
+	}
+	headers = append(headers, "Started at", "Completed at", "Duration ms", "Output summary")
+	alignments = append(alignments, "---", "---", "---:", "---")
 	if includeError {
-		b.WriteString(" | Command error")
+		headers = append(headers, "Command error")
+		alignments = append(alignments, "---")
 	}
 	if includeCDC {
-		b.WriteString(" | CDC applied changes")
+		headers = append(headers, "CDC applied changes")
+		alignments = append(alignments, "---:")
 	}
-	b.WriteString(" |\n")
-	b.WriteString("| --- | ---: | --- | --- | ---: | ---")
-	if includeError {
-		b.WriteString(" | ---")
-	}
-	if includeCDC {
-		b.WriteString(" | ---:")
-	}
-	b.WriteString(" |\n")
+	writeMarkdownTableRow(b, headers)
+	writeMarkdownTableRow(b, alignments)
 	for _, command := range commands {
 		duration := ""
 		if command.DurationMs != nil {
 			duration = fmt.Sprintf("%d", *command.DurationMs)
 		}
-		outputSummary := escapeMarkdownTableCell(executorEvidenceOutputSummary(command.Output))
-		commandError := ""
+		exitCode := ""
+		if command.ExitCode != nil {
+			exitCode = fmt.Sprintf("%d", *command.ExitCode)
+		}
+		cells := []string{
+			command.ID,
+			exitCode,
+		}
+		if includeAttempts {
+			cells = append(cells, executorEvidenceAttemptCountSummary(command))
+		}
+		cells = append(cells,
+			command.StartedAt,
+			command.CompletedAt,
+			duration,
+			executorEvidenceOutputSummary(command.Output),
+		)
 		if includeError {
-			commandError = escapeMarkdownTableCell(strings.TrimSpace(command.Error))
-		}
-		cdcAppliedChanges := ""
-		if includeCDC && command.CDCAppliedChanges != nil {
-			cdcAppliedChanges = fmt.Sprintf("%d", *command.CDCAppliedChanges)
-		}
-		if includeError && includeCDC {
-			fmt.Fprintf(
-				b,
-				"| %s | %d | %s | %s | %s | %s | %s | %s |\n",
-				escapeMarkdownTableCell(command.ID),
-				*command.ExitCode,
-				escapeMarkdownTableCell(command.StartedAt),
-				escapeMarkdownTableCell(command.CompletedAt),
-				duration,
-				outputSummary,
-				commandError,
-				cdcAppliedChanges,
-			)
-			continue
-		}
-		if includeError {
-			fmt.Fprintf(
-				b,
-				"| %s | %d | %s | %s | %s | %s | %s |\n",
-				escapeMarkdownTableCell(command.ID),
-				*command.ExitCode,
-				escapeMarkdownTableCell(command.StartedAt),
-				escapeMarkdownTableCell(command.CompletedAt),
-				duration,
-				outputSummary,
-				commandError,
-			)
-			continue
+			cells = append(cells, strings.TrimSpace(command.Error))
 		}
 		if includeCDC {
-			fmt.Fprintf(
-				b,
-				"| %s | %d | %s | %s | %s | %s | %s |\n",
-				escapeMarkdownTableCell(command.ID),
-				*command.ExitCode,
-				escapeMarkdownTableCell(command.StartedAt),
-				escapeMarkdownTableCell(command.CompletedAt),
-				duration,
-				outputSummary,
-				cdcAppliedChanges,
-			)
-			continue
+			cdcAppliedChanges := ""
+			if command.CDCAppliedChanges != nil {
+				cdcAppliedChanges = fmt.Sprintf("%d", *command.CDCAppliedChanges)
+			}
+			cells = append(cells, cdcAppliedChanges)
 		}
-		fmt.Fprintf(
-			b,
-			"| %s | %d | %s | %s | %s | %s |\n",
-			escapeMarkdownTableCell(command.ID),
-			*command.ExitCode,
-			escapeMarkdownTableCell(command.StartedAt),
-			escapeMarkdownTableCell(command.CompletedAt),
-			duration,
-			outputSummary,
-		)
+		writeMarkdownTableRow(b, cells)
 	}
+}
+
+func writeMarkdownTableRow(b *strings.Builder, cells []string) {
+	b.WriteString("|")
+	for _, cell := range cells {
+		fmt.Fprintf(b, " %s |", escapeMarkdownTableCell(cell))
+	}
+	b.WriteString("\n")
+}
+
+func executorEvidenceAttemptCountSummary(command executorEvidenceCommandSummary) string {
+	if command.AttemptCount != nil {
+		return fmt.Sprintf("%d", *command.AttemptCount)
+	}
+	if len(command.Attempts) > 0 {
+		return fmt.Sprintf("%d", len(command.Attempts))
+	}
+	return ""
 }
 
 func executorEvidenceTableIncludesCommandError(commands []executorEvidenceCommandSummary) bool {
 	for _, command := range commands {
 		if strings.TrimSpace(command.Error) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func executorEvidenceTableIncludesAttempts(commands []executorEvidenceCommandSummary) bool {
+	for _, command := range commands {
+		if command.AttemptCount != nil || len(command.Attempts) > 0 {
 			return true
 		}
 	}

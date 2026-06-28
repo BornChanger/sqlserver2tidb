@@ -1199,6 +1199,87 @@ func TestRunWorkerExecutorExecuteWritesFailedEvidenceOnCommandFailure(t *testing
 	}
 }
 
+func TestRunWorkerExecutorExecuteRetriesTransientCommandFailure(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createCLIProjectWithOneExportChunk(t, root, &stdout, &stderr)
+	reviewCLIExportPlanPredicates(t, root)
+	setCLIReviewPlanStatus(t, root, "export", "reviewed")
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"compute-payload-hash",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "export",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("compute-payload-hash export code = %d, stderr = %s", code, stderr.String())
+	}
+	writeCLIStageApproval(t, root, "export", parsePayloadHash(t, stdout.String()))
+
+	fakeExecutor := filepath.Join(root, "fake-executor-fails-once")
+	if err := os.WriteFile(fakeExecutor, []byte("#!/bin/sh\nif [ ! -f retry-marker ]; then\n  touch retry-marker\n  printf 'attempt 1 failed\\n'\n  exit 17\nfi\nprintf 'attempt 2 succeeded\\n'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = Run([]string{
+		"worker-executor",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "export",
+		"--executor-binary", "./fake-executor-fails-once",
+		"--command-retries", "1",
+		"--retry-backoff", "1ms",
+		"--execute",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("worker-executor execute code = %d, stderr = %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "attempt 1 failed") || !strings.Contains(stdout.String(), "attempt 2 succeeded") {
+		t.Fatalf("worker-executor stdout = %q, want both attempt outputs", stdout.String())
+	}
+
+	var evidence struct {
+		Status   string `json:"status"`
+		Commands []struct {
+			ExitCode     int `json:"exit_code"`
+			AttemptCount int `json:"attempt_count"`
+			Attempts     []struct {
+				Attempt  int    `json:"attempt"`
+				ExitCode int    `json:"exit_code"`
+				Output   string `json:"output"`
+			} `json:"attempts"`
+		} `json:"commands"`
+	}
+	evidenceJSON := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-export-run.json")
+	if err := json.Unmarshal([]byte(evidenceJSON), &evidence); err != nil {
+		t.Fatalf("parse executor evidence: %v\n%s", err, evidenceJSON)
+	}
+	if evidence.Status != "succeeded" {
+		t.Fatalf("executor evidence status = %q, want succeeded", evidence.Status)
+	}
+	if len(evidence.Commands) != 1 {
+		t.Fatalf("executor evidence commands = %d, want 1", len(evidence.Commands))
+	}
+	command := evidence.Commands[0]
+	if command.ExitCode != 0 || command.AttemptCount != 2 || len(command.Attempts) != 2 {
+		t.Fatalf("executor evidence command = %+v, want final success with 2 attempts", command)
+	}
+	if command.Attempts[0].Attempt != 1 || command.Attempts[0].ExitCode != 17 || !strings.Contains(command.Attempts[0].Output, "attempt 1 failed") {
+		t.Fatalf("first attempt evidence = %+v, want failed attempt", command.Attempts[0])
+	}
+	if command.Attempts[1].Attempt != 2 || command.Attempts[1].ExitCode != 0 || !strings.Contains(command.Attempts[1].Output, "attempt 2 succeeded") {
+		t.Fatalf("second attempt evidence = %+v, want successful retry", command.Attempts[1])
+	}
+}
+
 func TestRunWorkerExecutorExecuteWritesFailedEvidenceOnCommandTimeout(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer

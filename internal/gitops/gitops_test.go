@@ -1414,6 +1414,51 @@ func TestValidateRepoReportsExecutorEvidenceMetadataMismatch(t *testing.T) {
 	assertContains(t, strings.Join(report.Errors, "\n"), `invalid executor evidence clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-export-run.json: project_id "inventory-db-to-tidb-prod-a" does not match project metadata "sales-db-to-tidb-prod-a"`)
 }
 
+func TestValidateRepoReportsExecutorEvidenceAttemptCountMismatch(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)
+	evidenceRel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-export-run.json"
+	writeFileForTest(t, root, evidenceRel, `{
+  "stage": "export",
+  "status": "succeeded",
+  "project_id": "sales-db-to-tidb-prod-a",
+  "source_cluster_id": "prod-sqlserver-a",
+  "payload_hash": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "commands": [
+    {
+      "id": "export-1",
+      "args": ["sqlserver2tidb-executor", "export"],
+      "shell_command": "sqlserver2tidb-executor export",
+      "exit_code": 0,
+      "attempt_count": 2,
+      "attempts": [
+        {
+          "attempt": 1,
+          "exit_code": 0,
+          "output": "ok\n",
+          "started_at": "2026-06-26T00:00:00Z",
+          "completed_at": "2026-06-26T00:00:01Z",
+          "duration_ms": 1000
+        }
+      ],
+      "started_at": "2026-06-26T00:00:00Z",
+      "completed_at": "2026-06-26T00:00:01Z",
+      "duration_ms": 1000
+    }
+  ]
+}
+`)
+
+	report, err := ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
+	if report.Valid {
+		t.Fatal("ValidateRepo() valid = true, want executor evidence attempt_count mismatch")
+	}
+	assertContains(t, strings.Join(report.Errors, "\n"), `invalid executor evidence clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-export-run.json: executor evidence command export-1 attempt_count 2 does not match attempts length 1`)
+}
+
 func TestValidateRepoReportsInvalidExecutorEvidenceJSON(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)
@@ -3358,6 +3403,65 @@ func TestGenerateExecutorEvidencePRDraftIncludesCDCAppliedChanges(t *testing.T) 
 	assertContains(t, body, "clusters/prod-sqlserver-a/state/cdc-checkpoint.yaml")
 	assertContains(t, body, "| Command ID | Exit code | Started at | Completed at | Duration ms | Output summary | CDC applied changes |")
 	assertContains(t, body, "| sales.dbo.orders | 0 | 2026-01-02T03:04:05Z | 2026-01-02T03:04:06Z | 1000 | applied changes: 2 | 2 |")
+}
+
+func TestGenerateExecutorEvidencePRDraftIncludesAttemptCount(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateSchemaDraftOnly(root))
+	setSchemaDiffStatus(t, root, "reviewed")
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "ddl")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(ddl) error = %v", err)
+	}
+	writeStageApproval(t, root, "ddl", hash)
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-ddl-run.json", `{
+  "stage": "ddl",
+  "status": "succeeded",
+  "project_id": "sales-db-to-tidb-prod-a",
+  "source_cluster_id": "prod-sqlserver-a",
+  "payload_hash": "`+hash+`",
+  "commands": [
+    {
+      "id": "schema/tidb-ddl/dbo.orders.sql",
+      "args": ["sqlserver2tidb-executor", "apply-ddl", "--execute"],
+      "shell_command": "sqlserver2tidb-executor apply-ddl --execute",
+      "exit_code": 0,
+      "output": "applied\n",
+      "attempt_count": 2,
+      "attempts": [
+        {
+          "attempt": 1,
+          "exit_code": 17,
+          "output": "transient failure\n",
+          "started_at": "2026-01-02T03:04:01Z",
+          "completed_at": "2026-01-02T03:04:02Z",
+          "duration_ms": 1000
+        },
+        {
+          "attempt": 2,
+          "exit_code": 0,
+          "output": "applied\n",
+          "started_at": "2026-01-02T03:04:05Z",
+          "completed_at": "2026-01-02T03:04:06Z",
+          "duration_ms": 1000
+        }
+      ],
+      "started_at": "2026-01-02T03:04:05Z",
+      "completed_at": "2026-01-02T03:04:06Z",
+      "duration_ms": 1000
+    }
+  ]
+}
+`)
+
+	draft, err := GenerateExecutorEvidencePRDraft(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "ddl")
+	if err != nil {
+		t.Fatalf("GenerateExecutorEvidencePRDraft() error = %v", err)
+	}
+	body := readFile(t, root, draft.BodyFile)
+	assertContains(t, body, "| Command ID | Exit code | Attempts | Started at | Completed at | Duration ms | Output summary |")
+	assertContains(t, body, "| schema/tidb-ddl/dbo.orders.sql | 0 | 2 | 2026-01-02T03:04:05Z | 2026-01-02T03:04:06Z | 1000 | applied |")
 }
 
 func TestGenerateExecutorEvidencePRDraftAllowsFailedCommandErrorWithZeroExitCode(t *testing.T) {

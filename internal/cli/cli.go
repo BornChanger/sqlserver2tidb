@@ -819,12 +819,22 @@ func runWorkerExecutor(args []string, stdout, stderr io.Writer) int {
 	targetConnectionStringEnv := fs.String("target-connection-string-env", "", "environment variable containing the TiDB/MySQL connection string for import execution")
 	importBatchSize := fs.Int("import-batch-size", 0, "rows to commit per import transaction; default is executor-defined")
 	commandTimeout := fs.Duration("command-timeout", 0, "maximum runtime per external executor command; 0 disables timeout")
+	commandRetries := fs.Int("command-retries", 0, "number of retries for a failed external executor command")
+	retryBackoff := fs.Duration("retry-backoff", time.Second, "fixed backoff between external executor command retries")
 	execute := fs.Bool("execute", false, "run external executor commands with executor --execute; default is dry-run")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	if *commandTimeout < 0 {
 		fmt.Fprintln(stderr, "worker executor: --command-timeout must be non-negative")
+		return 2
+	}
+	if *commandRetries < 0 {
+		fmt.Fprintln(stderr, "worker executor: --command-retries must be non-negative")
+		return 2
+	}
+	if *retryBackoff < 0 {
+		fmt.Fprintln(stderr, "worker executor: --retry-backoff must be non-negative")
 		return 2
 	}
 	spec, err := gitops.PrepareWorkerExecutor(*root, *sourceClusterID, *projectID, *stage, gitops.WorkerExecutorPrepareSpec{
@@ -856,40 +866,77 @@ func runWorkerExecutor(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		args := withExternalExecutorExecuteFlag(command.Args)
-		commandContext := context.Background()
-		var cancel context.CancelFunc
-		if *commandTimeout > 0 {
-			commandContext, cancel = context.WithTimeout(commandContext, *commandTimeout)
+		maxAttempts := *commandRetries + 1
+		attempts := make([]workerExecutorRunCommandAttemptEvidence, 0, maxAttempts)
+		var commandErr error
+		var parseErr error
+		var timedOut bool
+		var commandEvidence workerExecutorRunCommandEvidence
+		for attempt := 1; attempt <= maxAttempts; attempt++ {
+			commandContext := context.Background()
+			var cancel context.CancelFunc
+			if *commandTimeout > 0 {
+				commandContext, cancel = context.WithTimeout(commandContext, *commandTimeout)
+			}
+			cmd := newWorkerExecutorCommand(commandContext, args[0], args[1:]...)
+			cmd.Dir = *root
+			startedAt := time.Now().UTC()
+			output, err := cmd.CombinedOutput()
+			completedAt := time.Now().UTC()
+			timedOut = commandContext.Err() == context.DeadlineExceeded
+			if cancel != nil {
+				cancel()
+			}
+			if len(output) > 0 {
+				fmt.Fprint(stdout, string(output))
+			}
+			commandEvidenceError := ""
+			if timedOut {
+				commandEvidenceError = fmt.Sprintf("command timed out after %s", commandTimeout.String())
+			}
+			attemptEvidence := workerExecutorRunCommandAttemptEvidence{
+				Attempt:     attempt,
+				ExitCode:    exitCodeForCommandError(err),
+				Output:      string(output),
+				Error:       commandEvidenceError,
+				StartedAt:   startedAt.Format(time.RFC3339Nano),
+				CompletedAt: completedAt.Format(time.RFC3339Nano),
+				DurationMs:  completedAt.Sub(startedAt).Milliseconds(),
+			}
+			attempts = append(attempts, attemptEvidence)
+			cdcAppliedChanges, errParse := workerExecutorCDCAppliedChanges(spec.Stage, string(output))
+			commandEvidence = workerExecutorRunCommandEvidence{
+				ID:                command.ID,
+				Args:              args,
+				ShellCommand:      renderArgsForEvidence(args),
+				ExitCode:          attemptEvidence.ExitCode,
+				Output:            attemptEvidence.Output,
+				Error:             attemptEvidence.Error,
+				AttemptCount:      len(attempts),
+				StartedAt:         attemptEvidence.StartedAt,
+				CompletedAt:       attemptEvidence.CompletedAt,
+				DurationMs:        attemptEvidence.DurationMs,
+				CDCAppliedChanges: cdcAppliedChanges,
+			}
+			if len(attempts) > 1 {
+				commandEvidence.Attempts = attempts
+			}
+			commandErr = err
+			parseErr = errParse
+			if commandErr == nil {
+				break
+			}
+			if attempt == maxAttempts {
+				break
+			}
+			if *retryBackoff > 0 {
+				fmt.Fprintf(stderr, "worker executor: command %s attempt %d/%d failed: %v; retrying after %s\n", command.ID, attempt, maxAttempts, commandErr, retryBackoff.String())
+				time.Sleep(*retryBackoff)
+			} else {
+				fmt.Fprintf(stderr, "worker executor: command %s attempt %d/%d failed: %v; retrying\n", command.ID, attempt, maxAttempts, commandErr)
+			}
 		}
-		cmd := newWorkerExecutorCommand(commandContext, args[0], args[1:]...)
-		cmd.Dir = *root
-		startedAt := time.Now().UTC()
-		output, commandErr := cmd.CombinedOutput()
-		completedAt := time.Now().UTC()
-		timedOut := commandContext.Err() == context.DeadlineExceeded
-		if cancel != nil {
-			cancel()
-		}
-		if len(output) > 0 {
-			fmt.Fprint(stdout, string(output))
-		}
-		cdcAppliedChanges, parseErr := workerExecutorCDCAppliedChanges(spec.Stage, string(output))
-		commandEvidenceError := ""
-		if timedOut {
-			commandEvidenceError = fmt.Sprintf("command timed out after %s", commandTimeout.String())
-		}
-		results = append(results, workerExecutorRunCommandEvidence{
-			ID:                command.ID,
-			Args:              args,
-			ShellCommand:      renderArgsForEvidence(args),
-			ExitCode:          exitCodeForCommandError(commandErr),
-			Output:            string(output),
-			Error:             commandEvidenceError,
-			StartedAt:         startedAt.Format(time.RFC3339Nano),
-			CompletedAt:       completedAt.Format(time.RFC3339Nano),
-			DurationMs:        completedAt.Sub(startedAt).Milliseconds(),
-			CDCAppliedChanges: cdcAppliedChanges,
-		})
+		results = append(results, commandEvidence)
 		if commandErr != nil {
 			if spec.Stage == "validation" {
 				failedCommands++
@@ -934,16 +981,28 @@ func runWorkerExecutor(args []string, stdout, stderr io.Writer) int {
 }
 
 type workerExecutorRunCommandEvidence struct {
-	ID                string   `json:"id"`
-	Args              []string `json:"args"`
-	ShellCommand      string   `json:"shell_command"`
-	ExitCode          int      `json:"exit_code"`
-	Output            string   `json:"output"`
-	Error             string   `json:"error,omitempty"`
-	StartedAt         string   `json:"started_at"`
-	CompletedAt       string   `json:"completed_at"`
-	DurationMs        int64    `json:"duration_ms"`
-	CDCAppliedChanges *int     `json:"cdc_applied_changes,omitempty"`
+	ID                string                                    `json:"id"`
+	Args              []string                                  `json:"args"`
+	ShellCommand      string                                    `json:"shell_command"`
+	ExitCode          int                                       `json:"exit_code"`
+	Output            string                                    `json:"output"`
+	Error             string                                    `json:"error,omitempty"`
+	AttemptCount      int                                       `json:"attempt_count"`
+	Attempts          []workerExecutorRunCommandAttemptEvidence `json:"attempts,omitempty"`
+	StartedAt         string                                    `json:"started_at"`
+	CompletedAt       string                                    `json:"completed_at"`
+	DurationMs        int64                                     `json:"duration_ms"`
+	CDCAppliedChanges *int                                      `json:"cdc_applied_changes,omitempty"`
+}
+
+type workerExecutorRunCommandAttemptEvidence struct {
+	Attempt     int    `json:"attempt"`
+	ExitCode    int    `json:"exit_code"`
+	Output      string `json:"output"`
+	Error       string `json:"error,omitempty"`
+	StartedAt   string `json:"started_at"`
+	CompletedAt string `json:"completed_at"`
+	DurationMs  int64  `json:"duration_ms"`
 }
 
 type workerExecutorRunEvidence struct {
