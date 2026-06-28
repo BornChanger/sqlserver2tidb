@@ -4275,6 +4275,22 @@ func TestGenerateDataMovementPlansRejectsHTTPPrefixForTiDBImportIntoEngine(t *te
 	assertContains(t, err.Error(), "object URI prefix scheme https is not supported by tidb-import-into")
 }
 
+func TestGenerateDataMovementPlansRejectsRemoteFilePrefixForTiDBImportIntoEngine(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+
+	_, err := GenerateDataMovementPlans(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", DataMovementPlanSpec{
+		ObjectURIPrefix: "file://remote-host/migration/prod/full",
+		ChunkSizeRows:   1000000,
+		ExportFormat:    "csv",
+		ImportEngine:    "tidb-import-into",
+	})
+	if err == nil {
+		t.Fatal("GenerateDataMovementPlans() expected remote file prefix error for tidb-import-into")
+	}
+	assertContains(t, err.Error(), "file object URI prefix host must be empty or localhost")
+}
+
 func TestGenerateDataMovementPlansRejectsUnsupportedObjectURIScheme(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, `{"status":"discovered","databases":[]}`)

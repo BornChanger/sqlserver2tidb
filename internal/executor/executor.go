@@ -1560,7 +1560,10 @@ func readTiDBImportIntoFieldsFromLocalSource(sourceURI string) ([]string, error)
 	var path string
 	switch parsed.Scheme {
 	case "":
-		path = sourceURI
+		path, err = cleanAbsoluteTiDBImportIntoLocalPath(sourceURI)
+		if err != nil {
+			return nil, err
+		}
 	case "file":
 		if parsed.Host != "" && parsed.Host != "localhost" {
 			return nil, fmt.Errorf("file source URI host must be empty or localhost")
@@ -1568,7 +1571,10 @@ func readTiDBImportIntoFieldsFromLocalSource(sourceURI string) ([]string, error)
 		if strings.TrimSpace(parsed.Path) == "" {
 			return nil, fmt.Errorf("file source URI path is required")
 		}
-		path = filepath.Clean(parsed.Path)
+		path, err = cleanAbsoluteTiDBImportIntoLocalPath(parsed.Path)
+		if err != nil {
+			return nil, err
+		}
 	case "s3", "gs":
 		return nil, nil
 	default:
@@ -1644,7 +1650,7 @@ func normalizeTiDBImportIntoFileLocation(sourceURI string) (string, error) {
 	}
 	switch parsed.Scheme {
 	case "":
-		return sourceURI, nil
+		return cleanAbsoluteTiDBImportIntoLocalPath(sourceURI)
 	case "file":
 		if parsed.Host != "" && parsed.Host != "localhost" {
 			return "", fmt.Errorf("file source URI host must be empty or localhost")
@@ -1652,12 +1658,20 @@ func normalizeTiDBImportIntoFileLocation(sourceURI string) (string, error) {
 		if strings.TrimSpace(parsed.Path) == "" {
 			return "", fmt.Errorf("file source URI path is required")
 		}
-		return filepath.Clean(parsed.Path), nil
+		return cleanAbsoluteTiDBImportIntoLocalPath(parsed.Path)
 	case "s3", "gs":
 		return parsed.String(), nil
 	default:
 		return "", fmt.Errorf("IMPORT INTO source URI scheme %s is not supported; supported schemes: file, s3, gs, or local path", parsed.Scheme)
 	}
+}
+
+func cleanAbsoluteTiDBImportIntoLocalPath(path string) (string, error) {
+	path = filepath.Clean(strings.TrimSpace(path))
+	if !filepath.IsAbs(path) {
+		return "", fmt.Errorf("local IMPORT INTO source path must be absolute")
+	}
+	return path, nil
 }
 
 func quoteTiDBStringLiteral(value string) string {

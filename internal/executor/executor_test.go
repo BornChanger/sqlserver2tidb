@@ -712,6 +712,22 @@ func TestBuildTiDBImportIntoStatementRejectsHTTPSource(t *testing.T) {
 	assertOutputContains(t, err.Error(), "IMPORT INTO source URI scheme https is not supported")
 }
 
+func TestBuildTiDBImportIntoStatementRejectsRelativeLocalPath(t *testing.T) {
+	_, err := buildTiDBImportIntoStatement("app.orders", "relative/dbo.orders.000001.csv")
+	if err == nil {
+		t.Fatal("buildTiDBImportIntoStatement() error = nil, want relative local path error")
+	}
+	assertOutputContains(t, err.Error(), "local IMPORT INTO source path must be absolute")
+}
+
+func TestReadTiDBImportIntoFieldsFromLocalSourceRejectsRelativePath(t *testing.T) {
+	_, err := readTiDBImportIntoFieldsFromLocalSource("relative/dbo.orders.000001.csv")
+	if err == nil {
+		t.Fatal("readTiDBImportIntoFieldsFromLocalSource() error = nil, want relative local path error")
+	}
+	assertOutputContains(t, err.Error(), "local IMPORT INTO source path must be absolute")
+}
+
 func TestReadTiDBImportIntoFieldsFromLocalSourceSkipsNullBitmap(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "orders.csv")
 	if err := os.WriteFile(path, []byte("id,name,__sqlserver2tidb_null_bitmap\n1,Ada,0\n"), 0o644); err != nil {

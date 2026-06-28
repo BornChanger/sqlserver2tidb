@@ -162,7 +162,18 @@ func validateExecutableObjectURIPrefix(prefix, importEngine string) error {
 	switch normalizeImportEngine(importEngine) {
 	case importEngineTiDBImportInto:
 		switch parsed.Scheme {
-		case "file", "s3", "gs":
+		case "file":
+			if parsed.Host != "" && parsed.Host != "localhost" {
+				return fmt.Errorf("file object URI prefix host must be empty or localhost")
+			}
+			if strings.TrimSpace(parsed.Path) == "" {
+				return fmt.Errorf("file object URI prefix path is required")
+			}
+			if !filepath.IsAbs(filepath.Clean(parsed.Path)) {
+				return fmt.Errorf("file object URI prefix path must be absolute")
+			}
+			return nil
+		case "s3", "gs":
 			return nil
 		case "":
 			return fmt.Errorf("object URI prefix must use file://, s3://, or gs:// for tidb-import-into")
