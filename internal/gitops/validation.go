@@ -987,6 +987,9 @@ func validateExecutorEvidenceContent(path string, project *projectMetadata, expe
 	if strings.TrimSpace(evidence.PayloadHash) != "" && !isValidPayloadHash(evidence.PayloadHash) {
 		return fmt.Errorf("payload_hash %q must use sha256:<64 hex chars>", evidence.PayloadHash)
 	}
+	if err := validateExecutorEvidenceGeneratedAt(evidence.GeneratedAt); err != nil {
+		return err
+	}
 	return validateExecutorEvidenceCommands(status, evidence.Commands)
 }
 

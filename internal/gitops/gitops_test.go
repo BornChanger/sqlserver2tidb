@@ -1345,6 +1345,41 @@ func TestValidateRepoReportsInvalidEvidenceGeneratedAt(t *testing.T) {
 	assertContains(t, strings.Join(report.Errors, "\n"), `invalid evidence clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/import-summary.json: evidence generated_at must be RFC3339`)
 }
 
+func TestValidateRepoReportsInvalidExecutorEvidenceGeneratedAt(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)
+	evidenceRel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-export-run.json"
+	writeFileForTest(t, root, evidenceRel, `{
+  "stage": "export",
+  "status": "succeeded",
+  "generated_at": "not-a-time",
+  "project_id": "sales-db-to-tidb-prod-a",
+  "source_cluster_id": "prod-sqlserver-a",
+  "payload_hash": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "commands": [
+    {
+      "id": "export-1",
+      "args": ["sqlserver2tidb-executor", "export"],
+      "shell_command": "sqlserver2tidb-executor export",
+      "exit_code": 0,
+      "started_at": "2026-06-26T00:00:00Z",
+      "completed_at": "2026-06-26T00:00:01Z",
+      "duration_ms": 1000
+    }
+  ]
+}
+`)
+
+	report, err := ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
+	if report.Valid {
+		t.Fatal("ValidateRepo() valid = true, want invalid executor evidence generated_at")
+	}
+	assertContains(t, strings.Join(report.Errors, "\n"), `invalid executor evidence clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-export-run.json: executor evidence generated_at must be RFC3339`)
+}
+
 func TestValidateRepoReportsExecutorEvidenceMetadataMismatch(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, `{"status":"pending","databases":[]}`)
@@ -3850,6 +3885,45 @@ func TestPrepareExecutorEvidencePRCreateRejectsStaleBody(t *testing.T) {
 		t.Fatal("PrepareExecutorEvidencePRCreate() expected stale body error")
 	}
 	assertContains(t, err.Error(), "executor evidence PR draft clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/prs/executor-ddl-evidence-pr.md is stale; run generate-executor-evidence-pr-draft again")
+}
+
+func TestGenerateExecutorEvidencePRDraftRejectsInvalidGeneratedAt(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateSchemaDraftOnly(root))
+	setSchemaDiffStatus(t, root, "reviewed")
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "ddl")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(ddl) error = %v", err)
+	}
+	writeStageApproval(t, root, "ddl", hash)
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-ddl-run.json", `{
+  "stage": "ddl",
+  "status": "succeeded",
+  "generated_at": "not-a-time",
+  "project_id": "sales-db-to-tidb-prod-a",
+  "source_cluster_id": "prod-sqlserver-a",
+  "payload_hash": "`+hash+`",
+  "commands": [
+    {
+      "id": "schema/tidb-ddl/dbo.orders.sql",
+      "args": ["sqlserver2tidb-executor", "apply-ddl", "--execute"],
+      "shell_command": "sqlserver2tidb-executor apply-ddl --execute",
+      "exit_code": 0,
+      "output": "applied\n",
+      "started_at": "2026-01-02T03:04:05Z",
+      "completed_at": "2026-01-02T03:04:06Z",
+      "duration_ms": 1000
+    }
+  ]
+}
+`)
+
+	_, err = GenerateExecutorEvidencePRDraft(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "ddl")
+	if err == nil {
+		t.Fatal("GenerateExecutorEvidencePRDraft() expected invalid generated_at error")
+	}
+	assertContains(t, err.Error(), "executor evidence generated_at must be RFC3339")
 }
 
 func TestGenerateExecutorEvidencePRDraftRejectsStalePayloadHash(t *testing.T) {

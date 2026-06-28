@@ -38,6 +38,7 @@ type executorEvidenceSummary struct {
 	ProjectID       string                           `json:"project_id"`
 	SourceClusterID string                           `json:"source_cluster_id"`
 	PayloadHash     string                           `json:"payload_hash"`
+	GeneratedAt     string                           `json:"generated_at"`
 	Commands        []executorEvidenceCommandSummary `json:"commands"`
 }
 
@@ -203,6 +204,9 @@ func loadExecutorEvidencePRContext(root, sourceClusterID, projectID, stage strin
 	if evidence.PayloadHash != payloadHash {
 		return executorEvidencePRContext{}, fmt.Errorf("executor evidence payload hash %s does not match current approved payload hash %s", evidence.PayloadHash, payloadHash)
 	}
+	if err := validateExecutorEvidenceGeneratedAt(evidence.GeneratedAt); err != nil {
+		return executorEvidencePRContext{}, err
+	}
 	if err := validateExecutorEvidenceCommands(status, evidence.Commands); err != nil {
 		return executorEvidencePRContext{}, err
 	}
@@ -301,6 +305,16 @@ func validateExecutorEvidenceCommands(status string, commands []executorEvidence
 	}
 	if strings.TrimSpace(status) == "failed" && !hasFailedCommand {
 		return fmt.Errorf("executor evidence status failed requires at least one non-zero command exit_code or command error")
+	}
+	return nil
+}
+
+func validateExecutorEvidenceGeneratedAt(generatedAt string) error {
+	if strings.TrimSpace(generatedAt) == "" {
+		return nil
+	}
+	if _, err := time.Parse(time.RFC3339, generatedAt); err != nil {
+		return fmt.Errorf("executor evidence generated_at must be RFC3339")
 	}
 	return nil
 }
