@@ -1489,6 +1489,132 @@ exit 99
 	}
 }
 
+func TestRunWorkerExecutorResumeSkipsPreviouslySuccessfulCommands(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createCLIProjectWithOneExportChunk(t, root, &stdout, &stderr)
+	if code := Run([]string{
+		"generate-schema-draft",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+	}, &stdout, &stderr); code != 0 {
+		t.Fatalf("generate-schema-draft code = %d, stderr = %s", code, stderr.String())
+	}
+	validationPlanPath := filepath.Join(root, "clusters", "prod-sqlserver-a", "projects", "sales-db-to-tidb-prod-a", "plan", "validation-plan.yaml")
+	if err := os.WriteFile(validationPlanPath, []byte(`status: reviewed
+checks:
+  - id: orders-bucket-0
+    type: bucketed_count
+    source_sql: "SELECT COUNT(*) FROM sales.dbo.orders WHERE id % 2 = 0"
+    target_sql: "SELECT COUNT(*) FROM app.orders WHERE id % 2 = 0"
+  - id: orders-bucket-1
+    type: bucketed_count
+    source_sql: "SELECT COUNT(*) FROM sales.dbo.orders WHERE id % 2 = 1"
+    target_sql: "SELECT COUNT(*) FROM app.orders WHERE id % 2 = 1"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"compute-payload-hash",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "validation",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("compute-payload-hash validation code = %d, stderr = %s", code, stderr.String())
+	}
+	writeCLIStageApproval(t, root, "validation", parsePayloadHash(t, stdout.String()))
+
+	fakeExecutor := filepath.Join(root, "fake-validation-executor-resumable")
+	if err := os.WriteFile(fakeExecutor, []byte(`#!/bin/sh
+printf '%s\n' "$*" >> validation-first-run.log
+case "$*" in
+  *orders-bucket-0*)
+    printf 'bucket 0 matched on first run\n'
+    exit 0
+    ;;
+  *orders-bucket-1*)
+    printf 'bucket 1 transient mismatch on first run\n'
+    exit 17
+    ;;
+esac
+exit 99
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = Run([]string{
+		"worker-executor",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "validation",
+		"--executor-binary", "./fake-validation-executor-resumable",
+		"--execute",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("first worker-executor validation execute code = 0, want failure")
+	}
+
+	if err := os.WriteFile(fakeExecutor, []byte(`#!/bin/sh
+printf '%s\n' "$*" >> validation-resume-run.log
+case "$*" in
+  *orders-bucket-0*)
+    printf 'bucket 0 should have been skipped\n'
+    exit 42
+    ;;
+  *orders-bucket-1*)
+    printf 'bucket 1 matched on resume\n'
+    exit 0
+    ;;
+esac
+exit 99
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = Run([]string{
+		"worker-executor",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "validation",
+		"--executor-binary", "./fake-validation-executor-resumable",
+		"--resume",
+		"--execute",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("resume worker-executor validation execute code = %d, stderr = %s", code, stderr.String())
+	}
+	resumeLog := readCLIRelFile(t, root, "validation-resume-run.log")
+	if strings.Contains(resumeLog, "orders-bucket-0") {
+		t.Fatalf("resume executor log = %q, want previously successful command skipped", resumeLog)
+	}
+	if !strings.Contains(resumeLog, "orders-bucket-1") {
+		t.Fatalf("resume executor log = %q, want failed command retried", resumeLog)
+	}
+	evidence := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-validation-run.json")
+	if !strings.Contains(evidence, `"status": "succeeded"`) {
+		t.Fatalf("executor evidence = %q, want succeeded status", evidence)
+	}
+	if !strings.Contains(evidence, `bucket 0 matched on first run`) {
+		t.Fatalf("executor evidence = %q, want copied skipped command evidence", evidence)
+	}
+	if !strings.Contains(evidence, `bucket 1 matched on resume`) {
+		t.Fatalf("executor evidence = %q, want resumed command evidence", evidence)
+	}
+}
+
 func TestRunWorkerExecutorCDCExecuteRecordsAppliedChangesInEvidence(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer

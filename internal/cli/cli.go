@@ -821,6 +821,7 @@ func runWorkerExecutor(args []string, stdout, stderr io.Writer) int {
 	commandTimeout := fs.Duration("command-timeout", 0, "maximum runtime per external executor command; 0 disables timeout")
 	commandRetries := fs.Int("command-retries", 0, "number of retries for a failed external executor command")
 	retryBackoff := fs.Duration("retry-backoff", time.Second, "fixed backoff between external executor command retries")
+	resume := fs.Bool("resume", false, "skip matching successful commands from existing executor evidence for the current payload hash")
 	execute := fs.Bool("execute", false, "run external executor commands with executor --execute; default is dry-run")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -859,6 +860,14 @@ func runWorkerExecutor(args []string, stdout, stderr io.Writer) int {
 	}
 
 	results := make([]workerExecutorRunCommandEvidence, 0, len(spec.Commands))
+	resumeCommands := map[string]workerExecutorRunCommandEvidence{}
+	if *resume {
+		resumeCommands, err = loadWorkerExecutorResumeCommands(*root, spec)
+		if err != nil {
+			fmt.Fprintf(stderr, "worker executor: %v\n", err)
+			return 1
+		}
+	}
 	failedCommands := 0
 	for _, command := range spec.Commands {
 		if len(command.Args) == 0 {
@@ -866,6 +875,12 @@ func runWorkerExecutor(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		args := withExternalExecutorExecuteFlag(command.Args)
+		if previous, ok := resumeCommands[command.ID]; ok && isReusableWorkerExecutorCommandEvidence(spec.Stage, previous, args) {
+			previous = normalizeWorkerExecutorCommandEvidence(previous)
+			results = append(results, previous)
+			fmt.Fprintf(stdout, "resumed command: %s\n", command.ID)
+			continue
+		}
 		maxAttempts := *commandRetries + 1
 		attempts := make([]workerExecutorRunCommandAttemptEvidence, 0, maxAttempts)
 		var commandErr error
@@ -980,6 +995,77 @@ func runWorkerExecutor(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+func loadWorkerExecutorResumeCommands(root string, spec gitops.WorkerExecutorSpec) (map[string]workerExecutorRunCommandEvidence, error) {
+	path := filepath.Join(root, filepath.FromSlash(workerExecutorRunEvidenceRel(spec)))
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return map[string]workerExecutorRunCommandEvidence{}, nil
+		}
+		return nil, fmt.Errorf("read resume executor evidence: %w", err)
+	}
+	var evidence workerExecutorRunEvidence
+	if err := json.Unmarshal(data, &evidence); err != nil {
+		return nil, fmt.Errorf("parse resume executor evidence: %w", err)
+	}
+	if evidence.Stage != spec.Stage {
+		return nil, fmt.Errorf("resume executor evidence stage %q does not match current stage %q", evidence.Stage, spec.Stage)
+	}
+	if evidence.SourceClusterID != spec.SourceClusterID {
+		return nil, fmt.Errorf("resume executor evidence source_cluster_id %q does not match current source cluster %q", evidence.SourceClusterID, spec.SourceClusterID)
+	}
+	if evidence.ProjectID != spec.ProjectID {
+		return nil, fmt.Errorf("resume executor evidence project_id %q does not match current project %q", evidence.ProjectID, spec.ProjectID)
+	}
+	if evidence.PayloadHash != spec.PayloadHash {
+		return map[string]workerExecutorRunCommandEvidence{}, nil
+	}
+	commands := make(map[string]workerExecutorRunCommandEvidence, len(evidence.Commands))
+	for _, command := range evidence.Commands {
+		commands[command.ID] = command
+	}
+	return commands, nil
+}
+
+func isReusableWorkerExecutorCommandEvidence(stage string, command workerExecutorRunCommandEvidence, expectedArgs []string) bool {
+	if command.ExitCode != 0 || strings.TrimSpace(command.Error) != "" {
+		return false
+	}
+	if !stringSlicesEqual(command.Args, expectedArgs) {
+		return false
+	}
+	if command.ShellCommand != renderArgsForEvidence(expectedArgs) {
+		return false
+	}
+	if stage == "cdc" && command.CDCAppliedChanges == nil {
+		return false
+	}
+	return true
+}
+
+func normalizeWorkerExecutorCommandEvidence(command workerExecutorRunCommandEvidence) workerExecutorRunCommandEvidence {
+	if command.AttemptCount == 0 {
+		if len(command.Attempts) > 0 {
+			command.AttemptCount = len(command.Attempts)
+		} else {
+			command.AttemptCount = 1
+		}
+	}
+	return command
+}
+
+func stringSlicesEqual(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
+}
+
 type workerExecutorRunCommandEvidence struct {
 	ID                string                                    `json:"id"`
 	Args              []string                                  `json:"args"`
@@ -1016,7 +1102,7 @@ type workerExecutorRunEvidence struct {
 }
 
 func writeWorkerExecutorRunEvidence(root string, spec gitops.WorkerExecutorSpec, status string, commands []workerExecutorRunCommandEvidence) (string, error) {
-	rel := filepath.ToSlash(filepath.Join("clusters", spec.SourceClusterID, "projects", spec.ProjectID, "evidence", "executor-"+spec.Stage+"-run.json"))
+	rel := workerExecutorRunEvidenceRel(spec)
 	evidence := workerExecutorRunEvidence{
 		Stage:           spec.Stage,
 		Status:          status,
@@ -1035,6 +1121,10 @@ func writeWorkerExecutorRunEvidence(root string, spec gitops.WorkerExecutorSpec,
 		return "", fmt.Errorf("write executor evidence: %w", err)
 	}
 	return filepath.ToSlash(filepath.Join("evidence", "executor-"+spec.Stage+"-run.json")), nil
+}
+
+func workerExecutorRunEvidenceRel(spec gitops.WorkerExecutorSpec) string {
+	return filepath.ToSlash(filepath.Join("clusters", spec.SourceClusterID, "projects", spec.ProjectID, "evidence", "executor-"+spec.Stage+"-run.json"))
 }
 
 func exitCodeForCommandError(err error) int {
