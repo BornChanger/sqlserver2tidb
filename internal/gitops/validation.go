@@ -1429,7 +1429,10 @@ func validateImportPlanContent(path string) error {
 	if err := validateImportPlanJobs(jobs); err != nil {
 		return err
 	}
-	return validateImportPlanJobSourceURIs(engine, jobs)
+	if err := validateImportPlanJobSourceURIs(engine, jobs); err != nil {
+		return err
+	}
+	return validateImportPlanJobFields(engine, jobs)
 }
 
 func validateImportPlanExportDependencies(exportPlanPath, importPlanPath string) error {

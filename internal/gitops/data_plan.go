@@ -218,6 +218,19 @@ func validateImportPlanJobSourceURIs(engine string, jobs []dataImportJobState) e
 	return nil
 }
 
+func validateImportPlanJobFields(engine string, jobs []dataImportJobState) error {
+	engine = normalizeImportEngine(engine)
+	if engine == importEngineTiDBImportInto {
+		return nil
+	}
+	for _, job := range jobs {
+		if len(job.Fields) > 0 {
+			return fmt.Errorf("import job %s fields are only supported with tidb-import-into", job.ID)
+		}
+	}
+	return nil
+}
+
 func validateImportPlanJobSourceURI(engine string, job dataImportJobState) error {
 	sourceURI := strings.TrimSpace(job.SourceURI)
 	parsed, err := url.Parse(sourceURI)

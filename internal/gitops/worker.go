@@ -343,6 +343,9 @@ func runDataWorker(root, sourceClusterID, projectID, stage string) (DataWorkerRe
 		if err := validateImportPlanJobSourceURIs(engine, jobs); err != nil {
 			return DataWorkerResult{}, err
 		}
+		if err := validateImportPlanJobFields(engine, jobs); err != nil {
+			return DataWorkerResult{}, err
+		}
 		result.Items = len(jobs)
 		result.StateFile = "state/import-jobs.yaml"
 		result.EvidenceFile = "evidence/import-summary.json"

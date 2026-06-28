@@ -2366,6 +2366,31 @@ jobs:
 	assertContains(t, strings.Join(report.Errors, "\n"), "invalid import plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml: import engine lightning is not supported by sqlserver2tidb-executor")
 }
 
+func TestValidateRepoReportsSQLInsertImportJobFields(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml", `status: reviewed
+engine: sql-insert
+jobs:
+  - id: import-dbo.orders.000001
+    target_object: app.orders
+    source_uri: file:///tmp/dbo.orders.000001.csv
+    depends_on_export_chunk: dbo.orders.000001
+    fields:
+      - id
+      - "@sqlserver2tidb_null_bitmap"
+`)
+
+	report, err := ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("ValidateRepo() valid = true, want false")
+	}
+	assertContains(t, strings.Join(report.Errors, "\n"), "invalid import plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml: import job import-dbo.orders.000001 fields are only supported with tidb-import-into")
+}
+
 func TestValidateRepoAcceptsTiDBImportIntoEngine(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
@@ -5070,6 +5095,33 @@ func TestPrepareWorkerExecutorRejectsTiDBImportIntoHTTPSourceURI(t *testing.T) {
 	assertContains(t, err.Error(), "import job import-dbo.orders.000001 source_uri scheme https is not supported by tidb-import-into")
 }
 
+func TestPrepareWorkerExecutorRejectsSQLInsertImportJobFields(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateSchemaDraftOnly(root))
+	must(t, GenerateDataPlansOnly(root))
+	importPlanRel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml"
+	importPlan := readFile(t, root, importPlanRel)
+	importPlan = strings.Replace(importPlan,
+		"    source_uri: https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full/dbo.orders.000001.csv\n",
+		"    source_uri: https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full/dbo.orders.000001.csv\n    fields:\n      - id\n      - \"@sqlserver2tidb_null_bitmap\"\n",
+		1,
+	)
+	writeFileForTest(t, root, importPlanRel, importPlan)
+	setReviewPlanStatus(t, root, "import", "reviewed")
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(import) error = %v", err)
+	}
+	writeStageApproval(t, root, "import", hash)
+
+	_, err = PrepareWorkerExecutor(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import", WorkerExecutorPrepareSpec{})
+	if err == nil {
+		t.Fatal("PrepareWorkerExecutor() expected sql-insert fields error")
+	}
+	assertContains(t, err.Error(), "import job import-dbo.orders.000001 fields are only supported with tidb-import-into")
+}
+
 func TestPrepareWorkerExecutorRejectsUnsupportedImportEngine(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
@@ -5764,6 +5816,33 @@ func TestRunImportWorkerRejectsTiDBImportIntoHTTPSourceURI(t *testing.T) {
 		t.Fatal("RunImportWorker() expected tidb-import-into HTTP source URI error")
 	}
 	assertContains(t, err.Error(), "import job import-dbo.orders.000001 source_uri scheme https is not supported by tidb-import-into")
+}
+
+func TestRunImportWorkerRejectsSQLInsertImportJobFields(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateSchemaDraftOnly(root))
+	must(t, GenerateDataPlansOnly(root))
+	importPlanRel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml"
+	importPlan := readFile(t, root, importPlanRel)
+	importPlan = strings.Replace(importPlan,
+		"    source_uri: https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full/dbo.orders.000001.csv\n",
+		"    source_uri: https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full/dbo.orders.000001.csv\n    fields:\n      - id\n      - \"@sqlserver2tidb_null_bitmap\"\n",
+		1,
+	)
+	writeFileForTest(t, root, importPlanRel, importPlan)
+	setReviewPlanStatus(t, root, "import", "reviewed")
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(import) error = %v", err)
+	}
+	writeStageApproval(t, root, "import", hash)
+
+	_, err = RunImportWorker(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a")
+	if err == nil {
+		t.Fatal("RunImportWorker() expected sql-insert fields error")
+	}
+	assertContains(t, err.Error(), "import job import-dbo.orders.000001 fields are only supported with tidb-import-into")
 }
 
 func TestRunImportWorkerRejectsDraftImportPlan(t *testing.T) {
