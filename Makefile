@@ -6,10 +6,13 @@ BINDIR ?= $(PREFIX)/bin
 BUILDINFO_PACKAGE := github.com/BornChanger/sqlserver2tidb/internal/buildinfo
 LDFLAGS := -X $(BUILDINFO_PACKAGE).Version=$(VERSION) -X $(BUILDINFO_PACKAGE).Commit=$(COMMIT) -X $(BUILDINFO_PACKAGE).BuildDate=$(BUILD_DATE)
 
-.PHONY: test vet check build install dist dist-check dockerfile-check workflow-check example-check validate-repo ci fmt fmt-check script-check smoke-check
+.PHONY: test integration-test vet check build install dist dist-check dockerfile-check workflow-check example-check validate-repo ci fmt fmt-check script-check smoke-check
 
 test:
 	go test -count=1 ./...
+
+integration-test:
+	bash scripts/run-integration-tests.sh
 
 vet:
 	go vet ./...
@@ -58,6 +61,9 @@ dist-check:
 	tar -tzf "$$archive" "sqlserver2tidb_$(VERSION)_linux_amd64/examples/worker-agent/docker-compose.yaml" >/dev/null; \
 	tar -tzf "$$archive" "sqlserver2tidb_$(VERSION)_linux_amd64/examples/worker-agent/systemd/sqlserver2tidb-worker-agent.service" >/dev/null; \
 	tar -tzf "$$archive" "sqlserver2tidb_$(VERSION)_linux_amd64/scripts/run-quickstart-example.sh" >/dev/null; \
+	tar -tzf "$$archive" "sqlserver2tidb_$(VERSION)_linux_amd64/scripts/run-integration-tests.sh" >/dev/null; \
+	tar -tzf "$$archive" "sqlserver2tidb_$(VERSION)_linux_amd64/tests/integration/docker-compose.yaml" >/dev/null; \
+	tar -tzf "$$archive" "sqlserver2tidb_$(VERSION)_linux_amd64/tests/integration/README.md" >/dev/null; \
 	test -s "$$dist_dir/checksums.txt"; \
 	if grep -q "/" "$$dist_dir/checksums.txt"; then echo "checksums.txt must list archive basenames, not paths" >&2; exit 1; fi
 

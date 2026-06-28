@@ -276,6 +276,19 @@ go run ./cmd/sqlserver2tidb prepare-cdc-range \
 
 This rewrites `plan/cdc-plan.yaml` and resets the plan and tracked table statuses to `draft`, so the new range must go through review and approval before execution. For tables that already have entries in `state/cdc-checkpoint.yaml`, the next `from_lsn` is the checkpoint `to_lsn`. For the first range, pass `--from-lsn` explicitly. The command does not connect to SQL Server or discover the current max LSN; use `sqlserver2tidb-executor cdc-lsn --execute` when an operator needs to read SQL Server CDC LSN bounds before preparing the reviewed range.
 
+Prepare one CDC iteration from the committed checkpoint and a known SQL Server max LSN:
+
+```bash
+go run ./cmd/sqlserver2tidb prepare-cdc-iteration \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --max-lsn 0x00000027000001f40004 \
+  --pr-draft
+```
+
+This is the deterministic GitHub-file part of a continuous CDC loop. It compares each tracked table checkpoint `to_lsn` with the supplied `--max-lsn`; if work remains, it rewrites `plan/cdc-plan.yaml` with the next range and can write `prs/cdc-range-pr.md` for review. If all tables are already at `--max-lsn`, it reports `caught_up` and leaves the plan unchanged. It still does not query SQL Server itself; use `sqlserver2tidb-executor cdc-lsn --execute` or an external scheduler to supply the max LSN.
+
 Generate a project-scoped validation draft plan from the current SQL Server inventory and project metadata:
 
 ```bash
@@ -422,6 +435,14 @@ go run ./cmd/sqlserver2tidb worker-agent \
 ```
 
 `worker-agent` is the same deterministic metadata-only loop packaged as a stable process entrypoint for local runs and containers. It requires a holder, uses the source-cluster lease, can be scoped with `--source-cluster-id`, can emit state PR drafts, and stops only when no ready metadata-only action remains unless `--poll` is enabled. In poll mode, `--idle-iterations 0` means keep waiting for new ready metadata actions; set a positive value for bounded smoke tests or batch jobs.
+
+Run optional SQL Server + TiDB executor integration tests:
+
+```bash
+make integration-test
+```
+
+This starts the Docker Compose environment in `tests/integration/`, runs the build-tagged executor integration test, and exercises SQL Server export to local CSV, TiDB import, and row-count validation. The target is intentionally outside default `make ci` because it pulls database images and requires Docker.
 
 Prepare the git and GitHub commands for a worker state write-back PR:
 

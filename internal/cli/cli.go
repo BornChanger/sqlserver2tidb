@@ -45,6 +45,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runGenerateCDCPlan(args[1:], stdout, stderr)
 	case "prepare-cdc-range":
 		return runPrepareCDCRange(args[1:], stdout, stderr)
+	case "prepare-cdc-iteration":
+		return runPrepareCDCIteration(args[1:], stdout, stderr)
 	case "generate-validation-plan":
 		return runGenerateValidationPlan(args[1:], stdout, stderr)
 	case "generate-pr-draft":
@@ -414,6 +416,40 @@ func runPrepareCDCRange(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "cdc range prepared for %s\n", result.ProjectID)
 	fmt.Fprintf(stdout, "updated tables: %d\n", result.UpdatedTables)
 	fmt.Fprintf(stdout, "wrote %s\n", "plan/cdc-plan.yaml")
+	return 0
+}
+
+func runPrepareCDCIteration(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("prepare-cdc-iteration", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	root := fs.String("root", ".", "repository root")
+	sourceClusterID := fs.String("source-cluster-id", "", "upstream SQL Server cluster id")
+	projectID := fs.String("project-id", "", "migration project id")
+	maxLSN := fs.String("max-lsn", "", "latest SQL Server CDC max LSN for this iteration")
+	fromLSN := fs.String("from-lsn", "", "initial CDC from LSN for tables without checkpoint state")
+	prDraft := fs.Bool("pr-draft", false, "write a CDC range PR draft alongside the updated plan")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	result, err := gitops.PrepareCDCIteration(*root, *sourceClusterID, *projectID, gitops.CDCIterationSpec{
+		MaxLSN:         *maxLSN,
+		InitialFromLSN: *fromLSN,
+		WritePRDraft:   *prDraft,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "prepare cdc iteration: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "cdc iteration prepared for %s\n", result.ProjectID)
+	fmt.Fprintf(stdout, "status: %s\n", result.Status)
+	fmt.Fprintf(stdout, "max_lsn: %s\n", result.MaxLSN)
+	fmt.Fprintf(stdout, "updated tables: %d\n", result.UpdatedTables)
+	if result.Status == gitops.CDCIterationStatusRangePrepared {
+		fmt.Fprintf(stdout, "wrote %s\n", "plan/cdc-plan.yaml")
+	}
+	if result.PRBodyFile != "" {
+		fmt.Fprintf(stdout, "PR draft: %s\n", result.PRBodyFile)
+	}
 	return 0
 }
 
@@ -1301,6 +1337,7 @@ Usage:
   sqlserver2tidb generate-data-plans --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --object-uri-prefix https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full
   sqlserver2tidb generate-cdc-plan --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
   sqlserver2tidb prepare-cdc-range --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --to-lsn 0x00000027000001f40003
+  sqlserver2tidb prepare-cdc-iteration --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --max-lsn 0x00000027000001f40004 --pr-draft
   sqlserver2tidb generate-validation-plan --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
   sqlserver2tidb generate-pr-draft --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage schema
   sqlserver2tidb create-pr --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage schema

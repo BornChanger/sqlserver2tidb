@@ -1500,6 +1500,128 @@ func TestRunGenerateCDCPlanAndWorkerCDCCommands(t *testing.T) {
 	assertExists(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/cdc-catchup.json")
 }
 
+func TestRunPrepareCDCIterationCommand(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	if code := Run([]string{"init-repo", "--root", root}, &stdout, &stderr); code != 0 {
+		t.Fatalf("init-repo code = %d, stderr = %s", code, stderr.String())
+	}
+	if code := Run([]string{
+		"create-cluster",
+		"--root", root,
+		"--cluster-id", "prod-sqlserver-a",
+		"--display-name", "prod SQL Server A",
+		"--listener", "sqlserver-a.internal",
+		"--secret-ref", "vault://migration/prod-sqlserver-a/readonly",
+		"--owner", "dba-team",
+	}, &stdout, &stderr); code != 0 {
+		t.Fatalf("create-cluster code = %d, stderr = %s", code, stderr.String())
+	}
+	if code := Run([]string{
+		"create-project",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--display-name", "sales DB to TiDB prod A",
+		"--source-database", "sales",
+		"--source-schema", "dbo",
+		"--target-name", "tidb-prod-a",
+		"--target-database", "app",
+		"--target-secret-ref", "vault://migration/tidb-prod-a/migrate-user",
+		"--owner", "dba-team",
+	}, &stdout, &stderr); code != 0 {
+		t.Fatalf("create-project code = %d, stderr = %s", code, stderr.String())
+	}
+	inventoryPath := filepath.Join(root, "clusters", "prod-sqlserver-a", "inventory", "inventory.json")
+	if err := os.WriteFile(inventoryPath, []byte(`{
+  "status": "discovered",
+  "databases": [
+    {
+      "name": "sales",
+      "schemas": [
+        {
+          "name": "dbo",
+          "tables": [
+            {
+              "name": "orders",
+              "row_count": 2500000,
+              "columns": [
+                {"name": "id", "type": "int"}
+              ],
+              "indexes": [
+                {"name": "PK_orders", "columns": ["id"], "unique": true, "primary_key": true}
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code := Run([]string{
+		"generate-cdc-plan",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+	}, &stdout, &stderr); code != 0 {
+		t.Fatalf("generate-cdc-plan code = %d, stderr = %s", code, stderr.String())
+	}
+	checkpointPath := filepath.Join(root, "clusters", "prod-sqlserver-a", "state", "cdc-checkpoint.yaml")
+	if err := os.WriteFile(checkpointPath, []byte(`source_cluster_id: prod-sqlserver-a
+phase: cdc
+status: running
+project_id: sales-db-to-tidb-prod-a
+mode: sqlserver-cdc
+checkpoint_scope: source-cluster
+checkpoints:
+  - source_object: sales.dbo.orders
+    target_object: app.orders
+    from_lsn: 0x00000000000000000001
+    to_lsn: 0x00000000000000000002
+    applied_changes: 2
+    completed_at: "2026-01-02T03:04:06Z"
+updated_at: "2026-01-02T03:04:07Z"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"prepare-cdc-iteration",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--max-lsn", "0x00000000000000000003",
+		"--pr-draft",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("prepare-cdc-iteration code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "cdc iteration prepared for sales-db-to-tidb-prod-a") {
+		t.Fatalf("prepare-cdc-iteration stdout = %q, want prepared message", output)
+	}
+	if !strings.Contains(output, "status: range_prepared") {
+		t.Fatalf("prepare-cdc-iteration stdout = %q, want range_prepared status", output)
+	}
+	if !strings.Contains(output, "PR draft: clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/prs/cdc-range-pr.md") {
+		t.Fatalf("prepare-cdc-iteration stdout = %q, want PR draft path", output)
+	}
+	plan := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/cdc-plan.yaml")
+	if !strings.Contains(plan, "from_lsn: 0x00000000000000000002") || !strings.Contains(plan, "to_lsn: 0x00000000000000000003") {
+		t.Fatalf("cdc plan = %q, want next range", plan)
+	}
+	body := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/prs/cdc-range-pr.md")
+	if !strings.Contains(body, "# PR Draft: [cdc-range] sales-db-to-tidb-prod-a") {
+		t.Fatalf("cdc range PR draft = %q, want title", body)
+	}
+}
+
 func TestRunGenerateValidationPlanCommand(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer

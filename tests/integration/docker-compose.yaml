@@ -1,0 +1,18 @@
+services:
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "${SQLSERVER2TIDB_INTEGRATION_SQLSERVER_PASSWORD:-Sqlserver2tidb!2026}"
+    ports:
+      - "${SQLSERVER2TIDB_INTEGRATION_SQLSERVER_PORT:-14333}:1433"
+
+  tidb:
+    image: pingcap/tidb:v8.5.0
+    command:
+      - --store=unistore
+      - --path=
+      - --host=0.0.0.0
+    ports:
+      - "${SQLSERVER2TIDB_INTEGRATION_TIDB_PORT:-4000}:4000"
+      - "${SQLSERVER2TIDB_INTEGRATION_TIDB_STATUS_PORT:-10080}:10080"

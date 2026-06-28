@@ -1809,7 +1809,20 @@ bin/sqlserver2tidb prepare-cdc-range \
 
 该命令读取当前 `plan/cdc-plan.yaml` 和源集群级 `state/cdc-checkpoint.yaml`，把已有 checkpoint entry 的 `to_lsn` 写成下一段 plan 的 `from_lsn`，并把 operator 提供的 `--to-lsn` 写成下一段 plan 的 `to_lsn`。如果 tracked table 还没有 checkpoint entry，必须传 `--from-lsn` 作为第一段 CDC range 的起点。命令会校验 `from_lsn <= to_lsn`；不连接 SQL Server，不查询 max LSN，会把 CDC plan 顶层和 tracked table status 重置为 `draft`，让新的 range 重新经过 PR review 和 approval。
 
-### 16.9.2 generate-validation-plan
+### 16.9.2 prepare-cdc-iteration
+
+```bash
+bin/sqlserver2tidb prepare-cdc-iteration \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --max-lsn 0x00000027000001f40004 \
+  --pr-draft
+```
+
+该命令是连续 CDC 编排里的 GitHub 文件推进步骤。它不连接 SQL Server，而是接收外部探测得到的 `--max-lsn`，读取源集群级 `state/cdc-checkpoint.yaml`，把每张 tracked table 的 checkpoint `to_lsn` 与 `--max-lsn` 比较。如果还有增量需要执行，它会把下一段 range 写入 `plan/cdc-plan.yaml`，把 plan 状态重置为 `draft`，并在 `--pr-draft` 开启时生成 `prs/cdc-range-pr.md` 供 review。如果所有 tracked table 都已经到达 `--max-lsn`，命令输出 `status: caught_up`，不会修改 plan，也不会生成 PR 草稿。第一段 CDC 没有 checkpoint 时，仍需要通过 `--from-lsn` 提供起点。
+
+### 16.9.3 generate-validation-plan
 
 ```bash
 bin/sqlserver2tidb generate-validation-plan \
@@ -2164,7 +2177,7 @@ bin/sqlserver2tidb-executor cdc-lsn \
   --source-object sales.dbo.orders
 ```
 
-执行模式会读取 `sys.fn_cdc_get_max_lsn()`；如果提供 `--source-object`，还会按 `schema_table` 规则推导 capture instance，并读取 `sys.fn_cdc_get_min_lsn()`。输出的 `max_lsn` 可作为 `prepare-cdc-range --to-lsn` 的候选输入；如果是第一段 CDC range，输出的 `min_lsn` 可作为 `prepare-cdc-range --from-lsn` 的候选输入。该命令只读 SQL Server，不写 GitHub metadata，也不会直接修改 CDC plan。
+执行模式会读取 `sys.fn_cdc_get_max_lsn()`；如果提供 `--source-object`，还会按 `schema_table` 规则推导 capture instance，并读取 `sys.fn_cdc_get_min_lsn()`。输出的 `max_lsn` 可作为 `prepare-cdc-iteration --max-lsn` 的候选输入，也可以直接作为 `prepare-cdc-range --to-lsn` 的显式输入；如果是第一段 CDC range，输出的 `min_lsn` 可作为 `prepare-cdc-iteration --from-lsn` 或 `prepare-cdc-range --from-lsn` 的候选输入。该命令只读 SQL Server，不写 GitHub metadata，也不会直接修改 CDC plan。
 
 CDC dry-run：
 
@@ -2182,7 +2195,7 @@ bin/sqlserver2tidb-executor cdc \
   --apply-batch-size 1000
 ```
 
-当前 binary 默认只做参数解析和 dry-run 输出。`export --execute` 会连接 SQL Server，并把 CSV 写到本地 `file://` 或 HTTP(S) URL；它会在 header 尾部增加内部 `__sqlserver2tidb_null_bitmap` 列，用来保留每行 NULL 位置。它不会使用原生 S3/GCS/Azure Blob SDK，也不会生成 Parquet。`import --execute --engine sql-insert` 会连接 TiDB，并从本地 `file://` 或 HTTP(S) CSV 流式逐行插入，按 batch size 分批提交；如果 CSV 带内部 null bitmap 尾列，会恢复 NULL 并不把该内部列写入目标表。`import --execute --engine tidb-import-into` 会连接 TiDB，先用 `COUNT(*)` 预检目标表为空，再执行 `IMPORT INTO ... FROM FILE`，支持本地路径、`file://`、`s3://`、`gs://`，其中本地/file CSV 会读取 header 并跳过内部 null bitmap 尾列，远端对象存储 CSV 可通过 `--fields` 显式列名/user variable 列表跳过该尾列。它不会调用 Lightning。`validate-count --execute` 会连接 SQL Server 和 TiDB，比较单对象 `COUNT(*)`。`validate-query --execute` 会连接 SQL Server 和 TiDB，比较已 review 的单行单列标量查询结果，并在成功输出里带上 `check-id`。`cdc-lsn --execute` 会连接 SQL Server，读取 CDC max LSN，并在提供源对象时读取 capture instance min LSN。`cdc --execute` 会先校验 captured columns、key columns、LSN range 和源端/目标端连接串环境变量，然后调用 SQL Server CDC change function 并把 delete/upsert 变更写入 TiDB。`advance-cdc-checkpoint` 可以基于成功 CDC executor evidence 推进 GitHub metadata checkpoint；`prepare-cdc-range` 可以基于 checkpoint 派生下一段 plan 的 `from_lsn`。当前还没有自动把 SQL Server max LSN 写入 GitHub plan 或长周期 streaming loop。
+当前 binary 默认只做参数解析和 dry-run 输出。`export --execute` 会连接 SQL Server，并把 CSV 写到本地 `file://` 或 HTTP(S) URL；它会在 header 尾部增加内部 `__sqlserver2tidb_null_bitmap` 列，用来保留每行 NULL 位置。它不会使用原生 S3/GCS/Azure Blob SDK，也不会生成 Parquet。`import --execute --engine sql-insert` 会连接 TiDB，并从本地 `file://` 或 HTTP(S) CSV 流式逐行插入，按 batch size 分批提交；如果 CSV 带内部 null bitmap 尾列，会恢复 NULL 并不把该内部列写入目标表。`import --execute --engine tidb-import-into` 会连接 TiDB，先用 `COUNT(*)` 预检目标表为空，再执行 `IMPORT INTO ... FROM FILE`，支持本地路径、`file://`、`s3://`、`gs://`，其中本地/file CSV 会读取 header 并跳过内部 null bitmap 尾列，远端对象存储 CSV 可通过 `--fields` 显式列名/user variable 列表跳过该尾列。它不会调用 Lightning。`validate-count --execute` 会连接 SQL Server 和 TiDB，比较单对象 `COUNT(*)`。`validate-query --execute` 会连接 SQL Server 和 TiDB，比较已 review 的单行单列标量查询结果，并在成功输出里带上 `check-id`。`cdc-lsn --execute` 会连接 SQL Server，读取 CDC max LSN，并在提供源对象时读取 capture instance min LSN。`cdc --execute` 会先校验 captured columns、key columns、LSN range 和源端/目标端连接串环境变量，然后调用 SQL Server CDC change function 并把 delete/upsert 变更写入 TiDB。`advance-cdc-checkpoint` 可以基于成功 CDC executor evidence 推进 GitHub metadata checkpoint；`prepare-cdc-range` 和 `prepare-cdc-iteration` 可以基于 checkpoint 派生下一段 plan 的 `from_lsn`。当前还没有长周期 streaming loop 或自动审批 GitHub CDC range PR。
 
 ### 16.20 worker-reconcile
 
