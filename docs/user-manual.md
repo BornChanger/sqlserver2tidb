@@ -46,6 +46,7 @@ LLM 只生成解释、候选方案和文档，不直接执行迁移
 - 执行 `worker-reconcile --execute-next`，在源集群 lease 保护下执行第一个 ready metadata-only worker action。
 - 可选执行 `worker-reconcile --execute-next --state-pr-draft`，为 state/evidence/lease 写回生成项目级 PR draft。
 - 通过 `create-worker-state-pr` dry-run 准备 state/evidence/lease 写回 PR 的 git push 和 GitHub 命令。
+- 提供多阶段 Dockerfile，可构建包含 `sqlserver2tidb` 和 `sqlserver2tidb-executor` 的非 root CLI 镜像。
 - 通过 `generate-executor-evidence-pr-draft` 生成 executor-only evidence PR body，并通过 `create-executor-evidence-pr` dry-run 准备 git push 和 GitHub 命令，尤其是 DDL apply evidence。
 - 创建上游 SQL Server 集群目录。
 - 在上游 SQL Server 集群下创建迁移项目目录。
@@ -232,6 +233,26 @@ DIST_TARGETS="linux/amd64 darwin/arm64" make dist VERSION=v0.1.0
 归档会写入 `dist/`。
 
 发布二进制时，推送形如 `v0.1.0` 的 tag 会触发 release workflow，为 Linux、macOS 和 Windows 构建归档、生成 checksums，并创建 GitHub Release。
+
+本地构建容器镜像：
+
+```bash
+docker build \
+  --build-arg VERSION=dev \
+  --build-arg COMMIT="$(git rev-parse --short HEAD)" \
+  --build-arg BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  -t sqlserver2tidb:dev .
+```
+
+挂载迁移 metadata 仓库并执行预检：
+
+```bash
+docker run --rm \
+  -v "$PWD:/workspace" \
+  sqlserver2tidb:dev doctor --root /workspace
+```
+
+镜像内包含 `git`、`sqlserver2tidb` 和 `sqlserver2tidb-executor`，默认使用非 root 的 `sqlserver2tidb` 用户运行。镜像不内置 GitHub CLI；如果需要在容器内执行 `create-pr --execute`、`create-worker-state-pr --execute` 或 `create-executor-evidence-pr --execute`，请扩展镜像安装 `gh`，或者在宿主机执行这些 GitHub PR wrapper。
 
 ### 5.4 运行测试
 

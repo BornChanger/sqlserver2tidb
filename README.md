@@ -30,6 +30,7 @@ This MVP provides:
 - Read-only worker reconcile dry-run planning across source clusters and projects.
 - Worker state PR draft generation and a dry-run-by-default branch/commit/push/GitHub PR wrapper.
 - An offline quickstart example that generates and validates a sample migration metadata repository without connecting to SQL Server, TiDB, GitHub, or object storage.
+- A multi-stage Dockerfile for building a non-root CLI image with `sqlserver2tidb` and `sqlserver2tidb-executor`.
 - Source-cluster-first metadata organization:
 
   ```text
@@ -98,6 +99,26 @@ DIST_TARGETS="linux/amd64 darwin/arm64" make dist VERSION=v0.1.0
 ```
 
 Pushing a tag like `v0.1.0` runs the release workflow, builds Linux/macOS/Windows archives, publishes checksums, and creates a GitHub Release.
+
+Build a local container image:
+
+```bash
+docker build \
+  --build-arg VERSION=dev \
+  --build-arg COMMIT="$(git rev-parse --short HEAD)" \
+  --build-arg BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  -t sqlserver2tidb:dev .
+```
+
+Run the CLI against a mounted migration metadata repository:
+
+```bash
+docker run --rm \
+  -v "$PWD:/workspace" \
+  sqlserver2tidb:dev doctor --root /workspace
+```
+
+The image includes `git`, `sqlserver2tidb`, and `sqlserver2tidb-executor`, and runs as a non-root `sqlserver2tidb` user. It does not include GitHub CLI; use the host CLI or extend the image when `create-pr --execute`, `create-worker-state-pr --execute`, or `create-executor-evidence-pr --execute` must call `gh`.
 
 ## Test
 
