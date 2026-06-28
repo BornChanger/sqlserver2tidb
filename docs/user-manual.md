@@ -1463,6 +1463,8 @@ bin/sqlserver2tidb worker-reconcile --root . --dry-run
 
 `worker-reconcile --dry-run` 不执行 worker，不获取 lease，不写 state/evidence，不创建分支或 PR。它是完整 reconcile loop 的只读预演；如果 export/import/CDC/validation 的同一 approved payload hash 已经写过 `planned`、`passed` 或 `failed` 等非空状态，dry-run 会把该 stage 标成 blocked，避免 loop 对同一 payload 反复写状态。
 
+加上 `--json` 后，dry-run 会输出机器可读 JSON，字段包括 `projects`、`ready_actions`、`blocked_actions` 和 `actions`，方便调度器、监控或外部 agent wrapper 读取。`--json` 只支持 dry-run，不支持 execute-next 或 loop。
+
 当前 MVP 还支持单步执行：
 
 ```bash
@@ -2203,6 +2205,8 @@ bin/sqlserver2tidb worker-reconcile \
 ```
 
 `--dry-run` 扫描所有 source cluster 和 project，对 `ddl`、`export`、`import`、`cdc`、`validation` 计算 ready/blocked 状态，并为 ready action 输出对应命令。`ddl` 的命令是 `worker-executor --stage ddl`；其他 metadata-only stage 会输出对应的单项目 worker 命令。它不执行 worker，不获取 worker lease，不写 state/evidence，也不创建 GitHub PR。
+
+`--dry-run --json` 输出同一报告的 JSON 形式，适合调度器、监控和外部 agent wrapper 消费；JSON 模式不会输出文本 header。
 
 `--execute-next` 只会选择第一个 ready metadata-only action，也就是 `export`、`import`、`cdc` 或 `validation`，获取或续租 source-cluster 级 worker lease，然后执行对应 metadata-only worker。`ddl` 是 executor-only action，需要显式通过 `worker-executor --stage ddl` 执行。`--holder` 必填，`--lease-ttl` 默认是 `15m`。该模式会写 `state/worker-lease.yaml` 和被选中 worker 对应的 state/evidence 文件；active lease 会包含 `holder`、`lease_id`、`phase`、`project_id`、`expires_at` 和 `renewed_at`，时间字段使用 RFC3339。
 

@@ -9,20 +9,20 @@ import (
 )
 
 type WorkerReconcileReport struct {
-	Projects       int
-	ReadyActions   int
-	BlockedActions int
-	Actions        []WorkerReconcileAction
+	Projects       int                     `json:"projects"`
+	ReadyActions   int                     `json:"ready_actions"`
+	BlockedActions int                     `json:"blocked_actions"`
+	Actions        []WorkerReconcileAction `json:"actions"`
 }
 
 type WorkerReconcileAction struct {
-	SourceClusterID string
-	ProjectID       string
-	Stage           string
-	Status          string
-	Reason          string
-	PayloadHash     string
-	Command         string
+	SourceClusterID string `json:"source_cluster_id"`
+	ProjectID       string `json:"project_id"`
+	Stage           string `json:"stage"`
+	Status          string `json:"status"`
+	Reason          string `json:"reason,omitempty"`
+	PayloadHash     string `json:"payload_hash,omitempty"`
+	Command         string `json:"command,omitempty"`
 }
 
 type WorkerReconcileExecuteSpec struct {

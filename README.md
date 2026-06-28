@@ -377,6 +377,8 @@ go run ./cmd/sqlserver2tidb worker-reconcile \
 
 This scans cluster/project metadata and reports which `worker-executor --stage ddl`, `worker-export`, `worker-import`, `worker-cdc`, and `worker-validate` actions are ready or blocked by approval/hash checks. DDL actions are blocked until `schema/schema-diff.json` is `reviewed`; export, import, CDC, and validation actions are blocked while their plan files are still `draft`. A metadata-only stage is also blocked when the same approved payload hash already has non-empty state such as `planned`, `passed`, or `failed`, preventing reconcile loops from repeatedly running the same action. It does not execute workers, acquire leases, or write state.
 
+Add `--json` to emit the same dry-run report as machine-readable JSON with `projects`, `ready_actions`, `blocked_actions`, and `actions` fields.
+
 Execute the first ready metadata-only worker action with a source-cluster lease:
 
 ```bash

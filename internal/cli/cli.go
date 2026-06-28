@@ -937,6 +937,7 @@ func runWorkerReconcile(args []string, stdout, stderr io.Writer) int {
 	dryRun := fs.Bool("dry-run", false, "plan worker actions without executing them")
 	executeNext := fs.Bool("execute-next", false, "execute the first ready metadata-only worker action")
 	loop := fs.Bool("loop", false, "execute ready metadata-only worker actions until none remain or max iterations is reached")
+	jsonOutput := fs.Bool("json", false, "write dry-run report as JSON")
 	maxIterations := fs.Int("max-iterations", 0, "maximum loop iterations; 0 means continue until no ready metadata-only actions remain")
 	interval := fs.Duration("interval", 5*time.Second, "sleep interval between loop iterations")
 	holder := fs.String("holder", "", "worker lease holder id for --execute-next or --loop")
@@ -953,6 +954,10 @@ func runWorkerReconcile(args []string, stdout, stderr io.Writer) int {
 	}
 	if selectedModes != 1 {
 		fmt.Fprintln(stderr, "worker-reconcile requires exactly one of --dry-run, --execute-next, or --loop")
+		return 2
+	}
+	if *jsonOutput && !*dryRun {
+		fmt.Fprintln(stderr, "worker-reconcile --json is only supported with --dry-run")
 		return 2
 	}
 	if *loop {
@@ -998,6 +1003,15 @@ func runWorkerReconcile(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		fmt.Fprintf(stderr, "worker reconcile: %v\n", err)
 		return 1
+	}
+	if *jsonOutput {
+		encoder := json.NewEncoder(stdout)
+		encoder.SetIndent("", "  ")
+		if err := encoder.Encode(report); err != nil {
+			fmt.Fprintf(stderr, "worker reconcile json: %v\n", err)
+			return 1
+		}
+		return 0
 	}
 	fmt.Fprintln(stdout, "worker reconcile dry run")
 	fmt.Fprintf(stdout, "projects: %d\n", report.Projects)

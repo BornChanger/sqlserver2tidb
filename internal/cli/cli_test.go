@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1946,6 +1947,43 @@ func TestRunWorkerReconcileDryRunCommand(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "import approval is not approved") {
 		t.Fatalf("worker-reconcile stdout = %q, want import block reason", stdout.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = Run([]string{
+		"worker-reconcile",
+		"--root", root,
+		"--dry-run",
+		"--json",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("worker-reconcile json code = %d, stderr = %s", code, stderr.String())
+	}
+	var report struct {
+		Projects       int `json:"projects"`
+		ReadyActions   int `json:"ready_actions"`
+		BlockedActions int `json:"blocked_actions"`
+		Actions        []struct {
+			SourceClusterID string `json:"source_cluster_id"`
+			ProjectID       string `json:"project_id"`
+			Stage           string `json:"stage"`
+			Status          string `json:"status"`
+			Reason          string `json:"reason"`
+			Command         string `json:"command"`
+		} `json:"actions"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("worker-reconcile json stdout = %q, unmarshal error = %v", stdout.String(), err)
+	}
+	if report.Projects != 1 || report.ReadyActions != 2 || report.BlockedActions == 0 {
+		t.Fatalf("worker-reconcile json report = %+v, want project/ready/blocked counts", report)
+	}
+	if len(report.Actions) == 0 || report.Actions[0].SourceClusterID != "prod-sqlserver-a" {
+		t.Fatalf("worker-reconcile json report = %+v, want source cluster id", report)
+	}
+	if strings.Contains(stdout.String(), "worker reconcile dry run") {
+		t.Fatalf("worker-reconcile json stdout = %q, should not include text header", stdout.String())
 	}
 }
 
