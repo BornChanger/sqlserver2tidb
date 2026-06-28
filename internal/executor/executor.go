@@ -805,6 +805,10 @@ func runImport(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "executor import: fields is only supported with tidb-import-into")
 		return 1
 	}
+	if err := validateImportSourceURIForEngine(normalizedEngine, *sourceURI); err != nil {
+		fmt.Fprintf(stderr, "executor import: %v\n", err)
+		return 1
+	}
 	if normalizedEngine == importEngineTiDBImportInto {
 		if err := requireTiDBImportIntoFieldsForRemoteSource(*sourceURI, fields); err != nil {
 			fmt.Fprintf(stderr, "executor import: %v\n", err)
@@ -851,6 +855,19 @@ func runImport(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintln(stdout, "No TiDB connection will be opened.")
 	return 0
+}
+
+func validateImportSourceURIForEngine(engine, sourceURI string) error {
+	switch engine {
+	case importEngineSQLInsert:
+		_, err := parseImportSourceURI(sourceURI)
+		return err
+	case importEngineTiDBImportInto:
+		_, err := normalizeTiDBImportIntoFileLocation(sourceURI)
+		return err
+	default:
+		return fmt.Errorf("unsupported import engine %q", engine)
+	}
 }
 
 func runValidateCount(args []string, stdout, stderr io.Writer) int {
@@ -1302,7 +1319,7 @@ func parseImportSourceURI(sourceURI string) (importSourceURI, error) {
 			uri:    parsed.String(),
 		}, nil
 	default:
-		return importSourceURI{}, fmt.Errorf("only file://, http://, and https:// source URIs are supported for --execute")
+		return importSourceURI{}, fmt.Errorf("only file://, http://, and https:// source URIs are supported for sql-insert import")
 	}
 }
 

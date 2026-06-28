@@ -184,6 +184,44 @@ func TestRunImportDryRunCommand(t *testing.T) {
 	assertOutputContains(t, output, "No TiDB connection will be opened.")
 }
 
+func TestRunImportDryRunRejectsUnsupportedSQLInsertSourceURI(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"import",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--job-id", "import-dbo.orders.000001",
+		"--target-object", "app.orders",
+		"--source-uri", "s3://migration/prod/full/dbo.orders.000001.csv",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("import dry-run code = 0, want non-zero; stdout = %s", stdout.String())
+	}
+	assertOutputContains(t, stderr.String(), "executor import: only file://, http://, and https:// source URIs are supported for sql-insert import")
+}
+
+func TestRunImportDryRunRejectsUnsupportedTiDBImportIntoSourceURI(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"import",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--job-id", "import-dbo.orders.000001",
+		"--target-object", "app.orders",
+		"--source-uri", "https://object-store.example/migration/prod/full/dbo.orders.000001.csv",
+		"--engine", "tidb-import-into",
+		"--fields", "id,name,@sqlserver2tidb_null_bitmap",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("import dry-run code = 0, want non-zero; stdout = %s", stdout.String())
+	}
+	assertOutputContains(t, stderr.String(), "executor import: IMPORT INTO source URI scheme https is not supported")
+}
+
 func TestRunApplyDDLDryRunCommand(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 
@@ -286,7 +324,7 @@ func TestRunImportExecuteRejectsNonFileSourceURI(t *testing.T) {
 	if code == 0 {
 		t.Fatalf("import execute code = 0, want non-zero")
 	}
-	assertOutputContains(t, stderr.String(), "executor import: only file://, http://, and https:// source URIs are supported for --execute")
+	assertOutputContains(t, stderr.String(), "executor import: only file://, http://, and https:// source URIs are supported for sql-insert import")
 }
 
 func TestRunImportExecuteRequiresConnectionStringEnv(t *testing.T) {
