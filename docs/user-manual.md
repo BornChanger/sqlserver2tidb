@@ -238,6 +238,24 @@ DIST_TARGETS="linux/amd64 darwin/arm64" make dist VERSION=v0.1.0
 make test
 ```
 
+运行与 GitHub Actions 对齐的本地检查：
+
+```bash
+make ci
+```
+
+运行离线 quickstart 样例：
+
+```bash
+make example-check
+```
+
+该命令会在临时目录生成一个迁移 metadata 仓库，注入 `examples/quickstart/inventory.json`，生成 schema/data/CDC/validation 草稿，执行 `worker-reconcile --dry-run`，并运行 `validate-repo`。它不会连接 SQL Server、TiDB、GitHub 或对象存储。如果需要保留生成结果用于查看，指定一个空目录：
+
+```bash
+SQLSERVER2TIDB_QUICKSTART_ROOT=/tmp/sqlserver2tidb-quickstart make example-check
+```
+
 ## 6. 初始化迁移控制仓库
 
 在仓库根目录执行：

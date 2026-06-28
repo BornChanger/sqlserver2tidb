@@ -1,0 +1,52 @@
+{
+  "status": "discovered",
+  "databases": [
+    {
+      "name": "sales",
+      "schemas": [
+        {
+          "name": "dbo",
+          "tables": [
+            {
+              "name": "orders",
+              "row_count": 1000,
+              "columns": [
+                {
+                  "name": "id",
+                  "type": "int"
+                },
+                {
+                  "name": "customer_id",
+                  "type": "bigint"
+                },
+                {
+                  "name": "amount",
+                  "type": "decimal(18,2)"
+                },
+                {
+                  "name": "status",
+                  "type": "nvarchar(32)"
+                },
+                {
+                  "name": "updated_at",
+                  "type": "datetime2"
+                }
+              ],
+              "indexes": [
+                {
+                  "name": "PK_orders",
+                  "columns": [
+                    "id"
+                  ],
+                  "unique": true,
+                  "primary_key": true
+                }
+              ]
+            }
+          ],
+          "routines": []
+        }
+      ]
+    }
+  ]
+}

@@ -6,7 +6,7 @@ BINDIR ?= $(PREFIX)/bin
 BUILDINFO_PACKAGE := github.com/BornChanger/sqlserver2tidb/internal/buildinfo
 LDFLAGS := -X $(BUILDINFO_PACKAGE).Version=$(VERSION) -X $(BUILDINFO_PACKAGE).Commit=$(COMMIT) -X $(BUILDINFO_PACKAGE).BuildDate=$(BUILD_DATE)
 
-.PHONY: test vet check build install dist dist-check validate-repo ci fmt fmt-check script-check smoke-check
+.PHONY: test vet check build install dist dist-check example-check validate-repo ci fmt fmt-check script-check smoke-check
 
 test:
 	go test -count=1 ./...
@@ -53,10 +53,15 @@ dist-check:
 	test -s "$$archive"; \
 	tar -tzf "$$archive" "sqlserver2tidb_$(VERSION)_linux_amd64/README.md" >/dev/null; \
 	tar -tzf "$$archive" "sqlserver2tidb_$(VERSION)_linux_amd64/docs/user-manual.md" >/dev/null; \
+	tar -tzf "$$archive" "sqlserver2tidb_$(VERSION)_linux_amd64/examples/quickstart/inventory.json" >/dev/null; \
+	tar -tzf "$$archive" "sqlserver2tidb_$(VERSION)_linux_amd64/scripts/run-quickstart-example.sh" >/dev/null; \
 	test -s "$$dist_dir/checksums.txt"; \
 	if grep -q "/" "$$dist_dir/checksums.txt"; then echo "checksums.txt must list archive basenames, not paths" >&2; exit 1; fi
+
+example-check:
+	bash scripts/run-quickstart-example.sh
 
 validate-repo: build
 	bin/sqlserver2tidb validate-repo --root .
 
-ci: fmt-check script-check test vet check build smoke-check dist-check validate-repo
+ci: fmt-check script-check test vet check build smoke-check dist-check example-check validate-repo

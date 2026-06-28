@@ -28,6 +28,7 @@ This MVP provides:
 - Approved validation-only worker execution.
 - Read-only worker reconcile dry-run planning across source clusters and projects.
 - Worker state PR draft generation and a dry-run-by-default branch/commit/push/GitHub PR wrapper.
+- An offline quickstart example that generates and validates a sample migration metadata repository without connecting to SQL Server, TiDB, GitHub, or object storage.
 - Source-cluster-first metadata organization:
 
   ```text
@@ -107,6 +108,18 @@ Run the same gate used by GitHub Actions:
 
 ```bash
 make ci
+```
+
+Run the offline quickstart example:
+
+```bash
+make example-check
+```
+
+This creates a temporary metadata repository from `examples/quickstart/inventory.json`, generates schema/data/CDC/validation drafts, runs `worker-reconcile --dry-run`, and validates the generated repository. To keep the generated repository for inspection, provide an empty output directory:
+
+```bash
+SQLSERVER2TIDB_QUICKSTART_ROOT=/tmp/sqlserver2tidb-quickstart make example-check
 ```
 
 ## Quick Start
