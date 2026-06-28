@@ -69,7 +69,7 @@ This command creates a local branch, commits files, pushes the branch, and opens
 - require every command record to include RFC3339Nano `started_at` and `completed_at`, plus non-negative `duration_ms`, reject completion timestamps earlier than start timestamps, and require optional `cdc_applied_changes` values to be non-negative;
 - reject `succeeded` evidence when any command has a non-zero `exit_code`;
 - reject `failed` evidence when no command has a non-zero `exit_code`;
-- render command IDs, exit codes, timestamps, and durations directly into the generated PR body for review;
+- render command IDs, exit codes, timestamps, durations, and whitespace-normalized output summaries directly into the generated PR body for review;
 - write or consume `clusters/<source_cluster_id>/projects/<project_id>/prs/executor-<stage>-evidence-pr.md`;
 - reconstruct deterministic `git switch`, `git add`, `git commit`, `git push`, and `gh pr create` commands.
 

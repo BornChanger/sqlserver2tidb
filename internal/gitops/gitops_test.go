@@ -3274,7 +3274,7 @@ func TestGenerateExecutorEvidencePRDraftWritesDDLBody(t *testing.T) {
 	assertContains(t, body, "Status: `succeeded`")
 	assertContains(t, body, "Payload hash: `"+hash+"`")
 	assertContains(t, body, "## Executor Commands")
-	assertContains(t, body, "| schema/tidb-ddl/dbo.orders.sql | 0 | 2026-01-02T03:04:05Z | 2026-01-02T03:04:06Z | 1000 |")
+	assertContains(t, body, "| schema/tidb-ddl/dbo.orders.sql | 0 | 2026-01-02T03:04:05Z | 2026-01-02T03:04:06Z | 1000 | applied |")
 	assertContains(t, body, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-ddl-run.json")
 	assertContains(t, body, "gh pr create --base main --head agent/sales-db-to-tidb-prod-a/executor-ddl-evidence")
 }
@@ -3319,8 +3319,64 @@ func TestGenerateExecutorEvidencePRDraftIncludesCDCAppliedChanges(t *testing.T) 
 	assertStringSliceContains(t, draft.Files, "clusters/prod-sqlserver-a/state/cdc-checkpoint.yaml")
 	body := readFile(t, root, draft.BodyFile)
 	assertContains(t, body, "clusters/prod-sqlserver-a/state/cdc-checkpoint.yaml")
-	assertContains(t, body, "| Command ID | Exit code | Started at | Completed at | Duration ms | CDC applied changes |")
-	assertContains(t, body, "| sales.dbo.orders | 0 | 2026-01-02T03:04:05Z | 2026-01-02T03:04:06Z | 1000 | 2 |")
+	assertContains(t, body, "| Command ID | Exit code | Started at | Completed at | Duration ms | Output summary | CDC applied changes |")
+	assertContains(t, body, "| sales.dbo.orders | 0 | 2026-01-02T03:04:05Z | 2026-01-02T03:04:06Z | 1000 | applied changes: 2 | 2 |")
+}
+
+func TestGenerateExecutorEvidencePRDraftIncludesValidationOutputSummary(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateSchemaDraftOnly(root))
+	if _, err := GenerateValidationPlan(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a"); err != nil {
+		t.Fatalf("GenerateValidationPlan() error = %v", err)
+	}
+	setReviewPlanStatus(t, root, "validation", "reviewed")
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "validation")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(validation) error = %v", err)
+	}
+	writeValidationApproval(t, root, hash)
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-validation-run.json", `{
+  "stage": "validation",
+  "status": "failed",
+  "project_id": "sales-db-to-tidb-prod-a",
+  "source_cluster_id": "prod-sqlserver-a",
+  "payload_hash": "`+hash+`",
+  "commands": [
+    {
+      "id": "orders-row-count",
+      "args": ["sqlserver2tidb-executor", "validate-count", "--execute"],
+      "shell_command": "sqlserver2tidb-executor validate-count --execute",
+      "exit_code": 0,
+      "output": "row counts match\n",
+      "started_at": "2026-01-02T03:04:05Z",
+      "completed_at": "2026-01-02T03:04:06Z",
+      "duration_ms": 1000
+    },
+    {
+      "id": "orders-bucket-1",
+      "args": ["sqlserver2tidb-executor", "validate-query", "--execute"],
+      "shell_command": "sqlserver2tidb-executor validate-query --execute",
+      "exit_code": 1,
+      "output": "validation mismatch\nsource: 10\ntarget: 9\n",
+      "started_at": "2026-01-02T03:04:06Z",
+      "completed_at": "2026-01-02T03:04:07Z",
+      "duration_ms": 1000
+    }
+  ]
+}
+`)
+
+	draft, err := GenerateExecutorEvidencePRDraft(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "validation")
+	if err != nil {
+		t.Fatalf("GenerateExecutorEvidencePRDraft() error = %v", err)
+	}
+	body := readFile(t, root, draft.BodyFile)
+	assertContains(t, body, "Stage: `validation`")
+	assertContains(t, body, "Status: `failed`")
+	assertContains(t, body, "| Command ID | Exit code | Started at | Completed at | Duration ms | Output summary |")
+	assertContains(t, body, "| orders-row-count | 0 | 2026-01-02T03:04:05Z | 2026-01-02T03:04:06Z | 1000 | row counts match |")
+	assertContains(t, body, "| orders-bucket-1 | 1 | 2026-01-02T03:04:06Z | 2026-01-02T03:04:07Z | 1000 | validation mismatch source: 10 target: 9 |")
 }
 
 func TestGenerateExecutorEvidencePRDraftRejectsUnreviewedSchemaDiff(t *testing.T) {

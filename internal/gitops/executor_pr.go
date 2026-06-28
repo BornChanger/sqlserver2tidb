@@ -395,17 +395,18 @@ func writeExecutorEvidenceCommandTable(b *strings.Builder, commands []executorEv
 	b.WriteString("\n## Executor Commands\n\n")
 	includeCDC := executorEvidenceTableIncludesCDCAppliedChanges(commands)
 	if includeCDC {
-		b.WriteString("| Command ID | Exit code | Started at | Completed at | Duration ms | CDC applied changes |\n")
-		b.WriteString("| --- | ---: | --- | --- | ---: | ---: |\n")
+		b.WriteString("| Command ID | Exit code | Started at | Completed at | Duration ms | Output summary | CDC applied changes |\n")
+		b.WriteString("| --- | ---: | --- | --- | ---: | --- | ---: |\n")
 	} else {
-		b.WriteString("| Command ID | Exit code | Started at | Completed at | Duration ms |\n")
-		b.WriteString("| --- | ---: | --- | --- | ---: |\n")
+		b.WriteString("| Command ID | Exit code | Started at | Completed at | Duration ms | Output summary |\n")
+		b.WriteString("| --- | ---: | --- | --- | ---: | --- |\n")
 	}
 	for _, command := range commands {
 		duration := ""
 		if command.DurationMs != nil {
 			duration = fmt.Sprintf("%d", *command.DurationMs)
 		}
+		outputSummary := escapeMarkdownTableCell(executorEvidenceOutputSummary(command.Output))
 		if includeCDC {
 			cdcAppliedChanges := ""
 			if command.CDCAppliedChanges != nil {
@@ -413,26 +414,37 @@ func writeExecutorEvidenceCommandTable(b *strings.Builder, commands []executorEv
 			}
 			fmt.Fprintf(
 				b,
-				"| %s | %d | %s | %s | %s | %s |\n",
+				"| %s | %d | %s | %s | %s | %s | %s |\n",
 				escapeMarkdownTableCell(command.ID),
 				*command.ExitCode,
 				escapeMarkdownTableCell(command.StartedAt),
 				escapeMarkdownTableCell(command.CompletedAt),
 				duration,
+				outputSummary,
 				cdcAppliedChanges,
 			)
 			continue
 		}
 		fmt.Fprintf(
 			b,
-			"| %s | %d | %s | %s | %s |\n",
+			"| %s | %d | %s | %s | %s | %s |\n",
 			escapeMarkdownTableCell(command.ID),
 			*command.ExitCode,
 			escapeMarkdownTableCell(command.StartedAt),
 			escapeMarkdownTableCell(command.CompletedAt),
 			duration,
+			outputSummary,
 		)
 	}
+}
+
+func executorEvidenceOutputSummary(output string) string {
+	const maxSummaryLength = 240
+	summary := strings.Join(strings.Fields(output), " ")
+	if len(summary) <= maxSummaryLength {
+		return summary
+	}
+	return summary[:maxSummaryLength-3] + "..."
 }
 
 func executorEvidenceTableIncludesCDCAppliedChanges(commands []executorEvidenceCommandSummary) bool {
