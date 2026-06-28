@@ -3767,6 +3767,49 @@ func TestPrepareExecutorEvidencePRCreateBuildsGitAndGitHubCommands(t *testing.T)
 	assertContains(t, spec.ShellCommands[4], "gh pr create --base main --head agent/sales-db-to-tidb-prod-a/executor-ddl-evidence")
 }
 
+func TestPrepareExecutorEvidencePRCreateRejectsStaleBody(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateSchemaDraftOnly(root))
+	setSchemaDiffStatus(t, root, "reviewed")
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "ddl")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(ddl) error = %v", err)
+	}
+	writeStageApproval(t, root, "ddl", hash)
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-ddl-run.json", `{
+  "stage": "ddl",
+  "status": "succeeded",
+  "project_id": "sales-db-to-tidb-prod-a",
+  "source_cluster_id": "prod-sqlserver-a",
+  "payload_hash": "`+hash+`",
+  "commands": [
+    {
+      "id": "schema/tidb-ddl/dbo.orders.sql",
+      "args": ["sqlserver2tidb-executor", "apply-ddl", "--execute"],
+      "shell_command": "sqlserver2tidb-executor apply-ddl --execute",
+      "exit_code": 0,
+      "output": "applied\n",
+      "started_at": "2026-01-02T03:04:05Z",
+      "completed_at": "2026-01-02T03:04:06Z",
+      "duration_ms": 1000
+    }
+  ]
+}
+`)
+	draft, err := GenerateExecutorEvidencePRDraft(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "ddl")
+	if err != nil {
+		t.Fatalf("GenerateExecutorEvidencePRDraft() error = %v", err)
+	}
+	writeFileForTest(t, root, draft.BodyFile, "# stale executor evidence body\n")
+
+	_, err = PrepareExecutorEvidencePRCreate(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "ddl")
+	if err == nil {
+		t.Fatal("PrepareExecutorEvidencePRCreate() expected stale body error")
+	}
+	assertContains(t, err.Error(), "executor evidence PR draft clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/prs/executor-ddl-evidence-pr.md is stale; run generate-executor-evidence-pr-draft again")
+}
+
 func TestGenerateExecutorEvidencePRDraftRejectsStalePayloadHash(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())

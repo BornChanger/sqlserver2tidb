@@ -70,6 +70,7 @@ This command creates a local branch, commits files, pushes the branch, and opens
 - reject `succeeded` evidence when any command has a non-zero `exit_code`;
 - reject `failed` evidence when no command has a non-zero `exit_code`;
 - render command IDs, exit codes, timestamps, durations, and whitespace-normalized output summaries directly into the generated PR body for review;
+- reject stale executor evidence PR bodies whose content no longer matches the current evidence and approval context;
 - write or consume `clusters/<source_cluster_id>/projects/<project_id>/prs/executor-<stage>-evidence-pr.md`;
 - reconstruct deterministic `git switch`, `git add`, `git commit`, `git push`, and `gh pr create` commands.
 

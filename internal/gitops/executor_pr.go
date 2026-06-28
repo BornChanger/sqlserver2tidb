@@ -91,6 +91,22 @@ func PrepareExecutorEvidencePRCreate(root, sourceClusterID, projectID, stage str
 	if info, err := os.Stat(bodyPath); err != nil || info.IsDir() {
 		return ExecutorEvidencePRCreateSpec{}, fmt.Errorf("executor evidence PR draft %s does not exist; run generate-executor-evidence-pr-draft first", bodyFile)
 	}
+	currentBody, err := os.ReadFile(bodyPath)
+	if err != nil {
+		return ExecutorEvidencePRCreateSpec{}, fmt.Errorf("read executor evidence PR draft %s: %w", bodyFile, err)
+	}
+	expectedDraft := ExecutorEvidencePRDraft{
+		SourceClusterID: ctx.sourceClusterID,
+		ProjectID:       ctx.projectID,
+		Stage:           ctx.stage,
+		Title:           title,
+		BranchName:      branchName,
+		BodyFile:        bodyFile,
+		Files:           executorEvidenceDraftFiles(ctx),
+	}
+	if string(currentBody) != renderExecutorEvidencePRDraftMarkdown(ctx, expectedDraft) {
+		return ExecutorEvidencePRCreateSpec{}, fmt.Errorf("executor evidence PR draft %s is stale; run generate-executor-evidence-pr-draft again", bodyFile)
+	}
 
 	files := executorEvidenceCreateFiles(ctx, bodyFile)
 	for _, file := range files {
