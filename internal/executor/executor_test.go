@@ -712,6 +712,22 @@ func TestBuildTiDBImportIntoStatementRejectsHTTPSource(t *testing.T) {
 	assertOutputContains(t, err.Error(), "IMPORT INTO source URI scheme https is not supported")
 }
 
+func TestBuildTiDBImportIntoStatementRejectsObjectStorageWithoutBucket(t *testing.T) {
+	_, err := buildTiDBImportIntoStatement("app.orders", "s3:///dbo.orders.000001.csv")
+	if err == nil {
+		t.Fatal("buildTiDBImportIntoStatement() error = nil, want missing bucket error")
+	}
+	assertOutputContains(t, err.Error(), "s3 IMPORT INTO source URI bucket is required")
+}
+
+func TestBuildTiDBImportIntoStatementRejectsObjectStorageWithoutObjectPath(t *testing.T) {
+	_, err := buildTiDBImportIntoStatement("app.orders", "gs://migration-bucket")
+	if err == nil {
+		t.Fatal("buildTiDBImportIntoStatement() error = nil, want missing object path error")
+	}
+	assertOutputContains(t, err.Error(), "gs IMPORT INTO source URI object path is required")
+}
+
 func TestBuildTiDBImportIntoStatementRejectsRelativeLocalPath(t *testing.T) {
 	_, err := buildTiDBImportIntoStatement("app.orders", "relative/dbo.orders.000001.csv")
 	if err == nil {

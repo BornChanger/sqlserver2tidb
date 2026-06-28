@@ -1660,6 +1660,9 @@ func normalizeTiDBImportIntoFileLocation(sourceURI string) (string, error) {
 		}
 		return cleanAbsoluteTiDBImportIntoLocalPath(parsed.Path)
 	case "s3", "gs":
+		if err := validateTiDBImportIntoObjectStorageLocation(parsed); err != nil {
+			return "", err
+		}
 		return parsed.String(), nil
 	default:
 		return "", fmt.Errorf("IMPORT INTO source URI scheme %s is not supported; supported schemes: file, s3, gs, or local path", parsed.Scheme)
@@ -1672,6 +1675,16 @@ func cleanAbsoluteTiDBImportIntoLocalPath(path string) (string, error) {
 		return "", fmt.Errorf("local IMPORT INTO source path must be absolute")
 	}
 	return path, nil
+}
+
+func validateTiDBImportIntoObjectStorageLocation(parsed *url.URL) error {
+	if strings.TrimSpace(parsed.Host) == "" {
+		return fmt.Errorf("%s IMPORT INTO source URI bucket is required", parsed.Scheme)
+	}
+	if strings.Trim(strings.TrimSpace(parsed.Path), "/") == "" {
+		return fmt.Errorf("%s IMPORT INTO source URI object path is required", parsed.Scheme)
+	}
+	return nil
 }
 
 func quoteTiDBStringLiteral(value string) string {

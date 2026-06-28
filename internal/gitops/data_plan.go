@@ -165,7 +165,7 @@ func validateExecutableObjectURIPrefix(prefix, importEngine string) error {
 		case "file":
 			return validateLocalFileObjectURIPrefix(parsed)
 		case "s3", "gs":
-			return nil
+			return validateObjectStorageObjectURIPrefix(parsed)
 		case "":
 			return fmt.Errorf("object URI prefix must use file://, s3://, or gs:// for tidb-import-into")
 		default:
@@ -176,6 +176,9 @@ func validateExecutableObjectURIPrefix(prefix, importEngine string) error {
 		case "file":
 			return validateLocalFileObjectURIPrefix(parsed)
 		case "http", "https":
+			if strings.TrimSpace(parsed.Host) == "" {
+				return fmt.Errorf("%s object URI prefix host is required", parsed.Scheme)
+			}
 			return nil
 		case "":
 			return fmt.Errorf("object URI prefix must use file://, http://, or https://")
@@ -194,6 +197,13 @@ func validateLocalFileObjectURIPrefix(parsed *url.URL) error {
 	}
 	if !filepath.IsAbs(filepath.Clean(parsed.Path)) {
 		return fmt.Errorf("file object URI prefix path must be absolute")
+	}
+	return nil
+}
+
+func validateObjectStorageObjectURIPrefix(parsed *url.URL) error {
+	if strings.TrimSpace(parsed.Host) == "" {
+		return fmt.Errorf("%s object URI prefix bucket is required", parsed.Scheme)
 	}
 	return nil
 }
