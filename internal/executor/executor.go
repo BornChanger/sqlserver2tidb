@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/csv"
@@ -17,6 +18,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -668,8 +670,19 @@ func parseExportOutputURI(outputURI string) (exportOutputURI, error) {
 			scheme: parsed.Scheme,
 			uri:    parsed.String(),
 		}, nil
+	case "s3":
+		if strings.TrimSpace(parsed.Host) == "" {
+			return exportOutputURI{}, fmt.Errorf("s3 output URI bucket is required")
+		}
+		if strings.Trim(strings.TrimSpace(parsed.Path), "/") == "" {
+			return exportOutputURI{}, fmt.Errorf("s3 output URI object path is required")
+		}
+		return exportOutputURI{
+			scheme: parsed.Scheme,
+			uri:    parsed.String(),
+		}, nil
 	default:
-		return exportOutputURI{}, fmt.Errorf("only file://, http://, and https:// output URIs are supported for CSV export")
+		return exportOutputURI{}, fmt.Errorf("only file://, http://, https://, and s3:// output URIs are supported for CSV export")
 	}
 }
 
@@ -768,6 +781,12 @@ func openCSVExportOutput(ctx context.Context, output exportOutputURI, compressio
 		base = file
 	case "http", "https":
 		writer, err := newHTTPExportWriter(ctx, output.uri, compression)
+		if err != nil {
+			return nil, err
+		}
+		base = writer
+	case "s3":
+		writer, err := newS3ExportWriter(ctx, output.uri, compression)
 		if err != nil {
 			return nil, err
 		}
@@ -950,6 +969,351 @@ func (w *httpExportWriter) Abort() error {
 	closeErr := w.writer.CloseWithError(errors.New("CSV export upload aborted"))
 	uploadErr := <-w.done
 	return errors.Join(closeErr, uploadErr)
+}
+
+type s3ExportWriter struct {
+	ctx         context.Context
+	file        *os.File
+	tempPath    string
+	target      s3ObjectTarget
+	compression string
+	closed      bool
+}
+
+type s3ObjectTarget struct {
+	Bucket string
+	Key    string
+}
+
+type s3ExportConfig struct {
+	AccessKey      string
+	SecretKey      string
+	SessionToken   string
+	Region         string
+	Endpoint       string
+	ForcePathStyle bool
+}
+
+func newS3ExportWriter(ctx context.Context, outputURI, compression string) (*s3ExportWriter, error) {
+	target, err := parseS3ObjectTarget(outputURI)
+	if err != nil {
+		return nil, err
+	}
+	file, err := os.CreateTemp("", "sqlserver2tidb-s3-export-*.tmp")
+	if err != nil {
+		return nil, fmt.Errorf("create S3 export temp file: %w", err)
+	}
+	return &s3ExportWriter{
+		ctx:         ctx,
+		file:        file,
+		tempPath:    file.Name(),
+		target:      target,
+		compression: compression,
+	}, nil
+}
+
+func parseS3ObjectTarget(outputURI string) (s3ObjectTarget, error) {
+	parsed, err := url.Parse(strings.TrimSpace(outputURI))
+	if err != nil {
+		return s3ObjectTarget{}, fmt.Errorf("parse S3 output URI: %w", err)
+	}
+	if parsed.Scheme != "s3" {
+		return s3ObjectTarget{}, fmt.Errorf("S3 output URI must use s3://")
+	}
+	if strings.TrimSpace(parsed.Host) == "" {
+		return s3ObjectTarget{}, fmt.Errorf("s3 output URI bucket is required")
+	}
+	key := strings.TrimPrefix(parsed.Path, "/")
+	if strings.TrimSpace(key) == "" {
+		return s3ObjectTarget{}, fmt.Errorf("s3 output URI object path is required")
+	}
+	return s3ObjectTarget{Bucket: parsed.Host, Key: key}, nil
+}
+
+func (w *s3ExportWriter) Write(p []byte) (int, error) {
+	if w == nil || w.file == nil {
+		return 0, fmt.Errorf("S3 export writer is closed")
+	}
+	return w.file.Write(p)
+}
+
+func (w *s3ExportWriter) Close() error {
+	if w == nil || w.closed {
+		return nil
+	}
+	w.closed = true
+	if err := w.file.Close(); err != nil {
+		w.file = nil
+		_ = os.Remove(w.tempPath)
+		return err
+	}
+	w.file = nil
+	defer os.Remove(w.tempPath)
+	return uploadS3ExportTempFile(w.ctx, w.tempPath, w.target, w.compression)
+}
+
+func (w *s3ExportWriter) Abort() error {
+	if w == nil || w.closed {
+		return nil
+	}
+	w.closed = true
+	var closeErr error
+	if w.file != nil {
+		closeErr = w.file.Close()
+		w.file = nil
+	}
+	removeErr := os.Remove(w.tempPath)
+	if errors.Is(removeErr, os.ErrNotExist) {
+		removeErr = nil
+	}
+	return errors.Join(closeErr, removeErr)
+}
+
+func uploadS3ExportTempFile(ctx context.Context, tempPath string, target s3ObjectTarget, compression string) error {
+	config, err := loadS3ExportConfig()
+	if err != nil {
+		return err
+	}
+	file, err := os.Open(tempPath)
+	if err != nil {
+		return fmt.Errorf("open S3 export temp file: %w", err)
+	}
+	defer file.Close()
+	stat, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("stat S3 export temp file: %w", err)
+	}
+	payloadHash, err := sha256HexReader(file)
+	if err != nil {
+		return fmt.Errorf("hash S3 export payload: %w", err)
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("rewind S3 export payload: %w", err)
+	}
+	requestURL, err := buildS3PutObjectURL(config, target)
+	if err != nil {
+		return err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPut, requestURL.String(), file)
+	if err != nil {
+		return fmt.Errorf("create S3 PutObject request: %w", err)
+	}
+	request.ContentLength = stat.Size()
+	request.Header.Set("Content-Type", "text/csv")
+	if compression == compressionGzip {
+		request.Header.Set("Content-Encoding", "gzip")
+	}
+	signS3PutObjectRequest(request, config, payloadHash, time.Now().UTC())
+
+	response, err := csvHTTPClient.Do(request)
+	if err != nil {
+		return fmt.Errorf("upload S3 CSV output: %w", err)
+	}
+	defer response.Body.Close()
+	_, _ = io.Copy(io.Discard, response.Body)
+	if response.StatusCode < 200 || response.StatusCode > 299 {
+		return fmt.Errorf("upload S3 CSV output: unexpected HTTP status %s", response.Status)
+	}
+	return nil
+}
+
+func loadS3ExportConfig() (s3ExportConfig, error) {
+	config := s3ExportConfig{
+		AccessKey:      strings.TrimSpace(os.Getenv("AWS_ACCESS_KEY_ID")),
+		SecretKey:      strings.TrimSpace(os.Getenv("AWS_SECRET_ACCESS_KEY")),
+		SessionToken:   strings.TrimSpace(os.Getenv("AWS_SESSION_TOKEN")),
+		Region:         firstNonEmptyEnv("AWS_REGION", "AWS_DEFAULT_REGION"),
+		Endpoint:       strings.TrimSpace(os.Getenv("AWS_ENDPOINT_URL")),
+		ForcePathStyle: parseBoolEnv("AWS_S3_FORCE_PATH_STYLE"),
+	}
+	if config.AccessKey == "" {
+		return s3ExportConfig{}, fmt.Errorf("AWS_ACCESS_KEY_ID is required for s3 export output")
+	}
+	if config.SecretKey == "" {
+		return s3ExportConfig{}, fmt.Errorf("AWS_SECRET_ACCESS_KEY is required for s3 export output")
+	}
+	if config.Region == "" {
+		return s3ExportConfig{}, fmt.Errorf("AWS_REGION or AWS_DEFAULT_REGION is required for s3 export output")
+	}
+	return config, nil
+}
+
+func firstNonEmptyEnv(names ...string) string {
+	for _, name := range names {
+		if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func parseBoolEnv(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
+	case "1", "t", "true", "y", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func buildS3PutObjectURL(config s3ExportConfig, target s3ObjectTarget) (*url.URL, error) {
+	if config.Endpoint == "" {
+		if config.ForcePathStyle {
+			return &url.URL{
+				Scheme: "https",
+				Host:   "s3." + config.Region + ".amazonaws.com",
+				Path:   joinURLPath("", target.Bucket, target.Key),
+			}, nil
+		}
+		return &url.URL{
+			Scheme: "https",
+			Host:   target.Bucket + ".s3." + config.Region + ".amazonaws.com",
+			Path:   "/" + target.Key,
+		}, nil
+	}
+	endpoint, err := url.Parse(config.Endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("parse AWS_ENDPOINT_URL: %w", err)
+	}
+	if endpoint.Scheme == "" || endpoint.Host == "" {
+		return nil, fmt.Errorf("AWS_ENDPOINT_URL must include scheme and host")
+	}
+	endpoint.RawQuery = ""
+	endpoint.Fragment = ""
+	if config.ForcePathStyle {
+		endpoint.Path = joinURLPath(endpoint.Path, target.Bucket, target.Key)
+		return endpoint, nil
+	}
+	endpoint.Host = target.Bucket + "." + endpoint.Host
+	endpoint.Path = joinURLPath(endpoint.Path, target.Key)
+	return endpoint, nil
+}
+
+func joinURLPath(base string, parts ...string) string {
+	segments := []string{}
+	if trimmed := strings.Trim(base, "/"); trimmed != "" {
+		segments = append(segments, trimmed)
+	}
+	for _, part := range parts {
+		if trimmed := strings.Trim(part, "/"); trimmed != "" {
+			segments = append(segments, trimmed)
+		}
+	}
+	return "/" + strings.Join(segments, "/")
+}
+
+func sha256HexReader(reader io.Reader) (string, error) {
+	digest := sha256.New()
+	if _, err := io.Copy(digest, reader); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(digest.Sum(nil)), nil
+}
+
+func signS3PutObjectRequest(request *http.Request, config s3ExportConfig, payloadHash string, now time.Time) {
+	amzDate := now.Format("20060102T150405Z")
+	dateStamp := now.Format("20060102")
+	request.Header.Set("X-Amz-Date", amzDate)
+	request.Header.Set("X-Amz-Content-Sha256", payloadHash)
+	if config.SessionToken != "" {
+		request.Header.Set("X-Amz-Security-Token", config.SessionToken)
+	}
+
+	signedHeaders := s3SignedHeaderNames(request)
+	canonicalRequest := strings.Join([]string{
+		request.Method,
+		s3CanonicalURI(request.URL),
+		s3CanonicalQuery(request.URL),
+		s3CanonicalHeaders(request, signedHeaders),
+		strings.Join(signedHeaders, ";"),
+		payloadHash,
+	}, "\n")
+	scope := strings.Join([]string{dateStamp, config.Region, "s3", "aws4_request"}, "/")
+	stringToSign := strings.Join([]string{
+		"AWS4-HMAC-SHA256",
+		amzDate,
+		scope,
+		hexSHA256String(canonicalRequest),
+	}, "\n")
+	signature := hex.EncodeToString(hmacSHA256(s3SigningKey(config.SecretKey, dateStamp, config.Region), []byte(stringToSign)))
+	request.Header.Set("Authorization", fmt.Sprintf(
+		"AWS4-HMAC-SHA256 Credential=%s/%s, SignedHeaders=%s, Signature=%s",
+		config.AccessKey,
+		scope,
+		strings.Join(signedHeaders, ";"),
+		signature,
+	))
+}
+
+func s3SignedHeaderNames(request *http.Request) []string {
+	names := []string{"content-type", "host", "x-amz-content-sha256", "x-amz-date"}
+	if request.Header.Get("Content-Encoding") != "" {
+		names = append(names, "content-encoding")
+	}
+	if request.Header.Get("X-Amz-Security-Token") != "" {
+		names = append(names, "x-amz-security-token")
+	}
+	sort.Strings(names)
+	return names
+}
+
+func s3CanonicalURI(u *url.URL) string {
+	escaped := u.EscapedPath()
+	if escaped == "" {
+		return "/"
+	}
+	return escaped
+}
+
+func s3CanonicalQuery(u *url.URL) string {
+	query := u.Query()
+	if len(query) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(query))
+	for key := range query {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	var parts []string
+	for _, key := range keys {
+		values := append([]string(nil), query[key]...)
+		sort.Strings(values)
+		for _, value := range values {
+			parts = append(parts, url.QueryEscape(key)+"="+url.QueryEscape(value))
+		}
+	}
+	return strings.Join(parts, "&")
+}
+
+func s3CanonicalHeaders(request *http.Request, names []string) string {
+	var b strings.Builder
+	for _, name := range names {
+		value := request.Header.Get(name)
+		if name == "host" {
+			value = request.URL.Host
+		}
+		fmt.Fprintf(&b, "%s:%s\n", name, strings.Join(strings.Fields(value), " "))
+	}
+	return b.String()
+}
+
+func hexSHA256String(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
+}
+
+func s3SigningKey(secretKey, dateStamp, region string) []byte {
+	dateKey := hmacSHA256([]byte("AWS4"+secretKey), []byte(dateStamp))
+	regionKey := hmacSHA256(dateKey, []byte(region))
+	serviceKey := hmacSHA256(regionKey, []byte("s3"))
+	return hmacSHA256(serviceKey, []byte("aws4_request"))
+}
+
+func hmacSHA256(key, data []byte) []byte {
+	mac := hmac.New(sha256.New, key)
+	_, _ = mac.Write(data)
+	return mac.Sum(nil)
 }
 
 func buildSQLServerExportQuery(sourceObject, predicate string) (string, error) {

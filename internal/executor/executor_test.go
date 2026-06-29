@@ -203,7 +203,7 @@ func TestRunExportDryRunRejectsUnsupportedCompression(t *testing.T) {
 	assertOutputContains(t, stderr.String(), "executor export: compression zstd is not supported")
 }
 
-func TestRunExportDryRunRejectsUnsupportedOutputURI(t *testing.T) {
+func TestRunExportDryRunAcceptsS3OutputURI(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 
 	code := Run([]string{
@@ -216,10 +216,29 @@ func TestRunExportDryRunRejectsUnsupportedOutputURI(t *testing.T) {
 		"--target-object", "app.orders",
 		"--output-uri", "s3://migration/prod/full/dbo.orders.000001.csv",
 	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("export dry-run code = %d, stderr = %s", code, stderr.String())
+	}
+	assertOutputContains(t, stdout.String(), "output uri: s3://migration/prod/full/dbo.orders.000001.csv")
+}
+
+func TestRunExportDryRunRejectsUnsupportedOutputURI(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"export",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--chunk-id", "dbo.orders.000001",
+		"--source-object", "sales.dbo.orders",
+		"--target-object", "app.orders",
+		"--output-uri", "ftp://migration/prod/full/dbo.orders.000001.csv",
+	}, &stdout, &stderr)
 	if code == 0 {
 		t.Fatalf("export dry-run code = 0, want non-zero; stdout = %s", stdout.String())
 	}
-	assertOutputContains(t, stderr.String(), "executor export: only file://, http://, and https:// output URIs are supported for CSV export")
+	assertOutputContains(t, stderr.String(), "executor export: only file://, http://, https://, and s3:// output URIs are supported for CSV export")
 }
 
 func TestRunExportDryRunRejectsTODOExportPredicate(t *testing.T) {
@@ -2059,7 +2078,7 @@ func TestRunExportExecuteRejectsTODOExportPredicate(t *testing.T) {
 	assertOutputContains(t, stderr.String(), "executor export: predicate still contains TODO")
 }
 
-func TestRunExportExecuteRejectsNonFileOutputURI(t *testing.T) {
+func TestRunExportExecuteRejectsUnsupportedOutputURI(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 
 	code := Run([]string{
@@ -2071,13 +2090,13 @@ func TestRunExportExecuteRejectsNonFileOutputURI(t *testing.T) {
 		"--chunk-id", "dbo.orders.000001",
 		"--source-object", "sales.dbo.orders",
 		"--target-object", "app.orders",
-		"--output-uri", "s3://migration/prod/full/dbo.orders.000001.csv",
+		"--output-uri", "ftp://migration/prod/full/dbo.orders.000001.csv",
 		"--source-connection-string-env", "MISSING_SQLSERVER_DSN",
 	}, &stdout, &stderr)
 	if code == 0 {
 		t.Fatalf("export execute code = 0, want non-zero")
 	}
-	assertOutputContains(t, stderr.String(), "executor export: only file://, http://, and https:// output URIs are supported for CSV export")
+	assertOutputContains(t, stderr.String(), "executor export: only file://, http://, https://, and s3:// output URIs are supported for CSV export")
 }
 
 func TestRunExportExecuteAcceptsHTTPOutputURIBeforeConnectionStringEnv(t *testing.T) {
@@ -2335,6 +2354,80 @@ func TestWriteCSVExportRowsHTTPOutput(t *testing.T) {
 	if !rows.closed {
 		t.Fatalf("rows closed = false, want true")
 	}
+}
+
+func TestWriteCSVExportRowsS3Output(t *testing.T) {
+	var method string
+	var requestPath string
+	var authorization string
+	var contentSHA string
+	var securityToken string
+	var body bytes.Buffer
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method = r.Method
+		requestPath = r.URL.EscapedPath()
+		authorization = r.Header.Get("Authorization")
+		contentSHA = r.Header.Get("X-Amz-Content-Sha256")
+		securityToken = r.Header.Get("X-Amz-Security-Token")
+		if _, err := io.Copy(&body, r.Body); err != nil {
+			t.Fatalf("read request body: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	t.Setenv("AWS_ACCESS_KEY_ID", "AKIDEXAMPLE")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "SECRETEXAMPLE")
+	t.Setenv("AWS_SESSION_TOKEN", "SESSIONEXAMPLE")
+	t.Setenv("AWS_REGION", "us-east-1")
+	t.Setenv("AWS_ENDPOINT_URL", server.URL)
+	t.Setenv("AWS_S3_FORCE_PATH_STYLE", "true")
+
+	output, err := openCSVExportOutput(context.Background(), exportOutputURI{
+		scheme: "s3",
+		uri:    "s3://migration-bucket/full/dbo.orders.000001.csv",
+	}, compressionNone)
+	if err != nil {
+		t.Fatalf("openCSVExportOutput() error = %v", err)
+	}
+	rows := &fakeExportRows{
+		columns: []string{"id", "name"},
+		values: [][]any{
+			{int64(1), "Ada"},
+			{int64(2), nil},
+		},
+	}
+
+	exportedRows, err := writeCSVExportRows(output, rows)
+	if err != nil {
+		t.Fatalf("writeCSVExportRows() error = %v", err)
+	}
+	if exportedRows != 2 {
+		t.Fatalf("exported rows = %d, want 2", exportedRows)
+	}
+	if err := output.Close(); err != nil {
+		t.Fatalf("output.Close() error = %v", err)
+	}
+
+	if method != http.MethodPut {
+		t.Fatalf("method = %q, want PUT", method)
+	}
+	if requestPath != "/migration-bucket/full/dbo.orders.000001.csv" {
+		t.Fatalf("request path = %q, want path-style bucket/object path", requestPath)
+	}
+	wantBody := "id,name,__sqlserver2tidb_null_bitmap\n1,Ada,00\n2,,01\n"
+	if body.String() != wantBody {
+		t.Fatalf("request body = %q, want %q", body.String(), wantBody)
+	}
+	sum := sha256.Sum256([]byte(wantBody))
+	if contentSHA != hex.EncodeToString(sum[:]) {
+		t.Fatalf("X-Amz-Content-Sha256 = %q, want payload hash", contentSHA)
+	}
+	if securityToken != "SESSIONEXAMPLE" {
+		t.Fatalf("X-Amz-Security-Token = %q, want session token", securityToken)
+	}
+	assertOutputContains(t, authorization, "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/")
+	assertOutputContains(t, authorization, "SignedHeaders=")
+	assertOutputContains(t, authorization, "Signature=")
 }
 
 func TestWriteCSVExportRowsHTTPGzipOutput(t *testing.T) {

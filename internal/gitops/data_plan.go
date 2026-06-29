@@ -169,12 +169,12 @@ func validateExecutableObjectURIPrefix(prefix, importEngine string) error {
 		switch parsed.Scheme {
 		case "file":
 			return validateLocalFileObjectURIPrefix(parsed)
-		case "s3", "gs":
+		case "s3":
 			return validateObjectStorageObjectURIPrefix(parsed)
 		case "":
-			return fmt.Errorf("object URI prefix must use file://, s3://, or gs:// for tidb-import-into")
+			return fmt.Errorf("object URI prefix must use file:// or s3:// for executable tidb-import-into data plans")
 		default:
-			return fmt.Errorf("object URI prefix scheme %s is not supported by tidb-import-into; supported schemes: file, s3, gs", parsed.Scheme)
+			return fmt.Errorf("object URI prefix scheme %s is not supported by executable tidb-import-into data plans; supported schemes: file, s3", parsed.Scheme)
 		}
 	default:
 		switch parsed.Scheme {
@@ -401,11 +401,26 @@ func validateExportPlanChunkOutputURI(chunk dataExportChunkState) error {
 			return fmt.Errorf("export chunk %s output_uri: %s output URI host is required", chunk.ID, parsed.Scheme)
 		}
 		return nil
+	case "s3":
+		if err := validateObjectStorageExportOutputURI(parsed); err != nil {
+			return fmt.Errorf("export chunk %s output_uri: %w", chunk.ID, err)
+		}
+		return nil
 	case "":
-		return fmt.Errorf("export chunk %s output_uri must use file://, http://, or https://", chunk.ID)
+		return fmt.Errorf("export chunk %s output_uri must use file://, http://, https://, or s3://", chunk.ID)
 	default:
-		return fmt.Errorf("export chunk %s output_uri scheme %s is not supported by sqlserver2tidb-executor; supported schemes: file, http, https", chunk.ID, parsed.Scheme)
+		return fmt.Errorf("export chunk %s output_uri scheme %s is not supported by sqlserver2tidb-executor; supported schemes: file, http, https, s3", chunk.ID, parsed.Scheme)
 	}
+}
+
+func validateObjectStorageExportOutputURI(parsed *url.URL) error {
+	if strings.TrimSpace(parsed.Host) == "" {
+		return fmt.Errorf("%s output URI bucket is required", parsed.Scheme)
+	}
+	if strings.Trim(strings.TrimSpace(parsed.Path), "/") == "" {
+		return fmt.Errorf("%s output URI object path is required", parsed.Scheme)
+	}
+	return nil
 }
 
 func validateLocalFileExportOutputURI(parsed *url.URL) error {
