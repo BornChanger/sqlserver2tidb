@@ -740,6 +740,78 @@ func TestRunImportDryRunIncludesImportEngine(t *testing.T) {
 	assertOutputContains(t, output, "engine: tidb-import-into")
 }
 
+func TestRunImportDryRunSupportsTiDBLightningPlan(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"import",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--job-id", "tidb-lightning",
+		"--engine", "tidb-lightning",
+		"--source-uri", "s3://migration-bucket/sqlserver2tidb/full",
+		"--import-plan", "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("import dry-run code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	assertOutputContains(t, output, "executor import dry run")
+	assertOutputContains(t, output, "engine: tidb-lightning")
+	assertOutputContains(t, output, "source uri: s3://migration-bucket/sqlserver2tidb/full")
+	assertOutputContains(t, output, "import plan: clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml")
+	assertOutputContains(t, output, "No TiDB Lightning process will be started.")
+}
+
+func TestBuildTiDBLightningConfigUsesCSVNullMarker(t *testing.T) {
+	config, err := buildTiDBLightningConfig(tiDBLightningConfigSpec{
+		DataSourceURI:          "s3://migration-bucket/sqlserver2tidb/full",
+		TargetConnectionString: "migrate:secret@tcp(tidb.example.com:4000)/app",
+		PDAddr:                 "pd.example.com:2379",
+		SortedKVDir:            "/var/lib/sqlserver2tidb/lightning-sorted-kv",
+		LogFile:                "tidb-lightning.log",
+	})
+	if err != nil {
+		t.Fatalf("buildTiDBLightningConfig() error = %v", err)
+	}
+	assertOutputContains(t, config, `[tikv-importer]`)
+	assertOutputContains(t, config, `backend = "local"`)
+	assertOutputContains(t, config, `sorted-kv-dir = "/var/lib/sqlserver2tidb/lightning-sorted-kv"`)
+	assertOutputContains(t, config, `[mydumper]`)
+	assertOutputContains(t, config, `data-source-dir = "s3://migration-bucket/sqlserver2tidb/full"`)
+	assertOutputContains(t, config, `[mydumper.csv]`)
+	assertOutputContains(t, config, `header = true`)
+	assertOutputContains(t, config, `null = '\N'`)
+	assertOutputContains(t, config, `[tidb]`)
+	assertOutputContains(t, config, `host = "tidb.example.com"`)
+	assertOutputContains(t, config, `port = 4000`)
+	assertOutputContains(t, config, `user = "migrate"`)
+	assertOutputContains(t, config, `password = "secret"`)
+	assertOutputContains(t, config, `pd-addr = "pd.example.com:2379"`)
+}
+
+func TestAuditTiDBLightningCSVSourceSupportsAbsoluteLocalPath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "app.orders.000001.csv")
+	if err := os.WriteFile(path, []byte("id,name\n1,Ada\n2,\\N\n"), 0o644); err != nil {
+		t.Fatalf("write CSV source: %v", err)
+	}
+
+	audit, err := auditTiDBLightningCSVSource(context.Background(), path, compressionNone)
+	if err != nil {
+		t.Fatalf("auditTiDBLightningCSVSource() error = %v", err)
+	}
+	if audit.Rows != 2 {
+		t.Fatalf("Rows = %d, want 2", audit.Rows)
+	}
+	if audit.Bytes <= 0 {
+		t.Fatalf("Bytes = %d, want > 0", audit.Bytes)
+	}
+	if !strings.HasPrefix(audit.SHA256, "sha256:") {
+		t.Fatalf("SHA256 = %q, want sha256 digest", audit.SHA256)
+	}
+}
+
 func TestRunImportDryRunIncludesFields(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 
@@ -2766,6 +2838,33 @@ func TestWriteCSVExportRows(t *testing.T) {
 	}
 
 	want := "id,name,active,__sqlserver2tidb_null_bitmap\n1,Ada,true,000\n2,,false,010\n"
+	if output.String() != want {
+		t.Fatalf("CSV output = %q, want %q", output.String(), want)
+	}
+	if !rows.closed {
+		t.Fatalf("rows closed = false, want true")
+	}
+}
+
+func TestWriteCSVExportRowsWithBackslashNNullEncoding(t *testing.T) {
+	var output bytes.Buffer
+	rows := &fakeExportRows{
+		columns: []string{"id", "name", "active"},
+		values: [][]any{
+			{int64(1), "Ada", true},
+			{int64(2), nil, false},
+		},
+	}
+
+	exportedRows, err := writeCSVExportRowsWithNullEncoding(&output, rows, nullEncodingBackslashN)
+	if err != nil {
+		t.Fatalf("writeCSVExportRowsWithNullEncoding() error = %v", err)
+	}
+	if exportedRows != 2 {
+		t.Fatalf("exported rows = %d, want 2", exportedRows)
+	}
+
+	want := "id,name,active\n1,Ada,true\n2,\\N,false\n"
 	if output.String() != want {
 		t.Fatalf("CSV output = %q, want %q", output.String(), want)
 	}

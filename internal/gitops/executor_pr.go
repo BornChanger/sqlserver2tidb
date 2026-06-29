@@ -359,6 +359,8 @@ func executorEvidenceCommandRequiresDataAudit(stage, status string, args []strin
 			return true
 		case importEngineTiDBImportInto:
 			return executorEvidenceImportSourceNeedsLocalAudit(executorEvidenceOptionalArgValue(args, "--source-uri"))
+		case importEngineTiDBLightning:
+			return true
 		default:
 			return false
 		}

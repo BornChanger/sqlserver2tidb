@@ -184,6 +184,7 @@ approval_required:
     "project_id": {"type": "string"},
     "source_cluster_id": {"type": "string"},
     "format": {"type": "string"},
+    "null_encoding": {"enum": ["bitmap", "backslash-n"]},
     "compression": {"enum": ["none", "gzip"]},
     "object_uri_prefix": {"type": "string"},
     "chunk_size_rows": {"type": "integer", "minimum": 1},
@@ -228,7 +229,8 @@ approval_required:
     "status": {"enum": ["draft", "reviewed", "approved"]},
     "project_id": {"type": "string"},
     "source_cluster_id": {"type": "string"},
-    "engine": {"enum": ["sql-insert", "tidb-import-into", "import-into"]},
+    "engine": {"enum": ["sql-insert", "tidb-import-into", "import-into", "tidb-lightning", "lightning"]},
+    "data_source_uri": {"type": "string"},
     "compression": {"enum": ["none", "gzip"]},
     "mode": {"type": "string"},
     "jobs": {

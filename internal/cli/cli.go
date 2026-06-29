@@ -346,10 +346,10 @@ func runGenerateDataPlans(args []string, stdout, stderr io.Writer) int {
 	root := fs.String("root", ".", "repository root")
 	sourceClusterID := fs.String("source-cluster-id", "", "upstream SQL Server cluster id")
 	projectID := fs.String("project-id", "", "migration project id")
-	objectURIPrefix := fs.String("object-uri-prefix", "", "CSV output URI prefix for exported full-load files; supported sql-insert prefixes: file://, http(s)://, s3://, gs://, azblob://")
+	objectURIPrefix := fs.String("object-uri-prefix", "", "CSV output URI prefix for exported full-load files; sql-insert supports file/http(s)/s3/gs/azblob, tidb-import-into supports file/s3/gs, tidb-lightning supports file/s3/gs/azblob")
 	chunkSizeRows := fs.Int64("chunk-size-rows", 1000000, "estimated rows per export chunk")
 	exportFormat := fs.String("export-format", "csv", "export file format")
-	importEngine := fs.String("import-engine", "sql-insert", "TiDB import engine")
+	importEngine := fs.String("import-engine", "sql-insert", "TiDB import engine: sql-insert, tidb-import-into, or tidb-lightning")
 	compression := fs.String("compression", "none", "export/import compression: none or gzip")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -1452,6 +1452,8 @@ func workerExecutorCommandRequiresDataAudit(stage string, args []string) bool {
 			return true
 		case "tidb-import-into":
 			return workerExecutorImportSourceNeedsLocalAudit(workerExecutorArgValue(args, "--source-uri"))
+		case "tidb-lightning":
+			return true
 		default:
 			return false
 		}
@@ -1470,6 +1472,8 @@ func workerExecutorImportEngine(args []string) string {
 		return "sql-insert"
 	case "tidb-import-into", "import-into":
 		return "tidb-import-into"
+	case "tidb-lightning", "lightning":
+		return "tidb-lightning"
 	default:
 		return strings.ToLower(strings.TrimSpace(engine))
 	}

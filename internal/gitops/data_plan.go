@@ -10,6 +10,11 @@ import (
 
 const importIntoNullBitmapField = "@sqlserver2tidb_null_bitmap"
 
+const (
+	exportNullEncodingBitmap     = "bitmap"
+	exportNullEncodingBackslashN = "backslash-n"
+)
+
 type DataMovementPlanSpec struct {
 	ObjectURIPrefix string
 	ChunkSizeRows   int64
@@ -176,6 +181,17 @@ func validateExecutableObjectURIPrefix(prefix, importEngine string) error {
 		default:
 			return fmt.Errorf("object URI prefix scheme %s is not supported by executable tidb-import-into data plans; supported schemes: file, s3, gs", parsed.Scheme)
 		}
+	case importEngineTiDBLightning:
+		switch parsed.Scheme {
+		case "file":
+			return validateLocalFileObjectURIPrefix(parsed)
+		case "s3", "gs", "azblob":
+			return validateObjectStorageObjectURIPrefix(parsed)
+		case "":
+			return fmt.Errorf("object URI prefix must use file://, s3://, gs://, or azblob:// for executable tidb-lightning data plans")
+		default:
+			return fmt.Errorf("object URI prefix scheme %s is not supported by executable tidb-lightning data plans; supported schemes: file, s3, gs, azblob", parsed.Scheme)
+		}
 	default:
 		switch parsed.Scheme {
 		case "file":
@@ -337,6 +353,26 @@ func validateImportPlanJobSourceURI(engine string, job dataImportJobState) error
 		default:
 			return fmt.Errorf("import job %s source_uri scheme %s is not supported by tidb-import-into; supported schemes: file, s3, gs, or absolute local path", job.ID, parsed.Scheme)
 		}
+	case importEngineTiDBLightning:
+		switch parsed.Scheme {
+		case "":
+			if filepath.IsAbs(filepath.Clean(sourceURI)) {
+				return nil
+			}
+			return fmt.Errorf("import job %s source_uri local path must be absolute for tidb-lightning", job.ID)
+		case "file":
+			if err := validateLocalFileImportSourceURI(parsed); err != nil {
+				return fmt.Errorf("import job %s source_uri: %w", job.ID, err)
+			}
+			return nil
+		case "s3", "gs", "azblob":
+			if err := validateObjectStorageImportSourceURI(parsed); err != nil {
+				return fmt.Errorf("import job %s source_uri: %w", job.ID, err)
+			}
+			return nil
+		default:
+			return fmt.Errorf("import job %s source_uri scheme %s is not supported by tidb-lightning; supported schemes: file, s3, gs, azblob, or absolute local path", job.ID, parsed.Scheme)
+		}
 	default:
 		switch parsed.Scheme {
 		case "file":
@@ -461,6 +497,9 @@ func buildDataExportTablePlan(project projectMetadata, databaseName, schemaName 
 	}
 	chunkCount := chunkCountForRows(table.RowCount, spec.ChunkSizeRows)
 	chunkPrefix := safeSQLFileName(joinObject(schemaName, table.Name))
+	if spec.ImportEngine == importEngineTiDBLightning {
+		chunkPrefix = safeSQLFileName(targetObject)
+	}
 	outputPrefix := strings.TrimRight(spec.ObjectURIPrefix, "/")
 	outputExtension := compressedExportFileExtension(spec.ExportFormat, spec.Compression)
 	for i := int64(1); i <= chunkCount; i++ {
@@ -515,6 +554,9 @@ func renderExportPlanYAML(sourceClusterID, projectID string, spec DataMovementPl
 	fmt.Fprintf(&b, "project_id: %s\n", projectID)
 	fmt.Fprintf(&b, "source_cluster_id: %s\n", sourceClusterID)
 	fmt.Fprintf(&b, "format: %s\n", spec.ExportFormat)
+	if exportNullEncodingForImportEngine(spec.ImportEngine) != exportNullEncodingBitmap {
+		fmt.Fprintf(&b, "null_encoding: %s\n", exportNullEncodingForImportEngine(spec.ImportEngine))
+	}
 	if spec.Compression != "" && spec.Compression != compressionNone {
 		fmt.Fprintf(&b, "compression: %s\n", spec.Compression)
 	}
@@ -546,6 +588,9 @@ func renderImportPlanYAML(sourceClusterID, projectID string, spec DataMovementPl
 	fmt.Fprintf(&b, "project_id: %s\n", projectID)
 	fmt.Fprintf(&b, "source_cluster_id: %s\n", sourceClusterID)
 	fmt.Fprintf(&b, "engine: %s\n", spec.ImportEngine)
+	if spec.ImportEngine == importEngineTiDBLightning {
+		fmt.Fprintf(&b, "data_source_uri: %s\n", strings.TrimRight(spec.ObjectURIPrefix, "/"))
+	}
 	if spec.Compression != "" && spec.Compression != compressionNone {
 		fmt.Fprintf(&b, "compression: %s\n", spec.Compression)
 	}
@@ -568,4 +613,102 @@ func renderImportPlanYAML(sourceClusterID, projectID string, spec DataMovementPl
 		}
 	}
 	return b.String()
+}
+
+func exportNullEncodingForImportEngine(importEngine string) string {
+	if normalizeImportEngine(importEngine) == importEngineTiDBLightning {
+		return exportNullEncodingBackslashN
+	}
+	return exportNullEncodingBitmap
+}
+
+func normalizeExportNullEncoding(nullEncoding string) string {
+	nullEncoding = strings.ToLower(strings.TrimSpace(nullEncoding))
+	if nullEncoding == "" {
+		return exportNullEncodingBitmap
+	}
+	return nullEncoding
+}
+
+func validateExportNullEncoding(nullEncoding string) error {
+	nullEncoding = normalizeExportNullEncoding(nullEncoding)
+	switch nullEncoding {
+	case exportNullEncodingBitmap, exportNullEncodingBackslashN:
+		return nil
+	default:
+		return fmt.Errorf("export null_encoding %s is not supported; supported null encodings: %s, %s", nullEncoding, exportNullEncodingBitmap, exportNullEncodingBackslashN)
+	}
+}
+
+func readTiDBLightningDataSourceURI(planPath string, jobs []dataImportJobState) (string, error) {
+	dataSourceURI, err := readPlanTopLevelScalar(planPath, "data_source_uri")
+	if err != nil {
+		return "", err
+	}
+	dataSourceURI = strings.TrimRight(strings.TrimSpace(dataSourceURI), "/")
+	derivedURI, deriveErr := deriveCommonImportDataSourceURI(jobs)
+	if dataSourceURI != "" {
+		if deriveErr != nil {
+			return "", deriveErr
+		}
+		if dataSourceURI != derivedURI {
+			return "", fmt.Errorf("tidb-lightning data_source_uri %s does not match import job source directory %s", dataSourceURI, derivedURI)
+		}
+		return dataSourceURI, nil
+	}
+	return derivedURI, deriveErr
+}
+
+func deriveCommonImportDataSourceURI(jobs []dataImportJobState) (string, error) {
+	if len(jobs) == 0 {
+		return "", fmt.Errorf("tidb-lightning import plan contains no jobs")
+	}
+	common := ""
+	for _, job := range jobs {
+		dir, err := importSourceDir(job.SourceURI)
+		if err != nil {
+			return "", fmt.Errorf("import job %s source_uri: %w", job.ID, err)
+		}
+		if common == "" {
+			common = dir
+			continue
+		}
+		if common != dir {
+			return "", fmt.Errorf("tidb-lightning import jobs must share one data_source_uri; got %s and %s", common, dir)
+		}
+	}
+	if common == "" {
+		return "", fmt.Errorf("tidb-lightning data_source_uri is required")
+	}
+	return common, nil
+}
+
+func importSourceDir(sourceURI string) (string, error) {
+	sourceURI = strings.TrimSpace(sourceURI)
+	parsed, err := url.Parse(sourceURI)
+	if err != nil {
+		return "", err
+	}
+	switch parsed.Scheme {
+	case "":
+		if !filepath.IsAbs(filepath.Clean(sourceURI)) {
+			return "", fmt.Errorf("local path must be absolute")
+		}
+		return filepath.ToSlash(filepath.Dir(filepath.Clean(sourceURI))), nil
+	case "file":
+		if err := validateLocalFileImportSourceURI(parsed); err != nil {
+			return "", err
+		}
+		parsed.Path = filepath.ToSlash(filepath.Dir(filepath.Clean(parsed.Path)))
+		return strings.TrimRight(parsed.String(), "/"), nil
+	case "s3", "gs", "azblob":
+		if err := validateObjectStorageImportSourceURI(parsed); err != nil {
+			return "", err
+		}
+		keyDir := filepath.ToSlash(filepath.Dir(strings.TrimPrefix(parsed.Path, "/")))
+		parsed.Path = "/" + strings.Trim(keyDir, "/")
+		return strings.TrimRight(parsed.String(), "/"), nil
+	default:
+		return "", fmt.Errorf("scheme %s is not supported by tidb-lightning", parsed.Scheme)
+	}
 }

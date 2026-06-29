@@ -162,6 +162,14 @@ func prepareExportExecutorCommands(root, projectDir, binary, sourceClusterID, pr
 	if err := validateSupportedCompression(compression); err != nil {
 		return nil, err
 	}
+	nullEncoding, err := readPlanTopLevelScalar(planPath, "null_encoding")
+	if err != nil {
+		return nil, err
+	}
+	nullEncoding = normalizeExportNullEncoding(nullEncoding)
+	if err := validateExportNullEncoding(nullEncoding); err != nil {
+		return nil, err
+	}
 	chunks, err := readExportPlanChunks(planPath)
 	if err != nil {
 		return nil, err
@@ -193,6 +201,9 @@ func prepareExportExecutorCommands(root, projectDir, binary, sourceClusterID, pr
 		}
 		if compression != compressionNone {
 			args = append(args, "--compression", compression)
+		}
+		if nullEncoding != exportNullEncodingBitmap {
+			args = append(args, "--null-encoding", nullEncoding)
 		}
 		if sourceConnectionStringEnv != "" {
 			args = append(args, "--source-connection-string-env", sourceConnectionStringEnv)
@@ -237,6 +248,33 @@ func prepareImportExecutorCommands(root, projectDir, binary, sourceClusterID, pr
 		return nil, err
 	}
 	targetConnectionStringEnv := strings.TrimSpace(spec.TargetConnectionStringEnv)
+	if engine == importEngineTiDBLightning {
+		planRel, err := filepath.Rel(root, planPath)
+		if err != nil {
+			return nil, fmt.Errorf("resolve import plan path: %w", err)
+		}
+		dataSourceURI, err := readTiDBLightningDataSourceURI(planPath, jobs)
+		if err != nil {
+			return nil, err
+		}
+		args := []string{
+			"import",
+			"--root", ".",
+			"--source-cluster-id", sourceClusterID,
+			"--project-id", projectID,
+			"--job-id", importEngineTiDBLightning,
+			"--engine", importEngineTiDBLightning,
+			"--source-uri", dataSourceURI,
+			"--import-plan", filepath.ToSlash(planRel),
+		}
+		if targetConnectionStringEnv != "" {
+			args = append(args, "--target-connection-string-env", targetConnectionStringEnv)
+		}
+		if compression != compressionNone {
+			args = append(args, "--compression", compression)
+		}
+		return []WorkerExecutorCommand{newWorkerExecutorCommand(binary, importEngineTiDBLightning, args)}, nil
+	}
 	commands := make([]WorkerExecutorCommand, 0, len(jobs))
 	for _, job := range jobs {
 		args := []string{

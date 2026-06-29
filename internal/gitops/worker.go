@@ -405,6 +405,11 @@ func runDataWorker(root, sourceClusterID, projectID, stage string) (DataWorkerRe
 		if err := validateImportPlanJobFields(engine, jobs); err != nil {
 			return DataWorkerResult{}, err
 		}
+		if engine == importEngineTiDBLightning {
+			if _, err := readTiDBLightningDataSourceURI(planPath, jobs); err != nil {
+				return DataWorkerResult{}, err
+			}
+		}
 		result.Items = len(jobs)
 		result.StateFile = "state/import-jobs.yaml"
 		result.EvidenceFile = "evidence/import-summary.json"

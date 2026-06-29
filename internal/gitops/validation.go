@@ -1388,6 +1388,13 @@ func validateExportPlanContent(path string) error {
 	if err := validateSupportedCompression(compression); err != nil {
 		return err
 	}
+	nullEncoding, err := readPlanTopLevelScalar(path, "null_encoding")
+	if err != nil {
+		return err
+	}
+	if err := validateExportNullEncoding(nullEncoding); err != nil {
+		return err
+	}
 	chunks, err := readExportPlanChunks(path)
 	if err != nil {
 		return err
@@ -1458,7 +1465,14 @@ func validateImportPlanContent(path string) error {
 	if err := validateImportPlanJobSourceURIs(engine, jobs); err != nil {
 		return err
 	}
-	return validateImportPlanJobFields(engine, jobs)
+	if err := validateImportPlanJobFields(engine, jobs); err != nil {
+		return err
+	}
+	if normalizeImportEngine(engine) == importEngineTiDBLightning {
+		_, err := readTiDBLightningDataSourceURI(path, jobs)
+		return err
+	}
+	return nil
 }
 
 func validateImportPlanExportDependencies(exportPlanPath, importPlanPath string) error {

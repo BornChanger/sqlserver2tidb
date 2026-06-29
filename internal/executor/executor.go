@@ -15,9 +15,11 @@ import (
 	"fmt"
 	"hash"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -26,7 +28,7 @@ import (
 
 	"github.com/BornChanger/sqlserver2tidb/internal/buildinfo"
 
-	_ "github.com/go-sql-driver/mysql"
+	mysql "github.com/go-sql-driver/mysql"
 	_ "github.com/microsoft/go-mssqldb"
 )
 
@@ -37,11 +39,18 @@ const (
 	importEngineSQLInsert      = "sql-insert"
 	importEngineTiDBImportInto = "tidb-import-into"
 	importEngineImportInto     = "import-into"
+	importEngineTiDBLightning  = "tidb-lightning"
+	importEngineLightning      = "lightning"
 )
 
 const (
 	compressionNone = "none"
 	compressionGzip = "gzip"
+)
+
+const (
+	nullEncodingBitmap     = "bitmap"
+	nullEncodingBackslashN = "backslash-n"
 )
 
 var csvHTTPClient = &http.Client{Timeout: 10 * time.Minute}
@@ -54,6 +63,8 @@ var openMySQLDB = func(connectionString string) (*sql.DB, error) {
 	return sql.Open("mysql", connectionString)
 }
 
+var runTiDBLightningCommandFunc = runTiDBLightningCommand
+
 func normalizeImportEngine(engine string) (string, error) {
 	engine = strings.ToLower(strings.TrimSpace(engine))
 	switch engine {
@@ -63,8 +74,10 @@ func normalizeImportEngine(engine string) (string, error) {
 		return importEngineSQLInsert, nil
 	case importEngineTiDBImportInto, importEngineImportInto:
 		return importEngineTiDBImportInto, nil
+	case importEngineTiDBLightning, importEngineLightning:
+		return importEngineTiDBLightning, nil
 	default:
-		return "", fmt.Errorf("executor import: import engine %s is not supported; supported engines: %s, %s", engine, importEngineSQLInsert, importEngineTiDBImportInto)
+		return "", fmt.Errorf("executor import: import engine %s is not supported; supported engines: %s, %s, %s", engine, importEngineSQLInsert, importEngineTiDBImportInto, importEngineTiDBLightning)
 	}
 }
 
@@ -85,6 +98,18 @@ func validateCompressionForImportEngine(compression, engine string) error {
 		return fmt.Errorf("compression %s is only supported with %s import", compression, importEngineSQLInsert)
 	}
 	return nil
+}
+
+func normalizeNullEncoding(nullEncoding string) (string, error) {
+	nullEncoding = strings.ToLower(strings.TrimSpace(nullEncoding))
+	switch nullEncoding {
+	case "":
+		return nullEncodingBitmap, nil
+	case nullEncodingBitmap, nullEncodingBackslashN:
+		return nullEncoding, nil
+	default:
+		return "", fmt.Errorf("null encoding %s is not supported; supported null encodings: %s, %s", nullEncoding, nullEncodingBitmap, nullEncodingBackslashN)
+	}
 }
 
 func Run(args []string, stdout, stderr io.Writer) int {
@@ -485,6 +510,7 @@ func runExport(args []string, stdout, stderr io.Writer) int {
 	outputURI := fs.String("output-uri", "", "export output URI")
 	predicate := fs.String("predicate", "", "source split predicate")
 	compression := fs.String("compression", compressionNone, "export compression: none or gzip")
+	nullEncoding := fs.String("null-encoding", nullEncodingBitmap, "CSV NULL encoding: bitmap or backslash-n")
 	sourceConnectionStringEnv := fs.String("source-connection-string-env", defaultSourceConnectionStringEnv, "environment variable containing the SQL Server connection string")
 	execute := fs.Bool("execute", false, "perform the export")
 	if err := fs.Parse(args); err != nil {
@@ -518,12 +544,18 @@ func runExport(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "executor export: %v\n", err)
 		return 1
 	}
+	normalizedNullEncoding, err := normalizeNullEncoding(*nullEncoding)
+	if err != nil {
+		fmt.Fprintf(stderr, "executor export: %v\n", err)
+		return 1
+	}
 	if *execute {
 		result, err := executeSQLServerExport(context.Background(), exportExecuteSpec{
 			SourceObject:              *sourceObject,
 			OutputURI:                 *outputURI,
 			Predicate:                 *predicate,
 			Compression:               normalizedCompression,
+			NullEncoding:              normalizedNullEncoding,
 			SourceConnectionStringEnv: *sourceConnectionStringEnv,
 		})
 		if err != nil {
@@ -548,6 +580,9 @@ func runExport(args []string, stdout, stderr io.Writer) int {
 	if normalizedCompression != compressionNone {
 		fmt.Fprintf(stdout, "compression: %s\n", normalizedCompression)
 	}
+	if normalizedNullEncoding != nullEncodingBitmap {
+		fmt.Fprintf(stdout, "null encoding: %s\n", normalizedNullEncoding)
+	}
 	if strings.TrimSpace(*predicate) != "" {
 		fmt.Fprintf(stdout, "predicate: %s\n", *predicate)
 	}
@@ -561,6 +596,7 @@ type exportExecuteSpec struct {
 	OutputURI                 string
 	Predicate                 string
 	Compression               string
+	NullEncoding              string
 	SourceConnectionStringEnv string
 }
 
@@ -577,6 +613,10 @@ func executeSQLServerExport(ctx context.Context, spec exportExecuteSpec) (export
 	}
 	if strings.Contains(strings.ToUpper(spec.Predicate), "TODO") {
 		return exportExecuteResult{}, fmt.Errorf("executor export: predicate still contains TODO")
+	}
+	nullEncoding, err := normalizeNullEncoding(spec.NullEncoding)
+	if err != nil {
+		return exportExecuteResult{}, fmt.Errorf("executor export: %w", err)
 	}
 
 	output, err := parseExportOutputURI(spec.OutputURI)
@@ -617,7 +657,7 @@ func executeSQLServerExport(ctx context.Context, spec exportExecuteSpec) (export
 		rows.Close()
 		return exportExecuteResult{}, fmt.Errorf("executor export: %w", err)
 	}
-	exportedRows, err := writeCSVExportRows(outputWriter, rows)
+	exportedRows, err := writeCSVExportRowsWithNullEncoding(outputWriter, rows, nullEncoding)
 	if err != nil {
 		outputWriter.Abort()
 		return exportExecuteResult{}, fmt.Errorf("executor export: write CSV output: %w", err)
@@ -2001,8 +2041,16 @@ type exportRows interface {
 const csvNullBitmapColumn = "__sqlserver2tidb_null_bitmap"
 
 func writeCSVExportRows(w io.Writer, rows exportRows) (int64, error) {
+	return writeCSVExportRowsWithNullEncoding(w, rows, nullEncodingBitmap)
+}
+
+func writeCSVExportRowsWithNullEncoding(w io.Writer, rows exportRows, nullEncoding string) (int64, error) {
 	defer rows.Close()
 
+	nullEncoding, err := normalizeNullEncoding(nullEncoding)
+	if err != nil {
+		return 0, err
+	}
 	columns, err := rows.Columns()
 	if err != nil {
 		return 0, err
@@ -2013,7 +2061,10 @@ func writeCSVExportRows(w io.Writer, rows exportRows) (int64, error) {
 		}
 	}
 	writer := csv.NewWriter(w)
-	header := append(append([]string(nil), columns...), csvNullBitmapColumn)
+	header := append([]string(nil), columns...)
+	if nullEncoding == nullEncodingBitmap {
+		header = append(header, csvNullBitmapColumn)
+	}
 	if err := writer.Write(header); err != nil {
 		return 0, err
 	}
@@ -2032,14 +2083,20 @@ func writeCSVExportRows(w io.Writer, rows exportRows) (int64, error) {
 		nullBitmap := make([]byte, len(values))
 		for i, value := range values {
 			if value == nil {
-				record = append(record, "")
+				if nullEncoding == nullEncodingBackslashN {
+					record = append(record, `\N`)
+				} else {
+					record = append(record, "")
+				}
 				nullBitmap[i] = '1'
 				continue
 			}
 			record = append(record, formatCSVValue(value))
 			nullBitmap[i] = '0'
 		}
-		record = append(record, string(nullBitmap))
+		if nullEncoding == nullEncodingBitmap {
+			record = append(record, string(nullBitmap))
+		}
 		if err := writer.Write(record); err != nil {
 			return 0, err
 		}
@@ -2075,31 +2132,41 @@ func runImport(args []string, stdout, stderr io.Writer) int {
 	sourceClusterID := fs.String("source-cluster-id", "", "upstream SQL Server cluster id")
 	projectID := fs.String("project-id", "", "migration project id")
 	jobID := fs.String("job-id", "", "import job id")
-	engine := fs.String("engine", importEngineSQLInsert, "import engine: sql-insert or tidb-import-into")
+	engine := fs.String("engine", importEngineSQLInsert, "import engine: sql-insert, tidb-import-into, or tidb-lightning")
 	targetObject := fs.String("target-object", "", "target object")
 	sourceURI := fs.String("source-uri", "", "import source URI")
+	importPlan := fs.String("import-plan", "", "repo-relative import plan path for tidb-lightning")
 	dependsOnExportChunk := fs.String("depends-on-export-chunk", "", "upstream export chunk id")
 	targetConnectionStringEnv := fs.String("target-connection-string-env", defaultTargetConnectionStringEnv, "environment variable containing the TiDB/MySQL connection string")
 	importBatchSize := fs.Int("import-batch-size", 1000, "rows to commit per import transaction")
 	fieldsRaw := fs.String("fields", "", "comma-separated TiDB IMPORT INTO field list")
 	requireEmptyTarget := fs.Bool("require-empty-target", false, "preflight that the target table is empty before sql-insert import")
 	compression := fs.String("compression", compressionNone, "import source compression: none or gzip")
+	lightningBinary := fs.String("lightning-binary", "tidb-lightning", "TiDB Lightning binary used by tidb-lightning import")
+	lightningPDAddr := fs.String("lightning-pd-addr", "", "PD address used by TiDB Lightning local backend; defaults to SQLSERVER2TIDB_LIGHTNING_PD_ADDR")
+	lightningSortedKVDir := fs.String("lightning-sorted-kv-dir", "/tmp/sqlserver2tidb-lightning-sorted-kv", "TiDB Lightning local backend sorted KV directory")
+	lightningConfigFile := fs.String("lightning-config-file", "", "optional TiDB Lightning config path; a temporary file is used when empty")
 	execute := fs.Bool("execute", false, "perform the import")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if err := requireFields("executor import",
-		field{"source cluster id", *sourceClusterID},
-		field{"project id", *projectID},
-		field{"job id", *jobID},
-		field{"target object", *targetObject},
-		field{"source uri", *sourceURI},
-	); err != nil {
+	normalizedEngine, err := normalizeImportEngine(*engine)
+	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	normalizedEngine, err := normalizeImportEngine(*engine)
-	if err != nil {
+	required := []field{
+		field{"source cluster id", *sourceClusterID},
+		field{"project id", *projectID},
+		field{"job id", *jobID},
+		field{"source uri", *sourceURI},
+	}
+	if normalizedEngine == importEngineTiDBLightning {
+		required = append(required, field{"import plan", *importPlan})
+	} else {
+		required = append(required, field{"target object", *targetObject})
+	}
+	if err := requireFields("executor import", required...); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
@@ -2125,9 +2192,11 @@ func runImport(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "executor import: %v\n", err)
 		return 1
 	}
-	if _, err := quoteTiDBObjectName(*targetObject); err != nil {
-		fmt.Fprintf(stderr, "executor import: %v\n", err)
-		return 1
+	if normalizedEngine != importEngineTiDBLightning {
+		if _, err := quoteTiDBObjectName(*targetObject); err != nil {
+			fmt.Fprintf(stderr, "executor import: %v\n", err)
+			return 1
+		}
 	}
 	if normalizedEngine == importEngineTiDBImportInto {
 		if err := requireTiDBImportIntoFieldsForUnsupportedRemoteSource(*sourceURI, fields); err != nil {
@@ -2149,12 +2218,22 @@ func runImport(args []string, stdout, stderr io.Writer) int {
 			Fields:                    fields,
 			RequireEmptyTarget:        *requireEmptyTarget,
 			Compression:               normalizedCompression,
+			Root:                      *root,
+			ImportPlan:                *importPlan,
+			LightningBinary:           *lightningBinary,
+			LightningPDAddr:           *lightningPDAddr,
+			LightningSortedKVDir:      *lightningSortedKVDir,
+			LightningConfigFile:       *lightningConfigFile,
 		})
 		if err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
-		fmt.Fprintf(stdout, "executor import completed: %s -> %s\n", *sourceURI, *targetObject)
+		if normalizedEngine == importEngineTiDBLightning {
+			fmt.Fprintf(stdout, "executor import completed: %s -> TiDB Lightning\n", *sourceURI)
+		} else {
+			fmt.Fprintf(stdout, "executor import completed: %s -> %s\n", *sourceURI, *targetObject)
+		}
 		if result.HasDataAudit {
 			fmt.Fprintf(stdout, "imported rows: %d\n", result.ImportedRows)
 			fmt.Fprintf(stdout, "input bytes: %d\n", result.InputBytes)
@@ -2169,8 +2248,20 @@ func runImport(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "project: %s\n", *projectID)
 	fmt.Fprintf(stdout, "job id: %s\n", *jobID)
 	fmt.Fprintf(stdout, "engine: %s\n", normalizedEngine)
-	fmt.Fprintf(stdout, "target object: %s\n", *targetObject)
+	if normalizedEngine != importEngineTiDBLightning {
+		fmt.Fprintf(stdout, "target object: %s\n", *targetObject)
+	}
 	fmt.Fprintf(stdout, "source uri: %s\n", *sourceURI)
+	if normalizedEngine == importEngineTiDBLightning {
+		fmt.Fprintf(stdout, "import plan: %s\n", *importPlan)
+		fmt.Fprintf(stdout, "lightning binary: %s\n", *lightningBinary)
+		if strings.TrimSpace(*lightningPDAddr) != "" {
+			fmt.Fprintf(stdout, "lightning pd addr: %s\n", strings.TrimSpace(*lightningPDAddr))
+		}
+		if strings.TrimSpace(*lightningSortedKVDir) != "" {
+			fmt.Fprintf(stdout, "lightning sorted kv dir: %s\n", strings.TrimSpace(*lightningSortedKVDir))
+		}
+	}
 	if normalizedCompression != compressionNone {
 		fmt.Fprintf(stdout, "compression: %s\n", normalizedCompression)
 	}
@@ -2183,7 +2274,11 @@ func runImport(args []string, stdout, stderr io.Writer) int {
 	if strings.TrimSpace(*dependsOnExportChunk) != "" {
 		fmt.Fprintf(stdout, "depends on export chunk: %s\n", *dependsOnExportChunk)
 	}
-	fmt.Fprintln(stdout, "No TiDB connection will be opened.")
+	if normalizedEngine == importEngineTiDBLightning {
+		fmt.Fprintln(stdout, "No TiDB Lightning process will be started.")
+	} else {
+		fmt.Fprintln(stdout, "No TiDB connection will be opened.")
+	}
 	return 0
 }
 
@@ -2195,8 +2290,52 @@ func validateImportSourceURIForEngine(engine, sourceURI string) error {
 	case importEngineTiDBImportInto:
 		_, err := normalizeTiDBImportIntoFileLocation(sourceURI)
 		return err
+	case importEngineTiDBLightning:
+		_, err := normalizeTiDBLightningDataSourceURI(sourceURI)
+		return err
 	default:
 		return fmt.Errorf("unsupported import engine %q", engine)
+	}
+}
+
+func normalizeTiDBLightningDataSourceURI(sourceURI string) (string, error) {
+	sourceURI = strings.TrimRight(strings.TrimSpace(sourceURI), "/")
+	if sourceURI == "" {
+		return "", fmt.Errorf("TiDB Lightning data source URI is required")
+	}
+	parsed, err := url.Parse(sourceURI)
+	if err != nil {
+		return "", fmt.Errorf("parse TiDB Lightning data source URI: %w", err)
+	}
+	switch parsed.Scheme {
+	case "":
+		path := filepath.Clean(sourceURI)
+		if !filepath.IsAbs(path) {
+			return "", fmt.Errorf("local TiDB Lightning data source path must be absolute")
+		}
+		return path, nil
+	case "file":
+		if parsed.Host != "" && parsed.Host != "localhost" {
+			return "", fmt.Errorf("file TiDB Lightning data source URI host must be empty or localhost")
+		}
+		if strings.TrimSpace(parsed.Path) == "" {
+			return "", fmt.Errorf("file TiDB Lightning data source URI path is required")
+		}
+		path := filepath.Clean(parsed.Path)
+		if !filepath.IsAbs(path) {
+			return "", fmt.Errorf("file TiDB Lightning data source path must be absolute")
+		}
+		return path, nil
+	case "s3", "gs", "azblob":
+		if strings.TrimSpace(parsed.Host) == "" {
+			return "", fmt.Errorf("%s TiDB Lightning data source bucket/container is required", parsed.Scheme)
+		}
+		if strings.Trim(strings.TrimSpace(parsed.Path), "/") == "" {
+			return "", fmt.Errorf("%s TiDB Lightning data source path is required", parsed.Scheme)
+		}
+		return parsed.String(), nil
+	default:
+		return "", fmt.Errorf("TiDB Lightning data source URI scheme %s is not supported; supported schemes: file, s3, gs, azblob, or absolute local path", parsed.Scheme)
 	}
 }
 
@@ -2532,6 +2671,8 @@ func normalizeSQLScalar(value any) string {
 
 type importExecuteSpec struct {
 	ImportEngine              string
+	Root                      string
+	ImportPlan                string
 	TargetObject              string
 	SourceURI                 string
 	TargetConnectionStringEnv string
@@ -2539,6 +2680,10 @@ type importExecuteSpec struct {
 	Fields                    []string
 	RequireEmptyTarget        bool
 	Compression               string
+	LightningBinary           string
+	LightningPDAddr           string
+	LightningSortedKVDir      string
+	LightningConfigFile       string
 }
 
 type importExecuteResult struct {
@@ -2559,6 +2704,9 @@ func executeTiDBImport(ctx context.Context, spec importExecuteSpec) (importExecu
 	}
 	if err := validateCompressionForImportEngine(compression, engine); err != nil {
 		return importExecuteResult{}, fmt.Errorf("executor import: %w", err)
+	}
+	if engine == importEngineTiDBLightning {
+		return executeTiDBLightningImport(ctx, spec)
 	}
 	if engine == importEngineTiDBImportInto {
 		return executeTiDBImportInto(ctx, spec)
@@ -2676,6 +2824,314 @@ func executeTiDBImportInto(ctx context.Context, spec importExecuteSpec) (importE
 		InputSHA256:  inspection.Audit.SHA256,
 		HasDataAudit: inspection.HasAudit,
 	}, nil
+}
+
+type tiDBLightningConfigSpec struct {
+	DataSourceURI          string
+	TargetConnectionString string
+	PDAddr                 string
+	SortedKVDir            string
+	LogFile                string
+}
+
+func executeTiDBLightningImport(ctx context.Context, spec importExecuteSpec) (importExecuteResult, error) {
+	compression, err := normalizeCompression(spec.Compression)
+	if err != nil {
+		return importExecuteResult{}, fmt.Errorf("executor import: %w", err)
+	}
+	if _, err := normalizeTiDBLightningDataSourceURI(spec.SourceURI); err != nil {
+		return importExecuteResult{}, fmt.Errorf("executor import: %w", err)
+	}
+
+	envName := strings.TrimSpace(spec.TargetConnectionStringEnv)
+	if envName == "" {
+		envName = defaultTargetConnectionStringEnv
+	}
+	connectionString := strings.TrimSpace(os.Getenv(envName))
+	if connectionString == "" {
+		return importExecuteResult{}, fmt.Errorf("executor import: target connection string env %s is not set", envName)
+	}
+
+	pdAddr := strings.TrimSpace(spec.LightningPDAddr)
+	if pdAddr == "" {
+		pdAddr = strings.TrimSpace(os.Getenv("SQLSERVER2TIDB_LIGHTNING_PD_ADDR"))
+	}
+	if pdAddr == "" {
+		return importExecuteResult{}, fmt.Errorf("executor import: lightning PD address is required via --lightning-pd-addr or SQLSERVER2TIDB_LIGHTNING_PD_ADDR")
+	}
+
+	sortedKVDir := strings.TrimSpace(spec.LightningSortedKVDir)
+	if sortedKVDir == "" {
+		sortedKVDir = "/tmp/sqlserver2tidb-lightning-sorted-kv"
+	}
+	audit, err := auditTiDBLightningImportPlanSources(ctx, spec.Root, spec.ImportPlan, compression)
+	if err != nil {
+		return importExecuteResult{}, fmt.Errorf("executor import: %w", err)
+	}
+	config, err := buildTiDBLightningConfig(tiDBLightningConfigSpec{
+		DataSourceURI:          spec.SourceURI,
+		TargetConnectionString: connectionString,
+		PDAddr:                 pdAddr,
+		SortedKVDir:            sortedKVDir,
+		LogFile:                "tidb-lightning.log",
+	})
+	if err != nil {
+		return importExecuteResult{}, fmt.Errorf("executor import: %w", err)
+	}
+	configPath, cleanup, err := writeTiDBLightningConfigFile(spec.Root, spec.LightningConfigFile, config)
+	if err != nil {
+		return importExecuteResult{}, fmt.Errorf("executor import: %w", err)
+	}
+	defer cleanup()
+
+	binary := strings.TrimSpace(spec.LightningBinary)
+	if binary == "" {
+		binary = "tidb-lightning"
+	}
+	if output, err := runTiDBLightningCommandFunc(ctx, binary, configPath); err != nil {
+		output = strings.TrimSpace(output)
+		if output != "" {
+			return importExecuteResult{}, fmt.Errorf("executor import: run TiDB Lightning: %w: %s", err, output)
+		}
+		return importExecuteResult{}, fmt.Errorf("executor import: run TiDB Lightning: %w", err)
+	}
+	return importExecuteResult{
+		ImportedRows: audit.Rows,
+		InputBytes:   audit.Bytes,
+		InputSHA256:  audit.SHA256,
+		HasDataAudit: true,
+	}, nil
+}
+
+func buildTiDBLightningConfig(spec tiDBLightningConfigSpec) (string, error) {
+	dataSourceURI, err := normalizeTiDBLightningDataSourceURI(spec.DataSourceURI)
+	if err != nil {
+		return "", err
+	}
+	cfg, err := mysql.ParseDSN(strings.TrimSpace(spec.TargetConnectionString))
+	if err != nil {
+		return "", fmt.Errorf("parse target connection string: %w", err)
+	}
+	if strings.TrimSpace(cfg.User) == "" {
+		return "", fmt.Errorf("target connection string user is required for TiDB Lightning")
+	}
+	if cfg.Net != "tcp" {
+		return "", fmt.Errorf("target connection string must use tcp network for TiDB Lightning")
+	}
+	host, portRaw, err := net.SplitHostPort(cfg.Addr)
+	if err != nil {
+		return "", fmt.Errorf("target connection string address must include host and port for TiDB Lightning: %w", err)
+	}
+	port, err := strconv.Atoi(portRaw)
+	if err != nil || port <= 0 {
+		return "", fmt.Errorf("target connection string port %q is invalid for TiDB Lightning", portRaw)
+	}
+	if strings.TrimSpace(spec.PDAddr) == "" {
+		return "", fmt.Errorf("PD address is required for TiDB Lightning")
+	}
+	sortedKVDir := strings.TrimSpace(spec.SortedKVDir)
+	if sortedKVDir == "" {
+		return "", fmt.Errorf("sorted KV directory is required for TiDB Lightning")
+	}
+	logFile := strings.TrimSpace(spec.LogFile)
+	if logFile == "" {
+		logFile = "tidb-lightning.log"
+	}
+
+	var b strings.Builder
+	b.WriteString("[lightning]\n")
+	b.WriteString("level = \"info\"\n")
+	fmt.Fprintf(&b, "file = %s\n\n", quoteTOMLString(logFile))
+	b.WriteString("[tikv-importer]\n")
+	b.WriteString("backend = \"local\"\n")
+	fmt.Fprintf(&b, "sorted-kv-dir = %s\n\n", quoteTOMLString(sortedKVDir))
+	b.WriteString("[mydumper]\n")
+	fmt.Fprintf(&b, "data-source-dir = %s\n\n", quoteTOMLString(dataSourceURI))
+	b.WriteString("[mydumper.csv]\n")
+	b.WriteString("separator = ','\n")
+	b.WriteString("delimiter = '\"'\n")
+	b.WriteString("header = true\n")
+	b.WriteString("not-null = false\n")
+	b.WriteString("null = '\\N'\n\n")
+	b.WriteString("[tidb]\n")
+	fmt.Fprintf(&b, "host = %s\n", quoteTOMLString(host))
+	fmt.Fprintf(&b, "port = %d\n", port)
+	fmt.Fprintf(&b, "user = %s\n", quoteTOMLString(cfg.User))
+	fmt.Fprintf(&b, "password = %s\n", quoteTOMLString(cfg.Passwd))
+	fmt.Fprintf(&b, "pd-addr = %s\n", quoteTOMLString(spec.PDAddr))
+	return b.String(), nil
+}
+
+func quoteTOMLString(value string) string {
+	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`, "\r", `\r`, "\t", `\t`).Replace(value) + `"`
+}
+
+func writeTiDBLightningConfigFile(root, requestedPath, config string) (string, func(), error) {
+	if strings.TrimSpace(requestedPath) == "" {
+		file, err := os.CreateTemp("", "sqlserver2tidb-lightning-*.toml")
+		if err != nil {
+			return "", func() {}, fmt.Errorf("create TiDB Lightning config temp file: %w", err)
+		}
+		path := file.Name()
+		if _, err := file.WriteString(config); err != nil {
+			file.Close()
+			os.Remove(path)
+			return "", func() {}, fmt.Errorf("write TiDB Lightning config temp file: %w", err)
+		}
+		if err := file.Close(); err != nil {
+			os.Remove(path)
+			return "", func() {}, fmt.Errorf("close TiDB Lightning config temp file: %w", err)
+		}
+		return path, func() { _ = os.Remove(path) }, nil
+	}
+	path := strings.TrimSpace(requestedPath)
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(root, filepath.FromSlash(path))
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return "", func() {}, fmt.Errorf("create TiDB Lightning config directory: %w", err)
+	}
+	if err := os.WriteFile(path, []byte(config), 0o600); err != nil {
+		return "", func() {}, fmt.Errorf("write TiDB Lightning config: %w", err)
+	}
+	return path, func() {}, nil
+}
+
+func runTiDBLightningCommand(ctx context.Context, binary, configPath string) (string, error) {
+	cmd := exec.CommandContext(ctx, binary, "-config", configPath)
+	output, err := cmd.CombinedOutput()
+	return string(output), err
+}
+
+func auditTiDBLightningImportPlanSources(ctx context.Context, root, importPlanPath, compression string) (dataChannelAudit, error) {
+	sources, err := readTiDBLightningImportPlanSources(root, importPlanPath)
+	if err != nil {
+		return dataChannelAudit{}, err
+	}
+	if len(sources) == 0 {
+		return dataChannelAudit{}, fmt.Errorf("tidb-lightning import plan contains no source_uri entries")
+	}
+	manifestDigest := sha256.New()
+	var totalRows int64
+	var totalBytes int64
+	for _, sourceURI := range sources {
+		audit, err := auditTiDBLightningCSVSource(ctx, sourceURI, compression)
+		if err != nil {
+			return dataChannelAudit{}, fmt.Errorf("audit %s: %w", sourceURI, err)
+		}
+		totalRows += audit.Rows
+		totalBytes += audit.Bytes
+		fmt.Fprintf(manifestDigest, "%s\t%d\t%d\t%s\n", sourceURI, audit.Rows, audit.Bytes, audit.SHA256)
+	}
+	return dataChannelAudit{
+		Rows:   totalRows,
+		Bytes:  totalBytes,
+		SHA256: formatSHA256(manifestDigest.Sum(nil)),
+	}, nil
+}
+
+func readTiDBLightningImportPlanSources(root, importPlanPath string) ([]string, error) {
+	path := strings.TrimSpace(importPlanPath)
+	if path == "" {
+		return nil, fmt.Errorf("import plan is required for tidb-lightning")
+	}
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(root, filepath.FromSlash(path))
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read tidb-lightning import plan: %w", err)
+	}
+	var sources []string
+	for _, raw := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(raw)
+		if strings.HasPrefix(trimmed, "source_uri:") {
+			sourceURI := trimExecutorYAMLScalar(strings.TrimPrefix(trimmed, "source_uri:"))
+			if sourceURI != "" {
+				sources = append(sources, sourceURI)
+			}
+		}
+	}
+	return sources, nil
+}
+
+func auditTiDBLightningCSVSource(ctx context.Context, sourceURI, compression string) (dataChannelAudit, error) {
+	compression, err := normalizeCompression(compression)
+	if err != nil {
+		return dataChannelAudit{}, err
+	}
+	source, err := parseTiDBLightningImportSourceURI(sourceURI)
+	if err != nil {
+		return dataChannelAudit{}, err
+	}
+	if source.scheme == "http" || source.scheme == "https" {
+		return dataChannelAudit{}, fmt.Errorf("HTTP(S) sources are not supported by tidb-lightning")
+	}
+	reader, err := openParsedCSVImportSource(ctx, source)
+	if err != nil {
+		return dataChannelAudit{}, err
+	}
+	counter := &countingReadCloser{reader: reader, digest: sha256.New()}
+	wrapped, err := wrapCSVImportReader(counter, compression)
+	if err != nil {
+		counter.Close()
+		return dataChannelAudit{}, err
+	}
+	defer wrapped.Close()
+
+	csvReader := csv.NewReader(wrapped)
+	header, err := csvReader.Read()
+	if err != nil {
+		return dataChannelAudit{}, fmt.Errorf("read CSV header: %w", err)
+	}
+	for _, column := range header {
+		if column == csvNullBitmapColumn {
+			return dataChannelAudit{}, fmt.Errorf("CSV source contains internal null bitmap column %q; regenerate export plan with null_encoding: backslash-n", csvNullBitmapColumn)
+		}
+	}
+	var rows int64
+	for {
+		if _, err := csvReader.Read(); errors.Is(err, io.EOF) {
+			return dataChannelAudit{
+				Rows:   rows,
+				Bytes:  counter.BytesRead(),
+				SHA256: counter.SHA256(),
+			}, nil
+		} else if err != nil {
+			return dataChannelAudit{}, fmt.Errorf("read CSV audit row %d: %w", rows+1, err)
+		}
+		rows++
+	}
+}
+
+func parseTiDBLightningImportSourceURI(sourceURI string) (importSourceURI, error) {
+	trimmed := strings.TrimSpace(sourceURI)
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return importSourceURI{}, fmt.Errorf("parse source uri: %w", err)
+	}
+	if parsed.Scheme == "" {
+		path := filepath.Clean(trimmed)
+		if !filepath.IsAbs(path) {
+			return importSourceURI{}, fmt.Errorf("local TiDB Lightning CSV source path must be absolute")
+		}
+		return importSourceURI{
+			scheme: "file",
+			path:   path,
+			uri:    path,
+		}, nil
+	}
+	return parseImportSourceURI(trimmed)
+}
+
+func trimExecutorYAMLScalar(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) >= 2 {
+		if (value[0] == '"' && value[len(value)-1] == '"') || (value[0] == '\'' && value[len(value)-1] == '\'') {
+			return value[1 : len(value)-1]
+		}
+	}
+	return value
 }
 
 func openCSVImportFile(sourceURI string) (io.ReadCloser, error) {
@@ -4439,6 +4895,8 @@ Usage:
   sqlserver2tidb-executor export --execute --source-connection-string-env SQLSERVER2TIDB_SOURCE_CONNECTION_STRING --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --chunk-id dbo.orders.000001 --source-object sales.dbo.orders --target-object app.orders --output-uri file:///tmp/path.csv --predicate "id >= 1 AND id < 1000"
   sqlserver2tidb-executor import --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --job-id import-dbo.orders.000001 --target-object app.orders --source-uri https://object-store.example/path.csv
   sqlserver2tidb-executor import --execute --target-connection-string-env SQLSERVER2TIDB_TARGET_CONNECTION_STRING --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --job-id import-dbo.orders.000001 --target-object app.orders --source-uri file:///tmp/path.csv --import-batch-size 1000
+  sqlserver2tidb-executor import --engine tidb-lightning --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --job-id tidb-lightning --source-uri s3://bucket/path/full --import-plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml
+  SQLSERVER2TIDB_LIGHTNING_PD_ADDR=pd:2379 sqlserver2tidb-executor import --execute --engine tidb-lightning --target-connection-string-env SQLSERVER2TIDB_TARGET_CONNECTION_STRING --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --job-id tidb-lightning --source-uri s3://bucket/path/full --import-plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml
   sqlserver2tidb-executor validate-count --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --source-object sales.dbo.orders --target-object app.orders --predicate "id >= 1" --target-predicate "id >= 1"
   sqlserver2tidb-executor validate-count --execute --source-connection-string-env SQLSERVER2TIDB_SOURCE_CONNECTION_STRING --target-connection-string-env SQLSERVER2TIDB_TARGET_CONNECTION_STRING --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --source-object sales.dbo.orders --target-object app.orders
   sqlserver2tidb-executor validate-query --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --check-id orders-total --source-sql "SELECT SUM(total) FROM sales.dbo.orders" --target-sql "SELECT SUM(total) FROM app.orders"
