@@ -1056,7 +1056,48 @@ func isReusableWorkerExecutorCommandEvidence(stage string, command workerExecuto
 	if stage == "cdc" && command.CDCAppliedChanges == nil {
 		return false
 	}
+	if workerExecutorCommandRequiresDataAudit(stage, expectedArgs) && !workerExecutorCommandHasDataAudit(command) {
+		return false
+	}
 	return true
+}
+
+func workerExecutorCommandRequiresDataAudit(stage string, args []string) bool {
+	switch stage {
+	case "export":
+		return true
+	case "import":
+		return workerExecutorImportEngine(args) == "sql-insert"
+	default:
+		return false
+	}
+}
+
+func workerExecutorImportEngine(args []string) string {
+	engine := "sql-insert"
+	for i, arg := range args {
+		if arg == "--engine" && i+1 < len(args) {
+			engine = strings.TrimSpace(args[i+1])
+			continue
+		}
+		if strings.HasPrefix(arg, "--engine=") {
+			engine = strings.TrimSpace(strings.TrimPrefix(arg, "--engine="))
+		}
+	}
+	if engine == "" {
+		return "sql-insert"
+	}
+	return engine
+}
+
+func workerExecutorCommandHasDataAudit(command workerExecutorRunCommandEvidence) bool {
+	if command.DataRows == nil || *command.DataRows < 0 {
+		return false
+	}
+	if command.DataBytes == nil || *command.DataBytes < 0 {
+		return false
+	}
+	return isWorkerExecutorSHA256(strings.TrimSpace(command.DataSHA256))
 }
 
 func normalizeWorkerExecutorCommandEvidence(command workerExecutorRunCommandEvidence) workerExecutorRunCommandEvidence {

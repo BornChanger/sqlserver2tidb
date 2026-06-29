@@ -1224,6 +1224,47 @@ func TestWorkerExecutorDataMetricsRejectsPartialOrInvalidOutput(t *testing.T) {
 	}
 }
 
+func TestReusableWorkerExecutorCommandEvidenceRequiresDataAuditForExportAndSQLInsertImport(t *testing.T) {
+	exportArgs := []string{"sqlserver2tidb-executor", "export", "--execute"}
+	exportEvidence := workerExecutorRunCommandEvidence{
+		Args:         exportArgs,
+		ShellCommand: renderArgsForEvidence(exportArgs),
+		ExitCode:     0,
+	}
+	if isReusableWorkerExecutorCommandEvidence("export", exportEvidence, exportArgs) {
+		t.Fatal("export evidence without data audit was reusable, want rerun")
+	}
+
+	dataRows := int64(2)
+	dataBytes := int64(128)
+	exportEvidence.DataRows = &dataRows
+	exportEvidence.DataBytes = &dataBytes
+	exportEvidence.DataSHA256 = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+	if !isReusableWorkerExecutorCommandEvidence("export", exportEvidence, exportArgs) {
+		t.Fatal("export evidence with complete data audit was not reusable")
+	}
+
+	sqlInsertArgs := []string{"sqlserver2tidb-executor", "import", "--execute", "--engine", "sql-insert"}
+	sqlInsertEvidence := workerExecutorRunCommandEvidence{
+		Args:         sqlInsertArgs,
+		ShellCommand: renderArgsForEvidence(sqlInsertArgs),
+		ExitCode:     0,
+	}
+	if isReusableWorkerExecutorCommandEvidence("import", sqlInsertEvidence, sqlInsertArgs) {
+		t.Fatal("sql-insert import evidence without data audit was reusable, want rerun")
+	}
+
+	importIntoArgs := []string{"sqlserver2tidb-executor", "import", "--execute", "--engine", "tidb-import-into"}
+	importIntoEvidence := workerExecutorRunCommandEvidence{
+		Args:         importIntoArgs,
+		ShellCommand: renderArgsForEvidence(importIntoArgs),
+		ExitCode:     0,
+	}
+	if !isReusableWorkerExecutorCommandEvidence("import", importIntoEvidence, importIntoArgs) {
+		t.Fatal("tidb-import-into evidence without data audit was not reusable")
+	}
+}
+
 func TestRunWorkerExecutorExecuteWritesFailedEvidenceOnCommandFailure(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer
