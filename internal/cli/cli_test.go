@@ -1096,7 +1096,7 @@ func TestRunWorkerExecutorExecutePassesExecuteFlagToExternalExecutor(t *testing.
 	writeCLIStageApproval(t, root, "export", parsePayloadHash(t, stdout.String()))
 
 	fakeExecutor := filepath.Join(root, "fake-executor")
-	if err := os.WriteFile(fakeExecutor, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> executor-args.log\nprintf 'fake executor completed: %s\\n' \"$1\"\n"), 0o755); err != nil {
+	if err := os.WriteFile(fakeExecutor, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> executor-args.log\nprintf 'fake executor completed: %s\\n' \"$1\"\nprintf 'exported rows: 2\\n'\nprintf 'output bytes: 128\\n'\nprintf 'output sha256: sha256:1111111111111111111111111111111111111111111111111111111111111111\\n'\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1203,6 +1203,60 @@ func TestRunWorkerExecutorExecuteRecordsDataMetricsInEvidence(t *testing.T) {
 	}
 	if !strings.Contains(evidence, `"data_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111"`) {
 		t.Fatalf("executor evidence = %q, want structured data sha256", evidence)
+	}
+}
+
+func TestRunWorkerExecutorExecuteRejectsMissingRequiredDataAudit(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createCLIProjectWithOneExportChunk(t, root, &stdout, &stderr)
+	reviewCLIExportPlanPredicates(t, root)
+	setCLIReviewPlanStatus(t, root, "export", "reviewed")
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"compute-payload-hash",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "export",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("compute-payload-hash export code = %d, stderr = %s", code, stderr.String())
+	}
+	writeCLIStageApproval(t, root, "export", parsePayloadHash(t, stdout.String()))
+
+	fakeExecutor := filepath.Join(root, "fake-executor-missing-data-audit")
+	if err := os.WriteFile(fakeExecutor, []byte("#!/bin/sh\nprintf 'executor export completed: sales.dbo.orders -> file:///tmp/orders.csv\\n'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = Run([]string{
+		"worker-executor",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "export",
+		"--executor-binary", "./fake-executor-missing-data-audit",
+		"--execute",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("worker-executor execute code = 0, want missing data audit failure")
+	}
+	if !strings.Contains(stderr.String(), "export executor output must include exported rows: N, output bytes: N, and output sha256: sha256:<digest>") {
+		t.Fatalf("worker-executor stderr = %q, want missing data audit error", stderr.String())
+	}
+
+	evidence := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-export-run.json")
+	if !strings.Contains(evidence, `"status": "failed"`) {
+		t.Fatalf("executor evidence = %q, want failed status", evidence)
+	}
+	if !strings.Contains(evidence, "must include exported rows") {
+		t.Fatalf("executor evidence = %q, want missing data audit command error", evidence)
 	}
 }
 
@@ -1344,7 +1398,7 @@ func TestRunWorkerExecutorExecuteRetriesTransientCommandFailure(t *testing.T) {
 	writeCLIStageApproval(t, root, "export", parsePayloadHash(t, stdout.String()))
 
 	fakeExecutor := filepath.Join(root, "fake-executor-fails-once")
-	if err := os.WriteFile(fakeExecutor, []byte("#!/bin/sh\nif [ ! -f retry-marker ]; then\n  touch retry-marker\n  printf 'attempt 1 failed\\n'\n  exit 17\nfi\nprintf 'attempt 2 succeeded\\n'\n"), 0o755); err != nil {
+	if err := os.WriteFile(fakeExecutor, []byte("#!/bin/sh\nif [ ! -f retry-marker ]; then\n  touch retry-marker\n  printf 'attempt 1 failed\\n'\n  exit 17\nfi\nprintf 'attempt 2 succeeded\\n'\nprintf 'exported rows: 2\\n'\nprintf 'output bytes: 128\\n'\nprintf 'output sha256: sha256:1111111111111111111111111111111111111111111111111111111111111111\\n'\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 

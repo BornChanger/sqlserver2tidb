@@ -933,6 +933,9 @@ func runWorkerExecutor(args []string, stdout, stderr io.Writer) int {
 			if errParse == nil {
 				errParse = errDataSHA256
 			}
+			if errParse == nil {
+				errParse = workerExecutorRequiredDataAuditError(spec.Stage, args, dataRows, dataBytes, dataSHA256)
+			}
 			commandEvidence = workerExecutorRunCommandEvidence{
 				ID:                command.ID,
 				Args:              args,
@@ -1098,6 +1101,23 @@ func workerExecutorCommandHasDataAudit(command workerExecutorRunCommandEvidence)
 		return false
 	}
 	return isWorkerExecutorSHA256(strings.TrimSpace(command.DataSHA256))
+}
+
+func workerExecutorRequiredDataAuditError(stage string, args []string, dataRows, dataBytes *int64, dataSHA256 string) error {
+	if !workerExecutorCommandRequiresDataAudit(stage, args) {
+		return nil
+	}
+	if dataRows != nil && dataBytes != nil && isWorkerExecutorSHA256(strings.TrimSpace(dataSHA256)) {
+		return nil
+	}
+	switch stage {
+	case "export":
+		return fmt.Errorf("export executor output must include exported rows: N, output bytes: N, and output sha256: sha256:<digest>")
+	case "import":
+		return fmt.Errorf("import executor output must include imported rows: N, input bytes: N, and input sha256: sha256:<digest>")
+	default:
+		return fmt.Errorf("%s executor output must include data_rows, data_bytes, and data_sha256", stage)
+	}
 }
 
 func normalizeWorkerExecutorCommandEvidence(command workerExecutorRunCommandEvidence) workerExecutorRunCommandEvidence {
