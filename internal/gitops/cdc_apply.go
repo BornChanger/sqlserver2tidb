@@ -13,7 +13,15 @@ type CDCPlanApplyStatus struct {
 	Tables int
 }
 
+type CDCPlanApplyStatusSpec struct {
+	MinLSNs map[string]string
+}
+
 func CheckCDCPlanApplyStatus(root, sourceClusterID, projectID string) (CDCPlanApplyStatus, error) {
+	return CheckCDCPlanApplyStatusWithSpec(root, sourceClusterID, projectID, CDCPlanApplyStatusSpec{})
+}
+
+func CheckCDCPlanApplyStatusWithSpec(root, sourceClusterID, projectID string, spec CDCPlanApplyStatusSpec) (CDCPlanApplyStatus, error) {
 	if err := validateProjectAddress(root, sourceClusterID, projectID); err != nil {
 		return CDCPlanApplyStatus{}, err
 	}
@@ -44,6 +52,9 @@ func CheckCDCPlanApplyStatus(root, sourceClusterID, projectID string) (CDCPlanAp
 		}
 		checkpoint, ok := checkpoints[table.SourceObject]
 		if !ok || strings.TrimSpace(checkpoint.ToLSN) == "" {
+			if err := requireCDCMinLSNCoversFromLSN(table.SourceObject, table.FromLSN, spec.MinLSNs); err != nil {
+				return CDCPlanApplyStatus{}, err
+			}
 			needsApply = true
 			continue
 		}
@@ -60,6 +71,9 @@ func CheckCDCPlanApplyStatus(root, sourceClusterID, projectID string) (CDCPlanAp
 		if strings.TrimSpace(checkpoint.ToLSN) != strings.TrimSpace(table.FromLSN) {
 			return CDCPlanApplyStatus{}, fmt.Errorf("cdc tracked table %s checkpoint to_lsn %s does not match plan from_lsn %s", table.SourceObject, checkpoint.ToLSN, table.FromLSN)
 		}
+		if err := requireCDCMinLSNCoversFromLSN(table.SourceObject, table.FromLSN, spec.MinLSNs); err != nil {
+			return CDCPlanApplyStatus{}, err
+		}
 		needsApply = true
 	}
 	if !needsApply {
@@ -73,4 +87,23 @@ func CheckCDCPlanApplyStatus(root, sourceClusterID, projectID string) (CDCPlanAp
 		Needed: true,
 		Tables: len(plan.Tables),
 	}, nil
+}
+
+func requireCDCMinLSNCoversFromLSN(sourceObject, fromLSN string, minLSNs map[string]string) error {
+	minLSN := strings.TrimSpace(minLSNs[sourceObject])
+	if minLSN == "" {
+		return nil
+	}
+	fromLSNBytes, err := parseCDCPlanLSN(fromLSN, "from_lsn")
+	if err != nil {
+		return fmt.Errorf("cdc tracked table %s %w", sourceObject, err)
+	}
+	minLSNBytes, err := parseCDCPlanLSN(minLSN, "min_lsn")
+	if err != nil {
+		return fmt.Errorf("cdc tracked table %s %w", sourceObject, err)
+	}
+	if bytes.Compare(fromLSNBytes, minLSNBytes) < 0 {
+		return fmt.Errorf("SQL Server CDC retention no longer covers %s: from_lsn %s is before min_lsn %s", sourceObject, fromLSN, minLSN)
+	}
+	return nil
 }

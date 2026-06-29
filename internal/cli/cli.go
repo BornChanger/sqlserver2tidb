@@ -419,12 +419,15 @@ func runPrepareCDCRange(args []string, stdout, stderr io.Writer) int {
 	projectID := fs.String("project-id", "", "migration project id")
 	fromLSN := fs.String("from-lsn", "", "initial CDC from LSN for tables without checkpoint state")
 	toLSN := fs.String("to-lsn", "", "CDC to LSN for the next reviewed range")
+	var minLSNs cdcHealthMinLSNFlags
+	fs.Var(&minLSNs, "min-lsn", "per-table SQL Server CDC min LSN as source.object=0x...")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	result, err := gitops.PrepareCDCPlanRange(*root, *sourceClusterID, *projectID, gitops.CDCPlanRangeSpec{
 		FromLSN: *fromLSN,
 		ToLSN:   *toLSN,
+		MinLSNs: minLSNs.Map(),
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "prepare cdc range: %v\n", err)
@@ -558,6 +561,7 @@ func runCDCOrchestrator(args []string, stdout, stderr io.Writer) int {
 				CommandRetries:            *commandRetries,
 				RetryBackoff:              *retryBackoff,
 				Resume:                    *resume,
+				SkipRetentionCheck:        *skipRetentionCheck,
 			}, stdout, stderr)
 			if err != nil {
 				fmt.Fprintf(stderr, "cdc orchestrator: %v\n", err)
@@ -622,6 +626,7 @@ type cdcOrchestratorApplySpec struct {
 	CommandRetries            int
 	RetryBackoff              time.Duration
 	Resume                    bool
+	SkipRetentionCheck        bool
 }
 
 type cdcOrchestratorApplyStatus struct {
@@ -645,6 +650,18 @@ func runCDCOrchestratorApplyApproved(spec cdcOrchestratorApplySpec, stdout, stde
 	applyStatus, err := gitops.CheckCDCPlanApplyStatus(spec.Root, spec.SourceClusterID, spec.ProjectID)
 	if err != nil {
 		return cdcOrchestratorApplyStatus{}, err
+	}
+	if applyStatus.Needed && !spec.SkipRetentionCheck {
+		minLSNs, err := cdcOrchestratorMinLSNs(spec.Root, spec.SourceClusterID, spec.ProjectID, spec.ExecutorBinary, spec.SourceConnectionStringEnv)
+		if err != nil {
+			return cdcOrchestratorApplyStatus{}, err
+		}
+		applyStatus, err = gitops.CheckCDCPlanApplyStatusWithSpec(spec.Root, spec.SourceClusterID, spec.ProjectID, gitops.CDCPlanApplyStatusSpec{
+			MinLSNs: minLSNs,
+		})
+		if err != nil {
+			return cdcOrchestratorApplyStatus{}, err
+		}
 	}
 	if !applyStatus.Needed {
 		fmt.Fprintf(stdout, "approved cdc apply skipped: %s\n", applyStatus.Reason)

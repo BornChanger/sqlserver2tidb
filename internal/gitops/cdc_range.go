@@ -10,6 +10,7 @@ import (
 type CDCPlanRangeSpec struct {
 	FromLSN string
 	ToLSN   string
+	MinLSNs map[string]string
 }
 
 type CDCPlanRangeResult struct {
@@ -74,6 +75,9 @@ func PrepareCDCPlanRange(root, sourceClusterID, projectID string, spec CDCPlanRa
 		}
 		if err := validateCDCPlanLSN(fromLSN, "from_lsn"); err != nil {
 			return CDCPlanRangeResult{}, fmt.Errorf("cdc tracked table %s %w", table.SourceObject, err)
+		}
+		if err := requireCDCMinLSNCoversFromLSN(table.SourceObject, fromLSN, spec.MinLSNs); err != nil {
+			return CDCPlanRangeResult{}, err
 		}
 		if err := validateCDCPlanLSNRange(fromLSN, toLSN); err != nil {
 			return CDCPlanRangeResult{}, fmt.Errorf("cdc tracked table %s %w", table.SourceObject, err)

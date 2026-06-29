@@ -2136,6 +2136,34 @@ func TestRunWorkerExecutorCDCExecuteRecordsAppliedChangesInEvidence(t *testing.T
 	}
 }
 
+func TestRunPrepareCDCRangeRejectsCheckpointBeforeMinLSN(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	createCLIProjectWithCDCPlanAndCheckpoint(t, root, &stdout, &stderr, "0x00000000000000000001", "0x00000000000000000002")
+	planBefore := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/cdc-plan.yaml")
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"prepare-cdc-range",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--to-lsn", "0x00000000000000000004",
+		"--min-lsn", "sales.dbo.orders=0x00000000000000000003",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("prepare-cdc-range code = 0, want retention failure; stdout = %s", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "SQL Server CDC retention no longer covers sales.dbo.orders") {
+		t.Fatalf("prepare-cdc-range stderr = %q, want retention error", stderr.String())
+	}
+	planAfter := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/cdc-plan.yaml")
+	if planAfter != planBefore {
+		t.Fatalf("prepare-cdc-range mutated plan after retention failure\nbefore:\n%s\nafter:\n%s", planBefore, planAfter)
+	}
+}
+
 func TestRunWorkerExecutorCDCExecuteFailsWithEvidenceWhenAppliedChangesMissing(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer
@@ -2705,6 +2733,51 @@ func TestRunCDCOrchestratorApplyApprovedExecutesCDCAndAdvancesCheckpoint(t *test
 	checkpoint := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/state/cdc-checkpoint.yaml")
 	if !strings.Contains(checkpoint, "to_lsn: 0x00000000000000000003") || !strings.Contains(checkpoint, "applied_changes: 7") {
 		t.Fatalf("checkpoint = %q, want advanced LSN and applied changes", checkpoint)
+	}
+}
+
+func TestRunCDCOrchestratorApplyApprovedRejectsRangeBeforeMinLSN(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	createCLIProjectWithCDCPlanAndCheckpoint(t, root, &stdout, &stderr, "0x00000000000000000001", "0x00000000000000000002")
+	setCLICDCPlanLSNRange(t, root, "0x00000000000000000002", "0x00000000000000000004")
+	setCLIReviewPlanStatus(t, root, "cdc", "reviewed")
+	hash, err := gitops.ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "cdc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeCLIStageApproval(t, root, "cdc", hash)
+
+	fakeExecutor := filepath.Join(root, "fake-cdc-apply-expired")
+	if err := os.WriteFile(fakeExecutor, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> cdc-apply-args.log\ncase \"$1\" in\n  cdc-lsn)\n    printf 'executor cdc-lsn completed\\n'\n    printf 'max_lsn: 0x00000000000000000004\\n'\n    printf 'min_lsn: 0x00000000000000000003\\n'\n    ;;\n  cdc)\n    printf 'cdc apply should not run\\n' >&2\n    exit 42\n    ;;\nesac\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"cdc-orchestrator",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--executor-binary", "./fake-cdc-apply-expired",
+		"--source-connection-string-env", "SQLSERVER_CDC_TEST_DSN",
+		"--target-connection-string-env", "TIDB_TEST_DSN",
+		"--apply-approved",
+		"--max-iterations", "1",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("cdc-orchestrator apply-approved code = 0, want retention failure; stdout = %s", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "SQL Server CDC retention no longer covers sales.dbo.orders") {
+		t.Fatalf("cdc-orchestrator apply-approved stderr = %q, want retention error", stderr.String())
+	}
+	argsLog := readCLIRelFile(t, root, "cdc-apply-args.log")
+	if !strings.Contains(argsLog, "cdc-lsn --execute --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --source-object sales.dbo.orders") {
+		t.Fatalf("cdc apply args = %q, want per-table min_lsn probe", argsLog)
+	}
+	if strings.Contains(argsLog, "cdc --execute --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a") {
+		t.Fatalf("cdc apply args = %q, did not expect CDC apply after retention failure", argsLog)
 	}
 }
 

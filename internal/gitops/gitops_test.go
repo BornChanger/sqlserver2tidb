@@ -7615,6 +7615,46 @@ func TestAdvanceCDCCheckpointFromExecutorEvidenceWritesCheckpointSnapshot(t *tes
 	assertContains(t, checkpoint, `completed_at: "2026-01-02T03:04:06Z"`)
 }
 
+func TestCheckCDCPlanApplyStatusRejectsRangeBeforeSQLServerMinLSN(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateCDCPlanOnly(root))
+	setCDCPlanLSNRange(t, root, "0x00000027000001f40002", "0x00000027000001f40004")
+	setReviewPlanStatus(t, root, "cdc", "reviewed")
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "cdc")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(cdc) error = %v", err)
+	}
+	writeStageApproval(t, root, "cdc", hash)
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/state/cdc-checkpoint.yaml", `source_cluster_id: prod-sqlserver-a
+phase: cdc
+status: running
+project_id: sales-db-to-tidb-prod-a
+payload_hash: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+mode: sqlserver-cdc
+checkpoint_scope: source-cluster
+checkpoints:
+  - source_object: sales.dbo.orders
+    target_object: app.orders
+    from_lsn: 0x00000027000001f40001
+    to_lsn: 0x00000027000001f40002
+    applied_changes: 2
+    completed_at: "2026-01-02T03:04:06Z"
+updated_at: "2026-01-02T03:04:07Z"
+`)
+
+	_, err = CheckCDCPlanApplyStatusWithSpec(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", CDCPlanApplyStatusSpec{
+		MinLSNs: map[string]string{
+			"sales.dbo.orders": "0x00000027000001f40003",
+		},
+	})
+	if err == nil {
+		t.Fatal("CheckCDCPlanApplyStatusWithSpec() error = nil, want retention failure")
+	}
+	assertContains(t, err.Error(), "SQL Server CDC retention no longer covers sales.dbo.orders")
+	assertContains(t, err.Error(), "from_lsn 0x00000027000001f40002 is before min_lsn 0x00000027000001f40003")
+}
+
 func TestPrepareCDCPlanRangeUsesCheckpointAsNextFromLSN(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
@@ -7652,6 +7692,47 @@ updated_at: "2026-01-02T03:04:07Z"
 	assertContains(t, plan, "source_object: sales.dbo.orders")
 	assertContains(t, plan, "from_lsn: 0x00000027000001f40002")
 	assertContains(t, plan, "to_lsn: 0x00000027000001f40003")
+}
+
+func TestPrepareCDCPlanRangeRejectsCheckpointBeforeSQLServerMinLSN(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateCDCPlanOnly(root))
+	setReviewPlanStatus(t, root, "cdc", "reviewed")
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/state/cdc-checkpoint.yaml", `source_cluster_id: prod-sqlserver-a
+phase: cdc
+status: running
+project_id: sales-db-to-tidb-prod-a
+payload_hash: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+mode: sqlserver-cdc
+checkpoint_scope: source-cluster
+checkpoints:
+  - source_object: sales.dbo.orders
+    target_object: app.orders
+    from_lsn: 0x00000027000001f40001
+    to_lsn: 0x00000027000001f40002
+    applied_changes: 2
+    completed_at: "2026-01-02T03:04:06Z"
+updated_at: "2026-01-02T03:04:07Z"
+`)
+	planRel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/cdc-plan.yaml"
+	planBefore := readFile(t, root, planRel)
+
+	_, err := PrepareCDCPlanRange(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", CDCPlanRangeSpec{
+		ToLSN: "0x00000027000001f40004",
+		MinLSNs: map[string]string{
+			"sales.dbo.orders": "0x00000027000001f40003",
+		},
+	})
+	if err == nil {
+		t.Fatal("PrepareCDCPlanRange() error = nil, want retention failure")
+	}
+	assertContains(t, err.Error(), "SQL Server CDC retention no longer covers sales.dbo.orders")
+	assertContains(t, err.Error(), "from_lsn 0x00000027000001f40002 is before min_lsn 0x00000027000001f40003")
+	planAfter := readFile(t, root, planRel)
+	if planAfter != planBefore {
+		t.Fatalf("PrepareCDCPlanRange() mutated plan after retention failure\nbefore:\n%s\nafter:\n%s", planBefore, planAfter)
+	}
 }
 
 func TestPrepareCDCPlanRangeUsesInitialFromLSNWhenCheckpointEntryMissing(t *testing.T) {
