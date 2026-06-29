@@ -933,61 +933,96 @@ func wrapCSVExportWriter(base io.WriteCloser, compression string) (io.WriteClose
 }
 
 type httpExportWriter struct {
-	writer *io.PipeWriter
-	done   chan error
+	ctx         context.Context
+	file        *os.File
+	tempPath    string
+	outputURI   string
+	compression string
+	closed      bool
 }
 
 func newHTTPExportWriter(ctx context.Context, outputURI, compression string) (*httpExportWriter, error) {
-	reader, writer := io.Pipe()
-	request, err := http.NewRequestWithContext(ctx, http.MethodPut, outputURI, reader)
+	file, err := os.CreateTemp("", "sqlserver2tidb-http-export-*.tmp")
 	if err != nil {
-		reader.Close()
-		writer.Close()
-		return nil, fmt.Errorf("create CSV output request: %w", err)
+		return nil, fmt.Errorf("create HTTP export temp file: %w", err)
 	}
-	request.Header.Set("Content-Type", "text/csv")
-	if compression == compressionGzip {
-		request.Header.Set("Content-Encoding", "gzip")
-	}
-
-	done := make(chan error, 1)
-	go func() {
-		response, err := csvHTTPClient.Do(request)
-		if err != nil {
-			done <- fmt.Errorf("upload CSV output: %w", err)
-			return
-		}
-		defer response.Body.Close()
-		_, _ = io.Copy(io.Discard, response.Body)
-		if response.StatusCode < 200 || response.StatusCode > 299 {
-			done <- fmt.Errorf("upload CSV output: unexpected HTTP status %s", response.Status)
-			return
-		}
-		done <- nil
-	}()
-	return &httpExportWriter{writer: writer, done: done}, nil
+	return &httpExportWriter{
+		ctx:         ctx,
+		file:        file,
+		tempPath:    file.Name(),
+		outputURI:   outputURI,
+		compression: compression,
+	}, nil
 }
 
 func (w *httpExportWriter) Write(p []byte) (int, error) {
-	return w.writer.Write(p)
+	if w == nil || w.file == nil {
+		return 0, fmt.Errorf("HTTP export writer is closed")
+	}
+	return w.file.Write(p)
 }
 
 func (w *httpExportWriter) Close() error {
-	closeErr := w.writer.Close()
-	uploadErr := <-w.done
-	if closeErr != nil {
-		return closeErr
+	if w == nil || w.closed {
+		return nil
 	}
-	return uploadErr
+	w.closed = true
+	if err := w.file.Close(); err != nil {
+		w.file = nil
+		_ = os.Remove(w.tempPath)
+		return err
+	}
+	w.file = nil
+	defer os.Remove(w.tempPath)
+	return uploadHTTPExportTempFile(w.ctx, w.tempPath, w.outputURI, w.compression)
 }
 
 func (w *httpExportWriter) Abort() error {
-	if w == nil || w.writer == nil {
+	if w == nil || w.closed {
 		return nil
 	}
-	closeErr := w.writer.CloseWithError(errors.New("CSV export upload aborted"))
-	uploadErr := <-w.done
-	return errors.Join(closeErr, uploadErr)
+	w.closed = true
+	var closeErr error
+	if w.file != nil {
+		closeErr = w.file.Close()
+		w.file = nil
+	}
+	removeErr := os.Remove(w.tempPath)
+	if errors.Is(removeErr, os.ErrNotExist) {
+		removeErr = nil
+	}
+	return errors.Join(closeErr, removeErr)
+}
+
+func uploadHTTPExportTempFile(ctx context.Context, tempPath, outputURI, compression string) error {
+	file, err := os.Open(tempPath)
+	if err != nil {
+		return fmt.Errorf("open HTTP export temp file: %w", err)
+	}
+	defer file.Close()
+	stat, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("stat HTTP export temp file: %w", err)
+	}
+	response, err := doCSVHTTPRequestWithRetry(ctx, "upload CSV output", func() (*http.Request, error) {
+		body := io.NewSectionReader(file, 0, stat.Size())
+		request, err := http.NewRequestWithContext(ctx, http.MethodPut, outputURI, body)
+		if err != nil {
+			return nil, fmt.Errorf("create CSV output request: %w", err)
+		}
+		request.ContentLength = stat.Size()
+		request.Header.Set("Content-Type", "text/csv")
+		if compression == compressionGzip {
+			request.Header.Set("Content-Encoding", "gzip")
+		}
+		return request, nil
+	})
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	_, _ = io.Copy(io.Discard, response.Body)
+	return nil
 }
 
 type s3ExportWriter struct {

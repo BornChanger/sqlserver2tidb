@@ -2606,7 +2606,9 @@ func TestWriteCSVExportRowsHTTPOutput(t *testing.T) {
 	var method string
 	var contentType string
 	var body bytes.Buffer
+	requestStarted := make(chan struct{}, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestStarted <- struct{}{}
 		method = r.Method
 		contentType = r.Header.Get("Content-Type")
 		if _, err := io.Copy(&body, r.Body); err != nil {
@@ -2638,8 +2640,24 @@ func TestWriteCSVExportRowsHTTPOutput(t *testing.T) {
 	if exportedRows != 2 {
 		t.Fatalf("exported rows = %d, want 2", exportedRows)
 	}
+	startedBeforeClose := false
+	select {
+	case <-requestStarted:
+		startedBeforeClose = true
+	case <-time.After(100 * time.Millisecond):
+	}
 	if err := output.Close(); err != nil {
 		t.Fatalf("output.Close() error = %v", err)
+	}
+	if !startedBeforeClose {
+		select {
+		case <-requestStarted:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for HTTP upload")
+		}
+	}
+	if startedBeforeClose {
+		t.Fatal("HTTP upload started before output.Close(), want close-time upload")
 	}
 
 	if method != http.MethodPut {
@@ -2654,6 +2672,62 @@ func TestWriteCSVExportRowsHTTPOutput(t *testing.T) {
 	}
 	if !rows.closed {
 		t.Fatalf("rows closed = false, want true")
+	}
+}
+
+func TestWriteCSVExportRowsHTTPOutputRetriesTransientStatus(t *testing.T) {
+	var requests atomic.Int64
+	var bodies []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		request := requests.Add(1)
+		if r.Method != http.MethodPut {
+			t.Fatalf("HTTP method = %s, want PUT", r.Method)
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read request body: %v", err)
+		}
+		bodies = append(bodies, string(body))
+		if request == 1 {
+			http.Error(w, "temporary unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+
+	output, err := openCSVExportOutput(context.Background(), exportOutputURI{
+		scheme: "http",
+		uri:    server.URL + "/dbo.orders.000001.csv",
+	}, compressionNone)
+	if err != nil {
+		t.Fatalf("openCSVExportOutput() error = %v", err)
+	}
+	rows := &fakeExportRows{
+		columns: []string{"id", "name"},
+		values: [][]any{
+			{int64(1), "Ada"},
+			{int64(2), nil},
+		},
+	}
+
+	exportedRows, err := writeCSVExportRows(output, rows)
+	if err != nil {
+		t.Fatalf("writeCSVExportRows() error = %v", err)
+	}
+	if exportedRows != 2 {
+		t.Fatalf("exported rows = %d, want 2", exportedRows)
+	}
+	if err := output.Close(); err != nil {
+		t.Fatalf("output.Close() error = %v", err)
+	}
+
+	wantBody := "id,name,__sqlserver2tidb_null_bitmap\n1,Ada,00\n2,,01\n"
+	if requests.Load() != 2 {
+		t.Fatalf("HTTP PUT requests = %d, want 2", requests.Load())
+	}
+	if !reflect.DeepEqual(bodies, []string{wantBody, wantBody}) {
+		t.Fatalf("request bodies = %q, want two complete CSV payloads", bodies)
 	}
 }
 
@@ -2853,11 +2927,11 @@ func TestWriteCSVExportRowsHTTPGzipOutput(t *testing.T) {
 	}
 }
 
-func TestCSVExportOutputAbortCancelsHTTPUpload(t *testing.T) {
-	readErrCh := make(chan error, 1)
+func TestCSVExportOutputAbortDoesNotStartHTTPUpload(t *testing.T) {
+	requestStarted := make(chan struct{}, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, err := io.Copy(io.Discard, r.Body)
-		readErrCh <- err
+		requestStarted <- struct{}{}
+		_, _ = io.Copy(io.Discard, r.Body)
 		w.WriteHeader(http.StatusCreated)
 	}))
 	defer server.Close()
@@ -2873,17 +2947,14 @@ func TestCSVExportOutputAbortCancelsHTTPUpload(t *testing.T) {
 	if _, err := output.Write([]byte("partial csv")); err != nil {
 		t.Fatalf("output.Write() error = %v", err)
 	}
-	if err := output.Abort(); err == nil {
-		t.Fatal("output.Abort() error = nil, want canceled upload error")
+	if err := output.Abort(); err != nil {
+		t.Fatalf("output.Abort() error = %v", err)
 	}
 
 	select {
-	case err := <-readErrCh:
-		if err == nil {
-			t.Fatal("HTTP server body read error = nil, want aborted request error")
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for HTTP server read")
+	case <-requestStarted:
+		t.Fatal("HTTP upload started after abort, want no request")
+	case <-time.After(100 * time.Millisecond):
 	}
 }
 
