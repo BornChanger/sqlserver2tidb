@@ -51,6 +51,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runPrepareCDCIteration(args[1:], stdout, stderr)
 	case "cdc-orchestrator":
 		return runCDCOrchestrator(args[1:], stdout, stderr)
+	case "cdc-health":
+		return runCDCHealth(args[1:], stdout, stderr)
 	case "generate-validation-plan":
 		return runGenerateValidationPlan(args[1:], stdout, stderr)
 	case "generate-pr-draft":
@@ -817,6 +819,162 @@ func parseCDCMinLSNOutput(output string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("cdc-lsn output did not include min_lsn")
+}
+
+func runCDCHealth(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("cdc-health", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	root := fs.String("root", ".", "repository root")
+	sourceClusterID := fs.String("source-cluster-id", "", "upstream SQL Server cluster id")
+	projectID := fs.String("project-id", "", "migration project id")
+	maxLSN := fs.String("max-lsn", "", "current SQL Server CDC max LSN")
+	maxCheckpointAge := fs.Duration("max-checkpoint-age", 0, "maximum allowed CDC checkpoint age; 0 disables age checking")
+	nowRaw := fs.String("now", "", "current time override as RFC3339, for deterministic checks")
+	jsonOutput := fs.Bool("json", false, "emit JSON health report")
+	metricsFile := fs.String("metrics-file", "", "optional path to write JSON health metrics")
+	failOnWarning := fs.Bool("fail-on-warning", false, "return non-zero when health status is warning")
+	probeLSN := fs.Bool("probe-lsn", false, "probe SQL Server CDC max/min LSNs through the executor before evaluating health")
+	executorBinary := fs.String("executor-binary", "sqlserver2tidb-executor", "executor binary used when --probe-lsn is set")
+	sourceConnectionStringEnv := fs.String("source-connection-string-env", "SQLSERVER2TIDB_SOURCE_CONNECTION_STRING", "environment variable containing the SQL Server CDC connection string")
+	var minLSNs cdcHealthMinLSNFlags
+	fs.Var(&minLSNs, "min-lsn", "per-table SQL Server CDC min LSN as source.object=0x...")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if *maxCheckpointAge < 0 {
+		fmt.Fprintln(stderr, "cdc-health --max-checkpoint-age must be non-negative")
+		return 2
+	}
+	now := time.Now().UTC()
+	if strings.TrimSpace(*nowRaw) != "" {
+		parsedNow, err := time.Parse(time.RFC3339, strings.TrimSpace(*nowRaw))
+		if err != nil {
+			fmt.Fprintf(stderr, "cdc-health --now must be RFC3339: %v\n", err)
+			return 2
+		}
+		now = parsedNow.UTC()
+	}
+	minLSNMap := minLSNs.Map()
+	if *probeLSN {
+		bounds, err := cdcOrchestratorProbeLSNBounds(*root, *sourceClusterID, *projectID, *executorBinary, *sourceConnectionStringEnv, *maxLSN, false)
+		if err != nil {
+			fmt.Fprintf(stderr, "cdc-health: %v\n", err)
+			return 1
+		}
+		*maxLSN = bounds.MaxLSN
+		for sourceObject, minLSN := range bounds.MinLSNs {
+			minLSNMap[sourceObject] = minLSN
+		}
+	}
+	report, err := gitops.EvaluateCDCHealth(*root, *sourceClusterID, *projectID, gitops.CDCHealthSpec{
+		MaxLSN:           *maxLSN,
+		MinLSNs:          minLSNMap,
+		MaxCheckpointAge: *maxCheckpointAge,
+		Now:              now,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "cdc-health: %v\n", err)
+		return 1
+	}
+	reportJSON, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		fmt.Fprintf(stderr, "cdc-health: marshal report: %v\n", err)
+		return 1
+	}
+	if strings.TrimSpace(*metricsFile) != "" {
+		metricsPath := strings.TrimSpace(*metricsFile)
+		if !filepath.IsAbs(metricsPath) {
+			metricsPath = filepath.Join(*root, filepath.FromSlash(metricsPath))
+		}
+		if err := os.MkdirAll(filepath.Dir(metricsPath), 0o755); err != nil {
+			fmt.Fprintf(stderr, "cdc-health: create metrics directory: %v\n", err)
+			return 1
+		}
+		if err := os.WriteFile(metricsPath, append(reportJSON, '\n'), 0o644); err != nil {
+			fmt.Fprintf(stderr, "cdc-health: write metrics file: %v\n", err)
+			return 1
+		}
+	}
+	if *jsonOutput {
+		fmt.Fprintln(stdout, string(reportJSON))
+	} else {
+		renderCDCHealthText(stdout, report)
+	}
+	if report.Status == "critical" || (*failOnWarning && report.Status == "warning") {
+		return 1
+	}
+	return 0
+}
+
+type cdcHealthMinLSNFlags map[string]string
+
+func (flags *cdcHealthMinLSNFlags) String() string {
+	if flags == nil || len(*flags) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(*flags))
+	for sourceObject, minLSN := range *flags {
+		parts = append(parts, sourceObject+"="+minLSN)
+	}
+	return strings.Join(parts, ",")
+}
+
+func (flags *cdcHealthMinLSNFlags) Set(value string) error {
+	raw := strings.TrimSpace(value)
+	if raw == "" {
+		return fmt.Errorf("min-lsn value is required")
+	}
+	index := strings.LastIndex(raw, "=")
+	if index <= 0 || index == len(raw)-1 {
+		return fmt.Errorf("min-lsn must use source.object=0x... format")
+	}
+	sourceObject := strings.TrimSpace(raw[:index])
+	minLSN := strings.TrimSpace(raw[index+1:])
+	if sourceObject == "" || minLSN == "" {
+		return fmt.Errorf("min-lsn must use source.object=0x... format")
+	}
+	if *flags == nil {
+		*flags = cdcHealthMinLSNFlags{}
+	}
+	(*flags)[sourceObject] = minLSN
+	return nil
+}
+
+func (flags cdcHealthMinLSNFlags) Map() map[string]string {
+	result := make(map[string]string, len(flags))
+	for sourceObject, minLSN := range flags {
+		result[sourceObject] = minLSN
+	}
+	return result
+}
+
+func renderCDCHealthText(stdout io.Writer, report gitops.CDCHealthReport) {
+	fmt.Fprintf(stdout, "cdc health: %s\n", report.Status)
+	fmt.Fprintf(stdout, "source cluster: %s\n", report.SourceClusterID)
+	fmt.Fprintf(stdout, "project: %s\n", report.ProjectID)
+	fmt.Fprintf(stdout, "checkpoint status: %s\n", report.CheckpointStatus)
+	if report.CheckpointUpdatedAt != "" {
+		fmt.Fprintf(stdout, "checkpoint updated_at: %s\n", report.CheckpointUpdatedAt)
+	}
+	if report.CheckpointAgeSeconds != nil {
+		fmt.Fprintf(stdout, "checkpoint age seconds: %d\n", *report.CheckpointAgeSeconds)
+	}
+	if report.MaxLSN != "" {
+		fmt.Fprintf(stdout, "max_lsn: %s\n", report.MaxLSN)
+	}
+	fmt.Fprintf(stdout, "tracked tables: %d\n", report.TrackedTables)
+	fmt.Fprintf(stdout, "lagging tables: %d\n", report.LaggingTables)
+	fmt.Fprintf(stdout, "expired tables: %d\n", report.ExpiredTables)
+	if len(report.Alerts) > 0 {
+		fmt.Fprintln(stdout, "alerts:")
+		for _, alert := range report.Alerts {
+			if alert.SourceObject != "" {
+				fmt.Fprintf(stdout, "- %s %s %s: %s\n", alert.Severity, alert.Code, alert.SourceObject, alert.Message)
+			} else {
+				fmt.Fprintf(stdout, "- %s %s: %s\n", alert.Severity, alert.Code, alert.Message)
+			}
+		}
+	}
 }
 
 func runGenerateValidationPlan(args []string, stdout, stderr io.Writer) int {
@@ -2145,6 +2303,7 @@ Usage:
   sqlserver2tidb prepare-cdc-range --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --to-lsn 0x00000027000001f40003
   sqlserver2tidb prepare-cdc-iteration --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --max-lsn 0x00000027000001f40004 --pr-draft
   sqlserver2tidb cdc-orchestrator --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --apply-approved --poll --pr-draft
+  sqlserver2tidb cdc-health --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --probe-lsn --max-checkpoint-age 15m --metrics-file artifacts/cdc-health.json
   sqlserver2tidb generate-validation-plan --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
   sqlserver2tidb generate-pr-draft --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage schema
   sqlserver2tidb create-pr --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage schema

@@ -1,0 +1,85 @@
+name: cdc-ops-health
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+    inputs:
+      source_cluster_id:
+        description: Source SQL Server cluster id
+        required: false
+        default: prod-sqlserver-a
+      project_id:
+        description: Migration project id
+        required: false
+        default: sales-db-to-tidb-prod-a
+      max_checkpoint_age:
+        description: Maximum allowed CDC checkpoint age
+        required: false
+        default: 15m
+      fail_on_warning:
+        description: Fail when health status is warning
+        required: false
+        default: "false"
+
+permissions:
+  contents: read
+
+jobs:
+  cdc-health:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CDC_SOURCE_CLUSTER_ID: ${{ github.event.inputs.source_cluster_id || vars.SQLSERVER2TIDB_CDC_SOURCE_CLUSTER_ID || 'prod-sqlserver-a' }}
+      CDC_PROJECT_ID: ${{ github.event.inputs.project_id || vars.SQLSERVER2TIDB_CDC_PROJECT_ID || 'sales-db-to-tidb-prod-a' }}
+      CDC_MAX_CHECKPOINT_AGE: ${{ github.event.inputs.max_checkpoint_age || vars.SQLSERVER2TIDB_CDC_MAX_CHECKPOINT_AGE || '15m' }}
+      CDC_FAIL_ON_WARNING: ${{ github.event.inputs.fail_on_warning || vars.SQLSERVER2TIDB_CDC_FAIL_ON_WARNING || 'false' }}
+      SQLSERVER2TIDB_SOURCE_CONNECTION_STRING: ${{ secrets.SQLSERVER2TIDB_INTEGRATION_SOURCE_DSN }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.22.x"
+          cache: true
+
+      - name: Skip when source DSN is not configured
+        run: |
+          if [ -z "${SQLSERVER2TIDB_SOURCE_CONNECTION_STRING}" ]; then
+            echo "::notice::SQLSERVER2TIDB_INTEGRATION_SOURCE_DSN is not set; skipping CDC health probe"
+            exit 0
+          fi
+
+      - name: Build CLI
+        if: env.SQLSERVER2TIDB_SOURCE_CONNECTION_STRING != ''
+        run: make build
+
+      - name: Run CDC health probe
+        if: env.SQLSERVER2TIDB_SOURCE_CONNECTION_STRING != ''
+        run: |
+          args=(
+            bin/sqlserver2tidb
+            cdc-health
+            --root .
+            --source-cluster-id "${CDC_SOURCE_CLUSTER_ID}"
+            --project-id "${CDC_PROJECT_ID}"
+            --probe-lsn
+            --max-checkpoint-age "${CDC_MAX_CHECKPOINT_AGE}"
+            --json
+            --metrics-file artifacts/cdc-health.json
+          )
+          if [ "${CDC_FAIL_ON_WARNING}" = "true" ]; then
+            args+=(--fail-on-warning)
+          fi
+          "${args[@]}"
+
+      - name: Upload CDC health report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cdc-health-report
+          path: artifacts/cdc-health.json
+          if-no-files-found: ignore

@@ -27,6 +27,7 @@ This MVP provides:
 - Dry-run-by-default external executor command generation for approved DDL/export/import/CDC/validation plans, with structured executor evidence for timing, retries, CDC applied-change counts, and export/import data-volume metrics.
 - `sqlserver2tidb-executor` adapter for DDL/export/import/CDC plus row-count and query-based validation work items, including `apply-ddl --execute`, CSV `export --execute` to local file, HTTP(S), S3, GCS, or Azure Blob, CSV `import --execute` from local file, HTTP(S), S3, GCS, or Azure Blob, `validate-count --execute`, `validate-query --execute`, `cdc-lsn --execute`, and `cdc --execute` paths.
 - A `cdc-orchestrator` command that repeatedly probes SQL Server CDC max LSN through the executor, prepares the next reviewed CDC range from committed checkpoints, writes a range PR draft, and can explicitly execute already-approved CDC ranges while preserving GitHub approval gates.
+- A `cdc-health` command for long-running CDC operations that evaluates committed checkpoint freshness, lag against SQL Server max LSN, CDC retention coverage against per-table min LSNs, and writes JSON metrics for scheduled monitoring.
 - Approved validation-only worker execution.
 - Read-only worker reconcile dry-run planning across source clusters and projects.
 - Lease-backed worker reconcile execute-next and bounded loop modes for approved metadata-only actions.
@@ -306,6 +307,21 @@ go run ./cmd/sqlserver2tidb cdc-orchestrator \
 ```
 
 The orchestrator invokes `sqlserver2tidb-executor cdc-lsn --execute`, parses `max_lsn`, probes each tracked table's SQL Server CDC `min_lsn`, and then calls the same deterministic `prepare-cdc-iteration` path. If a table's next `from_lsn` is older than its `min_lsn`, the orchestrator fails before mutating `plan/cdc-plan.yaml` because the CDC retention window no longer covers the requested range. Use `--skip-retention-check` only when another scheduler has already enforced the same min-LSN guard. When `--apply-approved` is set, each iteration first checks whether the current CDC plan and approval already pass the approval/hash gate; if so, it runs `worker-executor --stage cdc --execute`, records `evidence/executor-cdc-run.json`, advances `clusters/<source_cluster_id>/state/cdc-checkpoint.yaml` from that evidence, and skips reapplying a range that the checkpoint already covers. `--min-applied-changes <n>` makes the orchestrator exit non-zero unless the run applied at least `n` CDC changes, which is useful for production soak validation and scheduled CDC health checks. When the project is caught up it can keep polling; when a new range is prepared it writes `plan/cdc-plan.yaml` and optional `prs/cdc-range-pr.md`, then stops at the PR boundary. It does not approve or merge PRs.
+
+Run CDC operational health checks from the committed GitOps state:
+
+```bash
+go run ./cmd/sqlserver2tidb cdc-health \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --probe-lsn \
+  --max-checkpoint-age 15m \
+  --json \
+  --metrics-file artifacts/cdc-health.json
+```
+
+`cdc-health` reads `plan/cdc-plan.yaml` and source-cluster `state/cdc-checkpoint.yaml`, optionally probes SQL Server through `sqlserver2tidb-executor cdc-lsn --execute`, and reports `ok`, `warning`, or `critical`. It raises critical alerts for failed, stale, missing, ahead-of-source, or retention-expired checkpoints, and warning alerts for tables whose checkpoint is behind the probed or supplied `max_lsn`. Operators can pass `--max-lsn` and repeated `--min-lsn source.object=0x...` values instead of `--probe-lsn`, use `--fail-on-warning` for strict scheduled runs, and collect the JSON report from `.github/workflows/cdc-ops-health.yml`.
 
 Generate a project-scoped validation draft plan from the current SQL Server inventory and project metadata:
 

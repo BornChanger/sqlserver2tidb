@@ -2686,6 +2686,103 @@ func TestRunCDCOrchestratorApplyApprovedSkipsAlreadyCheckpointedRange(t *testing
 	}
 }
 
+func TestRunCDCHealthJSONReportsLagAndCheckpointAge(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	createCLIProjectWithCDCPlanAndCheckpoint(t, root, &stdout, &stderr, "0x00000000000000000001", "0x00000000000000000002")
+	metricsFile := filepath.Join(root, "cdc-health.json")
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"cdc-health",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--max-lsn", "0x00000000000000000003",
+		"--min-lsn", "sales.dbo.orders=0x00000000000000000001",
+		"--max-checkpoint-age", "1h",
+		"--now", "2026-01-02T04:34:07Z",
+		"--json",
+		"--metrics-file", metricsFile,
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("cdc-health code = 0, want stale checkpoint failure; stdout = %s", stdout.String())
+	}
+	output := stdout.String()
+	assertCLIOutputContains(t, output, `"status": "critical"`)
+	assertCLIOutputContains(t, output, `"lagging_tables": 1`)
+	assertCLIOutputContains(t, output, `"checkpoint_age_seconds": 5400`)
+	assertCLIOutputContains(t, output, `"code": "checkpoint_stale"`)
+	assertCLIOutputContains(t, output, `"code": "cdc_lag"`)
+	metricsBytes, err := os.ReadFile(metricsFile)
+	if err != nil {
+		t.Fatalf("read metrics file: %v", err)
+	}
+	metrics := string(metricsBytes)
+	assertCLIOutputContains(t, metrics, `"source_cluster_id": "prod-sqlserver-a"`)
+	assertCLIOutputContains(t, metrics, `"project_id": "sales-db-to-tidb-prod-a"`)
+}
+
+func TestRunCDCHealthFailsWhenRetentionExpired(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	createCLIProjectWithCDCPlanAndCheckpoint(t, root, &stdout, &stderr, "0x00000000000000000001", "0x00000000000000000002")
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"cdc-health",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--max-lsn", "0x00000000000000000003",
+		"--min-lsn", "sales.dbo.orders=0x00000000000000000003",
+		"--now", "2026-01-02T03:04:08Z",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("cdc-health code = 0, want retention failure; stdout = %s", stdout.String())
+	}
+	output := stdout.String()
+	assertCLIOutputContains(t, output, "cdc health: critical")
+	assertCLIOutputContains(t, output, "critical retention_expired sales.dbo.orders")
+	assertCLIOutputContains(t, output, "checkpoint 0x00000000000000000002 is before SQL Server min_lsn 0x00000000000000000003")
+}
+
+func TestRunCDCHealthProbeLSNUsesExecutorBounds(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	createCLIProjectWithCDCPlanAndCheckpoint(t, root, &stdout, &stderr, "0x00000000000000000001", "0x00000000000000000002")
+	fakeExecutor := filepath.Join(root, "fake-cdc-health-probe")
+	if err := os.WriteFile(fakeExecutor, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> cdc-health-probe-args.log\ncase \" $* \" in\n  *\" --source-object \"*)\n    printf 'min_lsn: 0x00000000000000000001\\n'\n    ;;\n  *)\n    printf 'max_lsn: 0x00000000000000000003\\n'\n    ;;\nesac\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"cdc-health",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--executor-binary", "./fake-cdc-health-probe",
+		"--source-connection-string-env", "SQLSERVER_CDC_TEST_DSN",
+		"--probe-lsn",
+		"--json",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("cdc-health probe code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	assertCLIOutputContains(t, output, `"status": "warning"`)
+	assertCLIOutputContains(t, output, `"max_lsn": "0x00000000000000000003"`)
+	assertCLIOutputContains(t, output, `"min_lsn": "0x00000000000000000001"`)
+	assertCLIOutputContains(t, output, `"code": "cdc_lag"`)
+	argsLog := readCLIRelFile(t, root, "cdc-health-probe-args.log")
+	assertCLIOutputContains(t, argsLog, "cdc-lsn --execute --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --source-connection-string-env SQLSERVER_CDC_TEST_DSN")
+	assertCLIOutputContains(t, argsLog, "cdc-lsn --execute --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --source-object sales.dbo.orders --source-connection-string-env SQLSERVER_CDC_TEST_DSN")
+}
+
 func TestRunGenerateValidationPlanCommand(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer
@@ -4313,6 +4410,13 @@ func assertExists(t *testing.T, root, rel string) {
 	t.Helper()
 	if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel))); err != nil {
 		t.Fatalf("expected %s to exist: %v", rel, err)
+	}
+}
+
+func assertCLIOutputContains(t *testing.T, output, want string) {
+	t.Helper()
+	if !strings.Contains(output, want) {
+		t.Fatalf("output = %q, want %q", output, want)
 	}
 }
 

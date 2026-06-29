@@ -56,7 +56,7 @@ LLM 只生成解释、候选方案和文档，不直接执行迁移
 - 生成核心 JSON Schema 文件。
 - 单元测试和 CLI smoke test。
 
-当前 CLI 在执行 `discover-sqlserver --connection-string-env ...` 时会连接 SQL Server，并且只读取 catalog metadata。`sqlserver2tidb-executor apply-ddl --execute` 可以显式连接 TiDB，执行已 review 且不含 `TODO` 的 DDL 文件。`sqlserver2tidb-executor export --execute` 也可以显式连接 SQL Server，把一个已审批的导出 work item 写成本地 `file://` CSV、HTTP(S) CSV、原生 `s3://` CSV、原生 `gs://` CSV 或原生 `azblob://` CSV；CSV 会带内部 `__sqlserver2tidb_null_bitmap` 尾列，用来保留 SQL NULL。S3 使用 AWS Signature V4；GCS 使用 HMAC 凭证；Azure Blob 使用 Shared Key。`sqlserver2tidb-executor import --execute` 可以显式连接 TiDB；默认 `--engine sql-insert` 会把本地 `file://`、HTTP(S)、S3、GCS 或 Azure Blob CSV 逐行写入目标表，并在识别该内部尾列时恢复 NULL；显式 `--engine tidb-import-into` 会执行 TiDB `IMPORT INTO ... FROM FILE`，支持绝对本地路径、本地 `file://`、`s3://`、`gs://` file location，本地/file/S3/GCS CSV 会读取 header 并把内部尾列映射成 TiDB user variable 以跳过写入。Azure Blob 当前只用于 `sql-insert` CSV 路径，不用于 TiDB `IMPORT INTO`。`sqlserver2tidb-executor validate-count --execute` 可以显式同时连接 SQL Server 和 TiDB，对一个源/目标对象做 `COUNT(*)` 对比；`sqlserver2tidb-executor validate-query --execute` 可以执行已 review 的源端/目标端 SQL 标量查询并比较结果，用于 `checksum`、`sampled_hash`、`bucketed_count` 和 `business_sql` 检查项。`sqlserver2tidb-executor cdc-lsn --execute` 可以显式连接 SQL Server，读取当前 CDC max LSN，并在提供源对象时读取 capture instance min LSN；`sqlserver2tidb-executor cdc --execute` 可以在显式提供 `--from-lsn` / `--to-lsn` 的情况下读取 SQL Server CDC 变更并向 TiDB 执行 upsert/delete。除此之外，它不会执行 TiDB Lightning、自动审批/merge PR、真实应用流量切换、通用 row digest 或 bucketed sampled hash 策略。`worker-cutover` 只在 GitHub 文件里记录 cutover gate 通过和 completed 状态，不修改 DNS、代理、应用配置或数据库连接。`cdc-orchestrator` 默认负责探测 max LSN 并生成下一段 range PR 草稿；显式加 `--apply-approved` 时，才会消费已经通过 approval/hash gate 的当前 CDC range，执行 CDC apply 并基于 evidence 推进 checkpoint。`discover-sqlserver --dry-run` 只输出计划，不打开数据库连接，也不写 inventory 文件。`analyze-compatibility`、`generate-schema-draft`、`generate-data-plans`、`generate-cdc-plan`、`prepare-cdc-range`、`advance-cdc-checkpoint`、`generate-validation-plan`、`generate-pr-draft`、`create-pr` 的默认 dry-run、`create-worker-state-pr` 的默认 dry-run、`create-executor-evidence-pr` 的默认 dry-run、`worker-executor` 的默认 dry-run、`sqlserver2tidb-executor` 的默认 dry-run、`compute-payload-hash`、`worker-export`、`worker-import`、`worker-cdc`、`worker-validate`、`worker-cutover`、`worker-reconcile --dry-run`、`worker-reconcile --execute-next`、`worker-reconcile --loop` 和 `worker-agent` 只读取并写回或汇报 GitHub metadata 文件。`worker-reconcile --state-pr-draft`、`worker-agent --state-pr-draft` 和 `generate-executor-evidence-pr-draft` 只生成 Markdown PR body，不调用 GitHub。`create-pr --execute` 会调用本地 `gh pr create`；`create-worker-state-pr --execute` 和 `create-executor-evidence-pr --execute` 会调用本地 `git` 和 `gh`。
+当前 CLI 在执行 `discover-sqlserver --connection-string-env ...` 时会连接 SQL Server，并且只读取 catalog metadata。`sqlserver2tidb-executor apply-ddl --execute` 可以显式连接 TiDB，执行已 review 且不含 `TODO` 的 DDL 文件。`sqlserver2tidb-executor export --execute` 也可以显式连接 SQL Server，把一个已审批的导出 work item 写成本地 `file://` CSV、HTTP(S) CSV、原生 `s3://` CSV、原生 `gs://` CSV 或原生 `azblob://` CSV；CSV 会带内部 `__sqlserver2tidb_null_bitmap` 尾列，用来保留 SQL NULL。S3 使用 AWS Signature V4；GCS 使用 HMAC 凭证；Azure Blob 使用 Shared Key。`sqlserver2tidb-executor import --execute` 可以显式连接 TiDB；默认 `--engine sql-insert` 会把本地 `file://`、HTTP(S)、S3、GCS 或 Azure Blob CSV 逐行写入目标表，并在识别该内部尾列时恢复 NULL；显式 `--engine tidb-import-into` 会执行 TiDB `IMPORT INTO ... FROM FILE`，支持绝对本地路径、本地 `file://`、`s3://`、`gs://` file location，本地/file/S3/GCS CSV 会读取 header 并把内部尾列映射成 TiDB user variable 以跳过写入。Azure Blob 当前只用于 `sql-insert` CSV 路径，不用于 TiDB `IMPORT INTO`。`sqlserver2tidb-executor validate-count --execute` 可以显式同时连接 SQL Server 和 TiDB，对一个源/目标对象做 `COUNT(*)` 对比；`sqlserver2tidb-executor validate-query --execute` 可以执行已 review 的源端/目标端 SQL 标量查询并比较结果，用于 `checksum`、`sampled_hash`、`bucketed_count` 和 `business_sql` 检查项。`sqlserver2tidb-executor cdc-lsn --execute` 可以显式连接 SQL Server，读取当前 CDC max LSN，并在提供源对象时读取 capture instance min LSN；`sqlserver2tidb-executor cdc --execute` 可以在显式提供 `--from-lsn` / `--to-lsn` 的情况下读取 SQL Server CDC 变更并向 TiDB 执行 upsert/delete。除此之外，它不会执行自动审批/merge PR、真实应用流量切换、通用 row digest 或 bucketed sampled hash 策略。`worker-cutover` 只在 GitHub 文件里记录 cutover gate 通过和 completed 状态，不修改 DNS、代理、应用配置或数据库连接。`cdc-orchestrator` 默认负责探测 max LSN 并生成下一段 range PR 草稿；显式加 `--apply-approved` 时，才会消费已经通过 approval/hash gate 的当前 CDC range，执行 CDC apply 并基于 evidence 推进 checkpoint。`cdc-health` 会读取 GitHub 文件里的 CDC plan/checkpoint 状态，并可选通过 executor 探测 SQL Server max/min LSN，用于输出长周期运维 JSON 健康报告；它不修改 plan、checkpoint 或 approval。`discover-sqlserver --dry-run` 只输出计划，不打开数据库连接，也不写 inventory 文件。`analyze-compatibility`、`generate-schema-draft`、`generate-data-plans`、`generate-cdc-plan`、`prepare-cdc-range`、`advance-cdc-checkpoint`、`generate-validation-plan`、`generate-pr-draft`、`create-pr` 的默认 dry-run、`create-worker-state-pr` 的默认 dry-run、`create-executor-evidence-pr` 的默认 dry-run、`worker-executor` 的默认 dry-run、`sqlserver2tidb-executor` 的默认 dry-run、`compute-payload-hash`、`worker-export`、`worker-import`、`worker-cdc`、`worker-validate`、`worker-cutover`、`worker-reconcile --dry-run`、`worker-reconcile --execute-next`、`worker-reconcile --loop` 和 `worker-agent` 只读取并写回或汇报 GitHub metadata 文件。`worker-reconcile --state-pr-draft`、`worker-agent --state-pr-draft` 和 `generate-executor-evidence-pr-draft` 只生成 Markdown PR body，不调用 GitHub。`create-pr --execute` 会调用本地 `gh pr create`；`create-worker-state-pr --execute` 和 `create-executor-evidence-pr --execute` 会调用本地 `git` 和 `gh`。
 
 ### 2.2 终极目标
 
@@ -951,6 +951,23 @@ bin/sqlserver2tidb generate-cdc-plan \
 
 当前 `generate-cdc-plan` 只生成追踪表清单、captured columns、目标端 apply key columns 和 checkpoint 策略，不启用 SQL Server CDC，不创建 Debezium connector，不读取 LSN，不写 Kafka，也不向 TiDB 回放增量。captured columns 来自 inventory 中发现的非计算列；key columns 优先来自 inventory 中发现的 SQL Server primary key，其次来自非过滤 unique index；如果没有这类索引，会生成 `key_columns: []`，必须人工 review 后补齐才能执行 CDC worker 或 executor。执行 `worker-executor --stage cdc` 时还会重新读取当前 `clusters/<source_cluster_id>/inventory/inventory.json`，如果已 review 的 captured columns 与当前非计算列不一致，或 `key_columns` 已不再匹配当前 primary key / 非过滤 unique index，会在生成 executor 命令前失败；这是基于 GitHub 文件的 schema drift gate，不依赖 TiDB metadata 表。
 
+执行 CDC 长周期运维健康检查：
+
+```bash
+bin/sqlserver2tidb cdc-health \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --probe-lsn \
+  --max-checkpoint-age 15m \
+  --json \
+  --metrics-file artifacts/cdc-health.json
+```
+
+`cdc-health` 读取项目级 `plan/cdc-plan.yaml` 和源集群级 `state/cdc-checkpoint.yaml`。加 `--probe-lsn` 时，它会通过 `sqlserver2tidb-executor cdc-lsn --execute` 读取当前 SQL Server CDC `max_lsn`，并对每张 tracked table 读取 capture instance `min_lsn`；不希望命令连接 SQL Server 时，可以改用 `--max-lsn 0x...` 和可重复的 `--min-lsn source.object=0x...` 显式提供边界。`--max-checkpoint-age` 用于限制 checkpoint `updated_at` 到当前时间的最大年龄，`--now` 只用于测试或回放固定时间点。命令会输出 `ok`、`warning` 或 `critical`：checkpoint `failed`、缺失、过旧、超过 SQL Server 保留窗口、或 checkpoint `to_lsn` 大于当前 `max_lsn` 都是 `critical`；checkpoint 落后于当前 `max_lsn` 是 `warning`。默认只有 `critical` 返回非零；加 `--fail-on-warning` 后，`warning` 也返回非零。`--metrics-file` 会写出同一份 JSON 报告，便于 GitHub Actions artifact、日志采集或外部监控系统抓取。
+
+仓库内置 `.github/workflows/cdc-ops-health.yml`，默认每 30 分钟运行一次，也支持手动触发。它读取 repository variables `SQLSERVER2TIDB_CDC_SOURCE_CLUSTER_ID`、`SQLSERVER2TIDB_CDC_PROJECT_ID`、`SQLSERVER2TIDB_CDC_MAX_CHECKPOINT_AGE`、`SQLSERVER2TIDB_CDC_FAIL_ON_WARNING`，并使用 secret `SQLSERVER2TIDB_INTEGRATION_SOURCE_DSN` 作为 SQL Server CDC 探测连接串。未配置 DSN 时 workflow 会跳过探测并输出 notice；配置后会执行 `cdc-health --probe-lsn` 并上传 `artifacts/cdc-health.json`。
+
 生成或推进显式 CDC LSN range：
 
 ```bash
@@ -1229,6 +1246,8 @@ bin/sqlserver2tidb worker-cdc \
 - 项目级 `state/migration-state.yaml`
 - 源集群级 `state/cdc-checkpoint.yaml`
 - 项目级 `evidence/cdc-catchup.json`
+
+生产长周期运行时，建议把 `cdc-orchestrator --apply-approved --poll --pr-draft` 和 `cdc-health --probe-lsn --max-checkpoint-age <SLO>` 分开运行：前者负责在 approval/hash gate 后消费已审批 range、推进 checkpoint，并在发现新 range 时停在 PR review 边界；后者只读 GitHub 文件状态并探测 SQL Server LSN 边界，持续报告 checkpoint 新鲜度、lag 和 retention 风险。这样运维告警不会隐式修改迁移计划或审批文件。
 
 预览真实 CDC 执行器命令：
 
