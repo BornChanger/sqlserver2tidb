@@ -49,6 +49,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runPrepareCDCRange(args[1:], stdout, stderr)
 	case "prepare-cdc-iteration":
 		return runPrepareCDCIteration(args[1:], stdout, stderr)
+	case "cdc-orchestrator":
+		return runCDCOrchestrator(args[1:], stdout, stderr)
 	case "generate-validation-plan":
 		return runGenerateValidationPlan(args[1:], stdout, stderr)
 	case "generate-pr-draft":
@@ -455,6 +457,134 @@ func runPrepareCDCIteration(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "PR draft: %s\n", result.PRBodyFile)
 	}
 	return 0
+}
+
+func runCDCOrchestrator(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("cdc-orchestrator", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	root := fs.String("root", ".", "repository root")
+	sourceClusterID := fs.String("source-cluster-id", "", "upstream SQL Server cluster id")
+	projectID := fs.String("project-id", "", "migration project id")
+	executorBinary := fs.String("executor-binary", "sqlserver2tidb-executor", "executor binary used to probe SQL Server CDC max LSN")
+	sourceConnectionStringEnv := fs.String("source-connection-string-env", "SQLSERVER2TIDB_SOURCE_CONNECTION_STRING", "environment variable containing the SQL Server CDC connection string")
+	maxLSNOverride := fs.String("max-lsn", "", "skip executor probing and use this SQL Server CDC max LSN")
+	fromLSN := fs.String("from-lsn", "", "initial CDC from LSN for tables without checkpoint state")
+	prDraft := fs.Bool("pr-draft", false, "write a CDC range PR draft when a new range is prepared")
+	poll := fs.Bool("poll", false, "continue polling when the project is caught up")
+	maxIterations := fs.Int("max-iterations", 0, "maximum probe iterations; 0 means unlimited")
+	interval := fs.Duration("interval", 5*time.Second, "sleep interval between caught-up polling iterations")
+	idleIterations := fs.Int("idle-iterations", 0, "maximum consecutive caught-up polls in --poll mode; 0 means unlimited")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if *maxIterations < 0 {
+		fmt.Fprintln(stderr, "cdc-orchestrator --max-iterations must be non-negative")
+		return 2
+	}
+	if *interval < 0 {
+		fmt.Fprintln(stderr, "cdc-orchestrator --interval must be non-negative")
+		return 2
+	}
+	if *idleIterations < 0 {
+		fmt.Fprintln(stderr, "cdc-orchestrator --idle-iterations must be non-negative")
+		return 2
+	}
+
+	fmt.Fprintln(stdout, "cdc orchestrator")
+	prepared := 0
+	idle := 0
+	for iteration := 1; ; iteration++ {
+		if *maxIterations > 0 && iteration > *maxIterations {
+			fmt.Fprintf(stdout, "prepared iterations: %d\n", prepared)
+			return 0
+		}
+		maxLSN, err := cdcOrchestratorMaxLSN(*root, *sourceClusterID, *projectID, *executorBinary, *sourceConnectionStringEnv, *maxLSNOverride)
+		if err != nil {
+			fmt.Fprintf(stderr, "cdc orchestrator: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "iteration %d: max_lsn %s\n", iteration, maxLSN)
+		result, err := gitops.PrepareCDCIteration(*root, *sourceClusterID, *projectID, gitops.CDCIterationSpec{
+			MaxLSN:         maxLSN,
+			InitialFromLSN: *fromLSN,
+			WritePRDraft:   *prDraft,
+		})
+		if err != nil {
+			fmt.Fprintf(stderr, "cdc orchestrator: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "status: %s\n", result.Status)
+		if result.Status == gitops.CDCIterationStatusRangePrepared {
+			prepared++
+			fmt.Fprintf(stdout, "updated tables: %d\n", result.UpdatedTables)
+			fmt.Fprintf(stdout, "wrote %s\n", "plan/cdc-plan.yaml")
+			if result.PRBodyFile != "" {
+				fmt.Fprintf(stdout, "PR draft: %s\n", result.PRBodyFile)
+			}
+			fmt.Fprintf(stdout, "prepared iterations: %d\n", prepared)
+			return 0
+		}
+		if result.Status != gitops.CDCIterationStatusCaughtUp {
+			fmt.Fprintf(stderr, "cdc orchestrator: unsupported cdc iteration status %q\n", result.Status)
+			return 1
+		}
+		if !*poll {
+			fmt.Fprintf(stdout, "prepared iterations: %d\n", prepared)
+			return 0
+		}
+		idle++
+		fmt.Fprintf(stdout, "idle iteration %d: caught_up\n", idle)
+		if *idleIterations > 0 && idle >= *idleIterations {
+			fmt.Fprintf(stdout, "prepared iterations: %d\n", prepared)
+			return 0
+		}
+		time.Sleep(*interval)
+	}
+}
+
+func cdcOrchestratorMaxLSN(root, sourceClusterID, projectID, executorBinary, sourceConnectionStringEnv, maxLSNOverride string) (string, error) {
+	if maxLSN := strings.TrimSpace(maxLSNOverride); maxLSN != "" {
+		return maxLSN, nil
+	}
+	binary := strings.TrimSpace(executorBinary)
+	if binary == "" {
+		binary = "sqlserver2tidb-executor"
+	}
+	args := []string{
+		"cdc-lsn",
+		"--execute",
+		"--root", ".",
+		"--source-cluster-id", strings.TrimSpace(sourceClusterID),
+		"--project-id", strings.TrimSpace(projectID),
+	}
+	if strings.TrimSpace(sourceConnectionStringEnv) != "" {
+		args = append(args, "--source-connection-string-env", strings.TrimSpace(sourceConnectionStringEnv))
+	}
+	cmd := newWorkerExecutorCommand(context.Background(), binary, args...)
+	cmd.Dir = root
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("cdc-lsn probe failed: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	maxLSN, err := parseCDCMaxLSNOutput(string(output))
+	if err != nil {
+		return "", err
+	}
+	return maxLSN, nil
+}
+
+func parseCDCMaxLSNOutput(output string) (string, error) {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "max_lsn:") {
+			maxLSN := strings.TrimSpace(strings.TrimPrefix(line, "max_lsn:"))
+			if maxLSN == "" {
+				return "", fmt.Errorf("cdc-lsn output max_lsn is empty")
+			}
+			return maxLSN, nil
+		}
+	}
+	return "", fmt.Errorf("cdc-lsn output did not include max_lsn")
 }
 
 func runGenerateValidationPlan(args []string, stdout, stderr io.Writer) int {
@@ -1754,6 +1884,7 @@ Usage:
   sqlserver2tidb generate-cdc-plan --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
   sqlserver2tidb prepare-cdc-range --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --to-lsn 0x00000027000001f40003
   sqlserver2tidb prepare-cdc-iteration --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --max-lsn 0x00000027000001f40004 --pr-draft
+  sqlserver2tidb cdc-orchestrator --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --poll --pr-draft
   sqlserver2tidb generate-validation-plan --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
   sqlserver2tidb generate-pr-draft --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage schema
   sqlserver2tidb create-pr --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage schema

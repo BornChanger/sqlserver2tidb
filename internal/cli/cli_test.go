@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -2379,6 +2380,93 @@ updated_at: "2026-01-02T03:04:07Z"
 	}
 }
 
+func TestRunCDCOrchestratorProbesMaxLSNAndWritesRangePRDraft(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	createCLIProjectWithCDCPlanAndCheckpoint(t, root, &stdout, &stderr, "0x00000000000000000001", "0x00000000000000000002")
+
+	fakeExecutor := filepath.Join(root, "fake-cdc-lsn-executor")
+	if err := os.WriteFile(fakeExecutor, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> cdc-lsn-args.log\nprintf 'executor cdc-lsn completed\\n'\nprintf 'max_lsn: 0x00000000000000000003\\n'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"cdc-orchestrator",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--executor-binary", "./fake-cdc-lsn-executor",
+		"--source-connection-string-env", "SQLSERVER_CDC_TEST_DSN",
+		"--pr-draft",
+		"--max-iterations", "1",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("cdc-orchestrator code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "cdc orchestrator") {
+		t.Fatalf("cdc-orchestrator stdout = %q, want header", output)
+	}
+	if !strings.Contains(output, "iteration 1: max_lsn 0x00000000000000000003") {
+		t.Fatalf("cdc-orchestrator stdout = %q, want probed max_lsn", output)
+	}
+	if !strings.Contains(output, "status: range_prepared") {
+		t.Fatalf("cdc-orchestrator stdout = %q, want range_prepared status", output)
+	}
+	if !strings.Contains(output, "PR draft: clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/prs/cdc-range-pr.md") {
+		t.Fatalf("cdc-orchestrator stdout = %q, want PR draft path", output)
+	}
+	argsLog := readCLIRelFile(t, root, "cdc-lsn-args.log")
+	if !strings.Contains(argsLog, "cdc-lsn --execute --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --source-connection-string-env SQLSERVER_CDC_TEST_DSN") {
+		t.Fatalf("cdc-lsn args log = %q, want executor cdc-lsn command", argsLog)
+	}
+	plan := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/cdc-plan.yaml")
+	if !strings.Contains(plan, "from_lsn: 0x00000000000000000002") || !strings.Contains(plan, "to_lsn: 0x00000000000000000003") {
+		t.Fatalf("cdc plan = %q, want checkpoint-to-max range", plan)
+	}
+}
+
+func TestRunCDCOrchestratorPollStopsAfterCaughtUpIdleLimit(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	createCLIProjectWithCDCPlanAndCheckpoint(t, root, &stdout, &stderr, "0x00000000000000000001", "0x00000000000000000002")
+	planBefore := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/cdc-plan.yaml")
+
+	fakeExecutor := filepath.Join(root, "fake-cdc-lsn-caught-up")
+	if err := os.WriteFile(fakeExecutor, []byte("#!/bin/sh\nprintf 'executor cdc-lsn completed\\n'\nprintf 'max_lsn: 0x00000000000000000002\\n'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"cdc-orchestrator",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--executor-binary", "./fake-cdc-lsn-caught-up",
+		"--poll",
+		"--idle-iterations", "2",
+		"--interval", "0s",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("cdc-orchestrator poll code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "idle iteration 1: caught_up") || !strings.Contains(output, "idle iteration 2: caught_up") {
+		t.Fatalf("cdc-orchestrator poll stdout = %q, want two caught_up idle iterations", output)
+	}
+	if !strings.Contains(output, "prepared iterations: 0") {
+		t.Fatalf("cdc-orchestrator poll stdout = %q, want no prepared iterations", output)
+	}
+	planAfter := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/cdc-plan.yaml")
+	if planAfter != planBefore {
+		t.Fatalf("cdc-orchestrator mutated plan while caught up\nbefore:\n%s\nafter:\n%s", planBefore, planAfter)
+	}
+}
+
 func TestRunGenerateValidationPlanCommand(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer
@@ -3592,6 +3680,95 @@ func createCLIProjectWithOneExportChunk(t *testing.T, root string, stdout, stder
 		"--chunk-size-rows", "1000",
 	}, stdout, stderr); code != 0 {
 		t.Fatalf("generate-data-plans code = %d, stderr = %s", code, stderr.String())
+	}
+}
+
+func createCLIProjectWithCDCPlanAndCheckpoint(t *testing.T, root string, stdout, stderr *bytes.Buffer, fromLSN, toLSN string) {
+	t.Helper()
+	if code := Run([]string{"init-repo", "--root", root}, stdout, stderr); code != 0 {
+		t.Fatalf("init-repo code = %d, stderr = %s", code, stderr.String())
+	}
+	if code := Run([]string{
+		"create-cluster",
+		"--root", root,
+		"--cluster-id", "prod-sqlserver-a",
+		"--display-name", "prod SQL Server A",
+		"--listener", "sqlserver-a.internal",
+		"--secret-ref", "vault://migration/prod-sqlserver-a/readonly",
+		"--owner", "dba-team",
+	}, stdout, stderr); code != 0 {
+		t.Fatalf("create-cluster code = %d, stderr = %s", code, stderr.String())
+	}
+	if code := Run([]string{
+		"create-project",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--display-name", "sales DB to TiDB prod A",
+		"--source-database", "sales",
+		"--source-schema", "dbo",
+		"--target-name", "tidb-prod-a",
+		"--target-database", "app",
+		"--target-secret-ref", "vault://migration/tidb-prod-a/migrate-user",
+		"--owner", "dba-team",
+	}, stdout, stderr); code != 0 {
+		t.Fatalf("create-project code = %d, stderr = %s", code, stderr.String())
+	}
+	inventoryPath := filepath.Join(root, "clusters", "prod-sqlserver-a", "inventory", "inventory.json")
+	if err := os.WriteFile(inventoryPath, []byte(`{
+  "status": "discovered",
+  "databases": [
+    {
+      "name": "sales",
+      "schemas": [
+        {
+          "name": "dbo",
+          "tables": [
+            {
+              "name": "orders",
+              "row_count": 1,
+              "columns": [
+                {"name": "id", "type": "int"},
+                {"name": "customer_name", "type": "nvarchar"}
+              ],
+              "indexes": [
+                {"name": "PK_orders", "columns": ["id"], "unique": true, "primary_key": true}
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code := Run([]string{
+		"generate-cdc-plan",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+	}, stdout, stderr); code != 0 {
+		t.Fatalf("generate-cdc-plan code = %d, stderr = %s", code, stderr.String())
+	}
+	checkpointPath := filepath.Join(root, "clusters", "prod-sqlserver-a", "state", "cdc-checkpoint.yaml")
+	if err := os.WriteFile(checkpointPath, []byte(fmt.Sprintf(`source_cluster_id: prod-sqlserver-a
+phase: cdc
+status: running
+project_id: sales-db-to-tidb-prod-a
+mode: sqlserver-cdc
+checkpoint_scope: source-cluster
+checkpoints:
+  - source_object: sales.dbo.orders
+    target_object: app.orders
+    from_lsn: %s
+    to_lsn: %s
+    applied_changes: 2
+    completed_at: "2026-01-02T03:04:06Z"
+updated_at: "2026-01-02T03:04:07Z"
+`, fromLSN, toLSN)), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 
