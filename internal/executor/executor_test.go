@@ -694,7 +694,7 @@ func TestRunImportRejectsDuplicateTiDBImportIntoFields(t *testing.T) {
 	assertOutputContains(t, stderr.String(), "executor import: fields contains duplicate column \"ID\"")
 }
 
-func TestRunImportRejectsRemoteTiDBImportIntoSourceWithoutFields(t *testing.T) {
+func TestRunImportDryRunAcceptsS3TiDBImportIntoSourceWithoutFields(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 
 	code := Run([]string{
@@ -707,10 +707,13 @@ func TestRunImportRejectsRemoteTiDBImportIntoSourceWithoutFields(t *testing.T) {
 		"--source-uri", "s3://migration/prod/full/dbo.orders.000001.csv",
 		"--engine", "tidb-import-into",
 	}, &stdout, &stderr)
-	if code == 0 {
-		t.Fatalf("import dry-run code = 0, want non-zero; stdout = %s", stdout.String())
+	if code != 0 {
+		t.Fatalf("import dry-run code = %d, stderr = %s", code, stderr.String())
 	}
-	assertOutputContains(t, stderr.String(), "executor import: fields are required for s3 tidb-import-into source URI because remote header inspection is not implemented")
+	output := stdout.String()
+	assertOutputContains(t, output, "executor import dry run")
+	assertOutputContains(t, output, "engine: tidb-import-into")
+	assertOutputContains(t, output, "source uri: s3://migration/prod/full/dbo.orders.000001.csv")
 }
 
 func TestExecuteTiDBImportValidatesBatchSizeBeforeSourceURI(t *testing.T) {
@@ -726,16 +729,16 @@ func TestExecuteTiDBImportValidatesBatchSizeBeforeSourceURI(t *testing.T) {
 	assertOutputContains(t, err.Error(), "executor import: import batch size must be positive")
 }
 
-func TestExecuteTiDBImportIntoRejectsRemoteSourceWithoutFieldsBeforeConnectionString(t *testing.T) {
+func TestExecuteTiDBImportIntoRejectsGCSRemoteSourceWithoutFieldsBeforeConnectionString(t *testing.T) {
 	_, err := executeTiDBImportInto(context.Background(), importExecuteSpec{
 		TargetObject:              "app.orders",
-		SourceURI:                 "s3://migration/prod/full/dbo.orders.000001.csv",
+		SourceURI:                 "gs://migration/prod/full/dbo.orders.000001.csv",
 		TargetConnectionStringEnv: "MISSING_TIDB_DSN",
 	})
 	if err == nil {
-		t.Fatal("executeTiDBImportInto() error = nil, want remote fields error")
+		t.Fatal("executeTiDBImportInto() error = nil, want GCS remote fields error")
 	}
-	assertOutputContains(t, err.Error(), "executor import: fields are required for s3 tidb-import-into source URI because remote header inspection is not implemented")
+	assertOutputContains(t, err.Error(), "executor import: fields are required for gs tidb-import-into source URI because remote header inspection is not implemented")
 }
 
 func TestRunImportExecuteRequireEmptyTargetRejectsNonEmptyTargetBeforeOpeningSource(t *testing.T) {
@@ -1201,6 +1204,36 @@ func TestReadTiDBImportIntoFieldsFromLocalSourceSkipsNullBitmap(t *testing.T) {
 	}
 }
 
+func TestReadTiDBImportIntoFieldsFromS3SourceSkipsNullBitmap(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("method = %q, want GET", r.Method)
+		}
+		if r.URL.EscapedPath() != "/migration-bucket/full/orders.csv" {
+			t.Fatalf("request path = %q, want path-style bucket/object path", r.URL.EscapedPath())
+		}
+		if r.Header.Get("Accept-Encoding") != "identity" {
+			t.Fatalf("Accept-Encoding = %q, want identity", r.Header.Get("Accept-Encoding"))
+		}
+		_, _ = io.WriteString(w, "id,name,__sqlserver2tidb_null_bitmap\n1,Ada,00\n")
+	}))
+	defer server.Close()
+	t.Setenv("AWS_ACCESS_KEY_ID", "AKIDEXAMPLE")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "SECRETEXAMPLE")
+	t.Setenv("AWS_REGION", "us-east-1")
+	t.Setenv("AWS_ENDPOINT_URL", server.URL)
+	t.Setenv("AWS_S3_FORCE_PATH_STYLE", "true")
+
+	fields, err := readTiDBImportIntoFieldsFromSource(context.Background(), "s3://migration-bucket/full/orders.csv")
+	if err != nil {
+		t.Fatalf("readTiDBImportIntoFieldsFromSource() error = %v", err)
+	}
+	want := []string{"id", "name", "@sqlserver2tidb_null_bitmap"}
+	if !reflect.DeepEqual(fields, want) {
+		t.Fatalf("readTiDBImportIntoFieldsFromSource() = %v, want %v", fields, want)
+	}
+}
+
 func TestAuditTiDBImportIntoLocalSourceRecordsRowsBytesAndSHA(t *testing.T) {
 	data := []byte("id,name,__sqlserver2tidb_null_bitmap\n1,Ada,00\n2,Lin,00\n")
 	path := filepath.Join(t.TempDir(), "orders.csv")
@@ -1214,6 +1247,44 @@ func TestAuditTiDBImportIntoLocalSourceRecordsRowsBytesAndSHA(t *testing.T) {
 	}
 	if !ok {
 		t.Fatal("auditTiDBImportIntoLocalSource() ok = false, want true")
+	}
+	if audit.Rows != 2 {
+		t.Fatalf("audit rows = %d, want 2", audit.Rows)
+	}
+	if audit.Bytes != int64(len(data)) {
+		t.Fatalf("audit bytes = %d, want %d", audit.Bytes, len(data))
+	}
+	sum := sha256.Sum256(data)
+	wantSHA := "sha256:" + hex.EncodeToString(sum[:])
+	if audit.SHA256 != wantSHA {
+		t.Fatalf("audit sha = %q, want %q", audit.SHA256, wantSHA)
+	}
+}
+
+func TestAuditTiDBImportIntoS3SourceRecordsRowsBytesAndSHA(t *testing.T) {
+	data := []byte("id,name,__sqlserver2tidb_null_bitmap\n1,Ada,00\n2,Lin,00\n")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("method = %q, want GET", r.Method)
+		}
+		if r.Header.Get("X-Amz-Content-Sha256") != "UNSIGNED-PAYLOAD" {
+			t.Fatalf("X-Amz-Content-Sha256 = %q, want UNSIGNED-PAYLOAD", r.Header.Get("X-Amz-Content-Sha256"))
+		}
+		_, _ = w.Write(data)
+	}))
+	defer server.Close()
+	t.Setenv("AWS_ACCESS_KEY_ID", "AKIDEXAMPLE")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "SECRETEXAMPLE")
+	t.Setenv("AWS_REGION", "us-east-1")
+	t.Setenv("AWS_ENDPOINT_URL", server.URL)
+	t.Setenv("AWS_S3_FORCE_PATH_STYLE", "true")
+
+	audit, ok, err := auditTiDBImportIntoSource(context.Background(), "s3://migration-bucket/full/orders.csv")
+	if err != nil {
+		t.Fatalf("auditTiDBImportIntoSource() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("auditTiDBImportIntoSource() ok = false, want true")
 	}
 	if audit.Rows != 2 {
 		t.Fatalf("audit rows = %d, want 2", audit.Rows)

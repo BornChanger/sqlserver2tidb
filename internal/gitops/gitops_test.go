@@ -2546,7 +2546,7 @@ jobs:
 	assertContains(t, strings.Join(report.Errors, "\n"), "invalid import plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml: import job import-dbo.orders.000001 fields contains duplicate column \"ID\"")
 }
 
-func TestValidateRepoReportsTiDBImportIntoRemoteSourceWithoutFields(t *testing.T) {
+func TestValidateRepoAcceptsTiDBImportIntoS3RemoteSourceWithoutFields(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
 	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml", `status: reviewed
@@ -2562,10 +2562,31 @@ jobs:
 	if err != nil {
 		t.Fatalf("ValidateRepo() error = %v", err)
 	}
+	if !report.Valid {
+		t.Fatalf("ValidateRepo() valid = false, errors = %v", report.Errors)
+	}
+}
+
+func TestValidateRepoReportsTiDBImportIntoGCSRemoteSourceWithoutFields(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml", `status: reviewed
+engine: tidb-import-into
+jobs:
+  - id: import-dbo.orders.000001
+    target_object: app.orders
+    source_uri: gs://migration-bucket/full/dbo.orders.000001.csv
+    depends_on_export_chunk: dbo.orders.000001
+`)
+
+	report, err := ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
 	if report.Valid {
 		t.Fatalf("ValidateRepo() valid = true, want false")
 	}
-	assertContains(t, strings.Join(report.Errors, "\n"), "invalid import plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml: import job import-dbo.orders.000001 fields are required for s3 tidb-import-into source_uri because remote header inspection is not implemented")
+	assertContains(t, strings.Join(report.Errors, "\n"), "invalid import plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml: import job import-dbo.orders.000001 fields are required for gs tidb-import-into source_uri because remote header inspection is not implemented")
 }
 
 func TestValidateRepoAcceptsTiDBImportIntoEngine(t *testing.T) {
@@ -4365,7 +4386,7 @@ func TestGenerateExecutorEvidencePRDraftRequiresLocalTiDBImportIntoDataAudit(t *
 	assertContains(t, err.Error(), "executor evidence command import-dbo.orders.000001 requires data_rows, data_bytes, and data_sha256 for import data audit")
 }
 
-func TestGenerateExecutorEvidencePRDraftAllowsRemoteTiDBImportIntoWithoutDataAudit(t *testing.T) {
+func TestGenerateExecutorEvidencePRDraftRequiresS3TiDBImportIntoDataAudit(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
 	_, err := GenerateDataMovementPlans(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", DataMovementPlanSpec{
@@ -4400,12 +4421,14 @@ func TestGenerateExecutorEvidencePRDraftAllowsRemoteTiDBImportIntoWithoutDataAud
       "duration_ms": 1000
     }
   ]
-}
+	}
 `)
 
-	if _, err := GenerateExecutorEvidencePRDraft(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import"); err != nil {
-		t.Fatalf("GenerateExecutorEvidencePRDraft() error = %v", err)
+	_, err = GenerateExecutorEvidencePRDraft(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import")
+	if err == nil {
+		t.Fatal("GenerateExecutorEvidencePRDraft() expected missing S3 tidb-import-into data audit error")
 	}
+	assertContains(t, err.Error(), "executor evidence command import-dbo.orders.000001 requires data_rows, data_bytes, and data_sha256 for import data audit")
 }
 
 func TestGenerateExecutorEvidencePRDraftRejectsFailedStatusWithoutFailedCommand(t *testing.T) {
@@ -5871,7 +5894,7 @@ func TestPrepareWorkerExecutorRejectsInvalidTiDBImportIntoImportJobFields(t *tes
 	assertContains(t, err.Error(), "import job import-dbo.orders.000001 fields contains invalid user variable \"@bad-name\"")
 }
 
-func TestPrepareWorkerExecutorRejectsTiDBImportIntoRemoteSourceWithoutFields(t *testing.T) {
+func TestPrepareWorkerExecutorAcceptsTiDBImportIntoS3RemoteSourceWithoutFields(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
 	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml", `status: reviewed
@@ -5891,11 +5914,16 @@ jobs:
 	}
 	writeStageApproval(t, root, "import", hash)
 
-	_, err = PrepareWorkerExecutor(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import", WorkerExecutorPrepareSpec{})
-	if err == nil {
-		t.Fatal("PrepareWorkerExecutor() expected remote fields error")
+	spec, err := PrepareWorkerExecutor(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import", WorkerExecutorPrepareSpec{})
+	if err != nil {
+		t.Fatalf("PrepareWorkerExecutor() error = %v", err)
 	}
-	assertContains(t, err.Error(), "import job import-dbo.orders.000001 fields are required for s3 tidb-import-into source_uri because remote header inspection is not implemented")
+	if len(spec.Commands) != 1 {
+		t.Fatalf("commands len = %d, want 1", len(spec.Commands))
+	}
+	if strings.Contains(spec.Commands[0].ShellCommand, "--fields") {
+		t.Fatalf("command = %q, should not require reviewed fields for S3 tidb-import-into", spec.Commands[0].ShellCommand)
+	}
 }
 
 func TestPrepareWorkerExecutorRejectsTiDBImportIntoHTTPSourceURI(t *testing.T) {

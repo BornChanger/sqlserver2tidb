@@ -1513,7 +1513,7 @@ func runImport(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	if normalizedEngine == importEngineTiDBImportInto {
-		if err := requireTiDBImportIntoFieldsForRemoteSource(*sourceURI, fields); err != nil {
+		if err := requireTiDBImportIntoFieldsForUnsupportedRemoteSource(*sourceURI, fields); err != nil {
 			fmt.Fprintf(stderr, "executor import: %v\n", err)
 			return 1
 		}
@@ -2018,17 +2018,17 @@ func executeTiDBImportInto(ctx context.Context, spec importExecuteSpec) (importE
 		return importExecuteResult{}, fmt.Errorf("executor import: %w", err)
 	}
 	fields := spec.Fields
-	if err := requireTiDBImportIntoFieldsForRemoteSource(spec.SourceURI, fields); err != nil {
+	if err := requireTiDBImportIntoFieldsForUnsupportedRemoteSource(spec.SourceURI, fields); err != nil {
 		return importExecuteResult{}, fmt.Errorf("executor import: %w", err)
 	}
 	if len(fields) == 0 {
 		var err error
-		fields, err = readTiDBImportIntoFieldsFromLocalSource(spec.SourceURI)
+		fields, err = readTiDBImportIntoFieldsFromSource(ctx, spec.SourceURI)
 		if err != nil {
 			return importExecuteResult{}, fmt.Errorf("executor import: %w", err)
 		}
 	}
-	audit, hasAudit, err := auditTiDBImportIntoLocalSource(spec.SourceURI)
+	audit, hasAudit, err := auditTiDBImportIntoSource(ctx, spec.SourceURI)
 	if err != nil {
 		return importExecuteResult{}, fmt.Errorf("executor import: %w", err)
 	}
@@ -2530,13 +2530,13 @@ func validateTiDBImportIntoFields(fields []string, label string) error {
 	return nil
 }
 
-func requireTiDBImportIntoFieldsForRemoteSource(sourceURI string, fields []string) error {
+func requireTiDBImportIntoFieldsForUnsupportedRemoteSource(sourceURI string, fields []string) error {
 	parsed, err := url.Parse(strings.TrimSpace(sourceURI))
 	if err != nil {
 		return fmt.Errorf("parse IMPORT INTO source URI: %w", err)
 	}
 	switch parsed.Scheme {
-	case "s3", "gs":
+	case "gs":
 		if len(fields) == 0 {
 			return fmt.Errorf("fields are required for %s tidb-import-into source URI because remote header inspection is not implemented", parsed.Scheme)
 		}
@@ -2595,6 +2595,44 @@ func auditTiDBImportIntoLocalSource(sourceURI string) (dataChannelAudit, bool, e
 	}
 }
 
+func auditTiDBImportIntoSource(ctx context.Context, sourceURI string) (dataChannelAudit, bool, error) {
+	parsed, err := url.Parse(strings.TrimSpace(sourceURI))
+	if err != nil {
+		return dataChannelAudit{}, false, fmt.Errorf("parse IMPORT INTO source URI: %w", err)
+	}
+	if parsed.Scheme == "s3" {
+		reader, err := openS3ImportSource(ctx, sourceURI)
+		if err != nil {
+			return dataChannelAudit{}, true, err
+		}
+		return auditTiDBImportIntoCSVReader(reader)
+	}
+	return auditTiDBImportIntoLocalSource(sourceURI)
+}
+
+func auditTiDBImportIntoCSVReader(reader io.ReadCloser) (dataChannelAudit, bool, error) {
+	counter := &countingReadCloser{reader: reader, digest: sha256.New()}
+	defer counter.Close()
+
+	csvReader := csv.NewReader(counter)
+	if _, err := csvReader.Read(); err != nil {
+		return dataChannelAudit{}, true, fmt.Errorf("read IMPORT INTO CSV audit header: %w", err)
+	}
+	var rows int64
+	for {
+		if _, err := csvReader.Read(); errors.Is(err, io.EOF) {
+			return dataChannelAudit{
+				Rows:   rows,
+				Bytes:  counter.BytesRead(),
+				SHA256: counter.SHA256(),
+			}, true, nil
+		} else if err != nil {
+			return dataChannelAudit{}, true, fmt.Errorf("read IMPORT INTO CSV audit row %d: %w", rows+1, err)
+		}
+		rows++
+	}
+}
+
 func readTiDBImportIntoFieldsFromLocalSource(sourceURI string) ([]string, error) {
 	path, ok, err := resolveTiDBImportIntoLocalSourcePath(sourceURI)
 	if err != nil {
@@ -2615,6 +2653,28 @@ func readTiDBImportIntoFieldsFromLocalSource(sourceURI string) ([]string, error)
 		return nil, fmt.Errorf("read IMPORT INTO CSV header: %w", err)
 	}
 	return buildTiDBImportIntoFieldsFromCSVHeader(columns)
+}
+
+func readTiDBImportIntoFieldsFromSource(ctx context.Context, sourceURI string) ([]string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(sourceURI))
+	if err != nil {
+		return nil, fmt.Errorf("parse IMPORT INTO source URI: %w", err)
+	}
+	if parsed.Scheme == "s3" {
+		reader, err := openS3ImportSource(ctx, sourceURI)
+		if err != nil {
+			return nil, err
+		}
+		defer reader.Close()
+
+		csvReader := csv.NewReader(reader)
+		columns, err := csvReader.Read()
+		if err != nil {
+			return nil, fmt.Errorf("read IMPORT INTO CSV header: %w", err)
+		}
+		return buildTiDBImportIntoFieldsFromCSVHeader(columns)
+	}
+	return readTiDBImportIntoFieldsFromLocalSource(sourceURI)
 }
 
 func resolveTiDBImportIntoLocalSourcePath(sourceURI string) (string, bool, error) {

@@ -277,6 +277,9 @@ func validateTiDBImportIntoPlanFieldsForSource(job dataImportJobState) error {
 	if !ok || len(job.Fields) > 0 {
 		return nil
 	}
+	if scheme == "s3" {
+		return nil
+	}
 	return fmt.Errorf("import job %s fields are required for %s tidb-import-into source_uri because remote header inspection is not implemented", job.ID, scheme)
 }
 
