@@ -76,6 +76,10 @@ var stagePayloadFiles = map[string][]string{
 		"project.yaml",
 		"plan/cdc-plan.yaml",
 	},
+	"cutover": {
+		"project.yaml",
+		"plan/cutover-runbook.md",
+	},
 }
 
 func ComputePayloadHashForStage(root, sourceClusterID, projectID, stage string) (string, error) {
@@ -278,6 +282,46 @@ func RunCDCWorker(root, sourceClusterID, projectID string) (DataWorkerResult, er
 	return result, nil
 }
 
+func RunCutoverWorker(root, sourceClusterID, projectID string) (DataWorkerResult, error) {
+	if err := validateProjectAddress(root, sourceClusterID, projectID); err != nil {
+		return DataWorkerResult{}, err
+	}
+	payloadHash, err := requireApprovedStage(root, sourceClusterID, projectID, "cutover")
+	if err != nil {
+		return DataWorkerResult{}, err
+	}
+
+	projectDir := filepath.Join(root, "clusters", sourceClusterID, "projects", projectID)
+	if err := requireReviewedCutoverRunbook(filepath.Join(projectDir, "plan", "cutover-runbook.md")); err != nil {
+		return DataWorkerResult{}, err
+	}
+	gates, err := requireCutoverPrerequisiteGates(root, sourceClusterID, projectID, projectDir)
+	if err != nil {
+		return DataWorkerResult{}, err
+	}
+
+	result := DataWorkerResult{
+		SourceClusterID: sourceClusterID,
+		ProjectID:       projectID,
+		Stage:           "cutover",
+		PayloadHash:     payloadHash,
+		Status:          "completed",
+		Items:           len(gates),
+		StateFile:       "state/migration-state.yaml",
+		EvidenceFile:    "evidence/cutover-evidence.md",
+	}
+	if err := writeCutoverProjectState(projectDir, result); err != nil {
+		return DataWorkerResult{}, err
+	}
+	if err := writeCutoverEvidence(projectDir, result, gates); err != nil {
+		return DataWorkerResult{}, err
+	}
+	if err := writePostCutoverReport(projectDir, result); err != nil {
+		return DataWorkerResult{}, err
+	}
+	return result, nil
+}
+
 func runDataWorker(root, sourceClusterID, projectID, stage string) (DataWorkerResult, error) {
 	if err := validateProjectAddress(root, sourceClusterID, projectID); err != nil {
 		return DataWorkerResult{}, err
@@ -374,6 +418,99 @@ func runDataWorker(root, sourceClusterID, projectID, stage string) (DataWorkerRe
 		return DataWorkerResult{}, err
 	}
 	return result, nil
+}
+
+func requireReviewedCutoverRunbook(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read cutover runbook: %w", err)
+	}
+	content := strings.TrimSpace(string(data))
+	if content == "" {
+		return fmt.Errorf("cutover runbook is empty")
+	}
+	if containsTODOMarker(content) {
+		return fmt.Errorf("cutover runbook still contains TODO")
+	}
+	if strings.Contains(strings.ToLower(content), "pending plan review") {
+		return fmt.Errorf("cutover runbook still contains pending plan review placeholder")
+	}
+	return nil
+}
+
+func requireCutoverPrerequisiteGates(root, sourceClusterID, projectID, projectDir string) ([]ValidationCheckResult, error) {
+	project, err := readProjectMetadata(filepath.Join(projectDir, "project.yaml"))
+	if err != nil {
+		return nil, err
+	}
+
+	gates := make([]ValidationCheckResult, 0, 5)
+	if err := requireSuccessfulExecutorEvidence(root, sourceClusterID, projectID, "export"); err != nil {
+		return nil, err
+	}
+	gates = append(gates, ValidationCheckResult{Name: "export executor evidence", Status: "passed", Message: "export executor evidence succeeded"})
+	if err := requireSuccessfulExecutorEvidence(root, sourceClusterID, projectID, "import"); err != nil {
+		return nil, err
+	}
+	gates = append(gates, ValidationCheckResult{Name: "import executor evidence", Status: "passed", Message: "import executor evidence succeeded"})
+	if err := requireSuccessfulExecutorEvidence(root, sourceClusterID, projectID, "validation"); err != nil {
+		return nil, err
+	}
+	gates = append(gates, ValidationCheckResult{Name: "validation executor evidence", Status: "passed", Message: "validation executor evidence succeeded"})
+	if err := requireValidationStatusPassed(filepath.Join(projectDir, "state", "validation-status.yaml")); err != nil {
+		return nil, err
+	}
+	gates = append(gates, ValidationCheckResult{Name: "validation worker status", Status: "passed", Message: "validation worker status is passed"})
+	if project.Mode != "offline" {
+		if err := requireSuccessfulExecutorEvidence(root, sourceClusterID, projectID, "cdc"); err != nil {
+			return nil, err
+		}
+		if err := requireCDCCaughtUpCheckpoint(filepath.Join(root, "clusters", sourceClusterID, "state", "cdc-checkpoint.yaml"), projectID); err != nil {
+			return nil, err
+		}
+		gates = append(gates, ValidationCheckResult{Name: "cdc checkpoint", Status: "passed", Message: "source-cluster CDC checkpoint is caught_up"})
+	}
+	return gates, nil
+}
+
+func requireSuccessfulExecutorEvidence(root, sourceClusterID, projectID, stage string) error {
+	ctx, err := loadExecutorEvidencePRContext(root, sourceClusterID, projectID, stage)
+	if err != nil {
+		return err
+	}
+	if ctx.evidence.Status != "succeeded" {
+		return fmt.Errorf("%s executor evidence status is %q, want succeeded", stage, ctx.evidence.Status)
+	}
+	return nil
+}
+
+func requireValidationStatusPassed(path string) error {
+	status, err := readPlanTopLevelScalar(path, "status")
+	if err != nil {
+		return err
+	}
+	if status != "passed" {
+		return fmt.Errorf("validation status is %q, want passed", status)
+	}
+	return nil
+}
+
+func requireCDCCaughtUpCheckpoint(path, projectID string) error {
+	status, err := readPlanTopLevelScalar(path, "status")
+	if err != nil {
+		return err
+	}
+	if status != "caught_up" {
+		return fmt.Errorf("cdc checkpoint status is %q, want caught_up", status)
+	}
+	checkpointProjectID, err := readPlanTopLevelScalar(path, "project_id")
+	if err != nil {
+		return err
+	}
+	if checkpointProjectID != projectID {
+		return fmt.Errorf("cdc checkpoint project_id is %q, want %s", checkpointProjectID, projectID)
+	}
+	return nil
 }
 
 func (result *ValidationWorkerResult) addCheck(name string, passed bool, message string) {
@@ -1096,6 +1233,66 @@ func writeCDCClusterCheckpoint(clusterDir string, result DataWorkerResult, plan 
 	fmt.Fprintf(&b, "updated_at: %s\n", quoteYAML(nowUTC()))
 	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
 		return fmt.Errorf("write cdc checkpoint: %w", err)
+	}
+	return nil
+}
+
+func writeCutoverProjectState(projectDir string, result DataWorkerResult) error {
+	path := filepath.Join(projectDir, "state", "migration-state.yaml")
+	var b strings.Builder
+	fmt.Fprintf(&b, "project_id: %s\n", result.ProjectID)
+	fmt.Fprintf(&b, "source_cluster_id: %s\n", result.SourceClusterID)
+	b.WriteString("phase: completed\n")
+	b.WriteString("status: completed\n")
+	fmt.Fprintf(&b, "payload_hash: %s\n", result.PayloadHash)
+	b.WriteString("cutover_runbook: plan/cutover-runbook.md\n")
+	b.WriteString("cutover_evidence: evidence/cutover-evidence.md\n")
+	b.WriteString("post_cutover_report: evidence/post-cutover-report.md\n")
+	fmt.Fprintf(&b, "updated_at: %s\n", quoteYAML(nowUTC()))
+	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
+		return fmt.Errorf("write cutover project state: %w", err)
+	}
+	return nil
+}
+
+func writeCutoverEvidence(projectDir string, result DataWorkerResult, gates []ValidationCheckResult) error {
+	path := filepath.Join(projectDir, "evidence", "cutover-evidence.md")
+	var b strings.Builder
+	b.WriteString("# Cutover Evidence\n\n")
+	fmt.Fprintf(&b, "- Source cluster: `%s`\n", result.SourceClusterID)
+	fmt.Fprintf(&b, "- Project: `%s`\n", result.ProjectID)
+	fmt.Fprintf(&b, "- Status: `%s`\n", result.Status)
+	fmt.Fprintf(&b, "- Payload hash: `%s`\n", result.PayloadHash)
+	fmt.Fprintf(&b, "- Generated at: `%s`\n\n", nowUTC())
+	b.WriteString("## Gates\n\n")
+	b.WriteString("| Gate | Status | Message |\n")
+	b.WriteString("| --- | --- | --- |\n")
+	for _, gate := range gates {
+		fmt.Fprintf(&b, "| %s | %s | %s |\n", escapeMarkdownTable(gate.Name), gate.Status, escapeMarkdownTable(gate.Message))
+	}
+	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
+		return fmt.Errorf("write cutover evidence: %w", err)
+	}
+	return nil
+}
+
+func writePostCutoverReport(projectDir string, result DataWorkerResult) error {
+	path := filepath.Join(projectDir, "evidence", "post-cutover-report.md")
+	var b strings.Builder
+	b.WriteString("# Post-Cutover Report\n\n")
+	fmt.Fprintf(&b, "- Source cluster: `%s`\n", result.SourceClusterID)
+	fmt.Fprintf(&b, "- Project: `%s`\n", result.ProjectID)
+	fmt.Fprintf(&b, "- Status: `%s`\n", result.Status)
+	fmt.Fprintf(&b, "- Payload hash: `%s`\n", result.PayloadHash)
+	b.WriteString("- Cutover evidence: `evidence/cutover-evidence.md`\n")
+	fmt.Fprintf(&b, "- Generated at: `%s`\n\n", nowUTC())
+	b.WriteString("## Stabilization\n\n")
+	b.WriteString("- [ ] Confirm TiDB QPS is within the approved post-cutover range.\n")
+	b.WriteString("- [ ] Confirm p95/p99 latency is within the approved post-cutover range.\n")
+	b.WriteString("- [ ] Confirm application error rate is within the approved post-cutover range.\n")
+	b.WriteString("- [ ] Confirm slow-query review has no blocking regressions.\n")
+	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
+		return fmt.Errorf("write post-cutover report: %w", err)
 	}
 	return nil
 }

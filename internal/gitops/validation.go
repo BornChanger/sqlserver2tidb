@@ -533,7 +533,7 @@ func validateWorkerLeaseMetadataContent(path string, cluster clusterMetadata) er
 		return err
 	}
 	if !isSupportedWorkerLeasePhase(phase) {
-		return fmt.Errorf("unsupported worker lease phase %q; supported phases: idle, export, import, cdc, validation", phase)
+		return fmt.Errorf("unsupported worker lease phase %q; supported phases: idle, export, import, cdc, validation, cutover", phase)
 	}
 	if phase == "idle" {
 		return nil
@@ -623,7 +623,7 @@ func requireWorkerLeaseTime(path, key string) (time.Time, error) {
 
 func isSupportedWorkerLeasePhase(phase string) bool {
 	switch phase {
-	case "idle", "export", "import", "cdc", "validation":
+	case "idle", "export", "import", "cdc", "validation", "cutover":
 		return true
 	default:
 		return false

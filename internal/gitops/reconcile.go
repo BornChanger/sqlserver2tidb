@@ -58,12 +58,13 @@ type workerLeaseMetadata struct {
 	RenewedAt       string
 }
 
-var workerReconcileStages = []string{"ddl", "export", "import", "cdc", "validation"}
+var workerReconcileStages = []string{"ddl", "export", "import", "cdc", "validation", "cutover"}
 var workerReconcileExecutableStages = map[string]bool{
 	"export":     true,
 	"import":     true,
 	"cdc":        true,
 	"validation": true,
+	"cutover":    true,
 }
 
 func PlanWorkerReconcile(root string) (WorkerReconcileReport, error) {
@@ -207,6 +208,25 @@ func planWorkerReconcileAction(root, sourceClusterID, projectID, stage string) W
 			action.Reason = reason
 			return action
 		}
+	case "cutover":
+		projectDir := filepath.Join(root, "clusters", sourceClusterID, "projects", projectID)
+		if err := requireReviewedCutoverRunbook(filepath.Join(projectDir, "plan", "cutover-runbook.md")); err != nil {
+			action.Reason = err.Error()
+			return action
+		}
+		if _, err := requireCutoverPrerequisiteGates(root, sourceClusterID, projectID, projectDir); err != nil {
+			action.Reason = err.Error()
+			return action
+		}
+		reason, err := reconcileStageStateBlockReason(root, sourceClusterID, projectID, stage, payloadHash)
+		if err != nil {
+			action.Reason = err.Error()
+			return action
+		}
+		if reason != "" {
+			action.Reason = reason
+			return action
+		}
 	}
 	action.Status = "ready"
 	action.PayloadHash = payloadHash
@@ -255,6 +275,8 @@ func reconcileStageStateFile(stage string) string {
 		return "state/migration-state.yaml"
 	case "validation":
 		return "state/validation-status.yaml"
+	case "cutover":
+		return "state/migration-state.yaml"
 	default:
 		return ""
 	}
@@ -332,6 +354,14 @@ func executeWorkerReconcileAction(root string, action WorkerReconcileAction) (Wo
 		result.Status = validationStatus(workerResult.Passed)
 		result.StateFile = "state/validation-status.yaml"
 		result.EvidenceFile = "evidence/validation-report.md"
+	case "cutover":
+		workerResult, err := RunCutoverWorker(root, action.SourceClusterID, action.ProjectID)
+		if err != nil {
+			return WorkerReconcileExecutionResult{}, err
+		}
+		result.Status = workerResult.Status
+		result.StateFile = workerResult.StateFile
+		result.EvidenceFile = workerResult.EvidenceFile
 	default:
 		return WorkerReconcileExecutionResult{}, fmt.Errorf("unsupported worker reconcile stage %q", action.Stage)
 	}

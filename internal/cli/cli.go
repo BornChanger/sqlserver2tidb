@@ -73,6 +73,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runWorkerCDC(args[1:], stdout, stderr)
 	case "worker-validate":
 		return runWorkerValidate(args[1:], stdout, stderr)
+	case "worker-cutover":
+		return runWorkerCutover(args[1:], stdout, stderr)
 	case "worker-executor":
 		return runWorkerExecutor(args[1:], stdout, stderr)
 	case "advance-cdc-checkpoint":
@@ -1161,6 +1163,30 @@ func runWorkerCDC(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+func runWorkerCutover(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("worker-cutover", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	root := fs.String("root", ".", "repository root")
+	sourceClusterID := fs.String("source-cluster-id", "", "upstream SQL Server cluster id")
+	projectID := fs.String("project-id", "", "migration project id")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	result, err := gitops.RunCutoverWorker(*root, *sourceClusterID, *projectID)
+	if err != nil {
+		fmt.Fprintf(stderr, "worker cutover: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "cutover worker completed for %s\n", result.ProjectID)
+	fmt.Fprintf(stdout, "status: %s\n", result.Status)
+	fmt.Fprintf(stdout, "gates: %d\n", result.Items)
+	fmt.Fprintf(stdout, "payload hash: %s\n", result.PayloadHash)
+	fmt.Fprintf(stdout, "wrote %s\n", result.StateFile)
+	fmt.Fprintf(stdout, "wrote %s\n", result.EvidenceFile)
+	fmt.Fprintf(stdout, "wrote %s\n", "evidence/post-cutover-report.md")
+	return 0
+}
+
 func runWorkerExecutor(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("worker-executor", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -2116,6 +2142,7 @@ Usage:
   sqlserver2tidb worker-import --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
   sqlserver2tidb worker-cdc --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
   sqlserver2tidb worker-validate --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
+  sqlserver2tidb worker-cutover --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
   sqlserver2tidb worker-executor --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage export
   sqlserver2tidb worker-executor --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage import --target-connection-string-env SQLSERVER2TIDB_TARGET_CONNECTION_STRING --import-batch-size 1000
   sqlserver2tidb worker-executor --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage validation --source-connection-string-env SQLSERVER2TIDB_SOURCE_CONNECTION_STRING --target-connection-string-env SQLSERVER2TIDB_TARGET_CONNECTION_STRING

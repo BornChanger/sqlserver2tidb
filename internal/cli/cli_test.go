@@ -807,6 +807,50 @@ func TestRunWorkerValidateCommand(t *testing.T) {
 	assertExists(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/validation-report.md")
 }
 
+func TestRunWorkerCutoverCommand(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createCLICutoverReadyProject(t, root)
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"compute-payload-hash",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "cutover",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("compute-payload-hash cutover code = %d, stderr = %s", code, stderr.String())
+	}
+	writeCLIStageApproval(t, root, "cutover", parsePayloadHash(t, stdout.String()))
+
+	stdout.Reset()
+	stderr.Reset()
+	code = Run([]string{
+		"worker-cutover",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("worker-cutover code = %d, stderr = %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "cutover worker completed for sales-db-to-tidb-prod-a") {
+		t.Fatalf("worker-cutover stdout = %q, want completed message", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "status: completed") {
+		t.Fatalf("worker-cutover stdout = %q, want completed status", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "gates: 5") {
+		t.Fatalf("worker-cutover stdout = %q, want gate count", stdout.String())
+	}
+	assertExists(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/migration-state.yaml")
+	assertExists(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/cutover-evidence.md")
+	assertExists(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/post-cutover-report.md")
+}
+
 func TestRunWorkerExportAndImportCommands(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer
@@ -4008,6 +4052,222 @@ func createCLIReadyExportProjectForCluster(t *testing.T, root, sourceClusterID, 
 		t.Fatal(err)
 	}
 	writeCLIStageApprovalForProject(t, root, sourceClusterID, projectID, "export", hash)
+}
+
+func createCLICutoverReadyProject(t *testing.T, root string) {
+	t.Helper()
+	if err := gitops.InitRepo(root); err != nil {
+		t.Fatal(err)
+	}
+	if err := gitops.CreateCluster(root, gitops.ClusterSpec{
+		ClusterID:              "prod-sqlserver-a",
+		DisplayName:            "prod SQL Server A",
+		Listener:               "sqlserver-a.internal",
+		Port:                   1433,
+		SecretRef:              "vault://migration/prod-sqlserver-a/readonly",
+		CDCMode:                "sqlserver-cdc",
+		RetentionHoursRequired: 168,
+		Owners:                 []string{"dba-team"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := gitops.CreateProject(root, gitops.ProjectSpec{
+		SourceClusterID: "prod-sqlserver-a",
+		ProjectID:       "sales-db-to-tidb-prod-a",
+		DisplayName:     "sales DB to TiDB prod A",
+		SourceDatabase:  "sales",
+		SourceSchemas:   []string{"dbo"},
+		TargetName:      "tidb-prod-a",
+		TargetDatabase:  "app",
+		TargetSecretRef: "vault://migration/tidb-prod-a/migrate-user",
+		Mode:            "short-downtime",
+		Owners:          []string{"dba-team"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	writeCLIFile(t, root, "clusters/prod-sqlserver-a/inventory/inventory.json", `{
+  "status": "discovered",
+  "databases": [
+    {
+      "name": "sales",
+      "schemas": [
+        {
+          "name": "dbo",
+          "tables": [
+            {
+              "name": "orders",
+              "row_count": 1,
+              "columns": [
+                {"name": "id", "type": "int"},
+                {"name": "customer_name", "type": "nvarchar"}
+              ],
+              "indexes": [
+                {"name": "PK_orders", "columns": ["id"], "unique": true, "primary_key": true}
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+`)
+	if _, err := gitops.GenerateSchemaDraft(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitops.GenerateDataMovementPlans(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", gitops.DataMovementPlanSpec{
+		ObjectURIPrefix: "file:///tmp/sqlserver2tidb-test/full",
+		ChunkSizeRows:   1000,
+		ExportFormat:    "csv",
+		ImportEngine:    "sql-insert",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	setCLIReviewPlanStatus(t, root, "export", "reviewed")
+	exportHash, err := gitops.ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeCLIStageApproval(t, root, "export", exportHash)
+	writeCLIExecutorDataEvidence(t, root, "export", exportHash)
+
+	setCLIReviewPlanStatus(t, root, "import", "reviewed")
+	importHash, err := gitops.ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeCLIStageApproval(t, root, "import", importHash)
+	writeCLIExecutorDataEvidence(t, root, "import", importHash)
+
+	if _, err := gitops.GenerateCDCPlan(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", gitops.CDCPlanSpec{Mode: "sqlserver-cdc", RetentionHoursRequired: 168, ApplyBatchSize: 1000}); err != nil {
+		t.Fatal(err)
+	}
+	setCLICDCPlanLSNRange(t, root, "0x00000027000001f40001", "0x00000027000001f40002")
+	setCLIReviewPlanStatus(t, root, "cdc", "reviewed")
+	cdcHash, err := gitops.ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "cdc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeCLIStageApproval(t, root, "cdc", cdcHash)
+	writeCLIExecutorCDCEvidence(t, root, cdcHash)
+	if _, err := gitops.AdvanceCDCCheckpointFromExecutorEvidence(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", gitops.CDCCheckpointAdvanceSpec{Status: "caught_up"}); err != nil {
+		t.Fatal(err)
+	}
+
+	setCLIReviewPlanStatus(t, root, "validation", "reviewed")
+	validationHash, err := gitops.ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "validation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeCLIStageApproval(t, root, "validation", validationHash)
+	writeCLIExecutorValidationEvidence(t, root, validationHash)
+	if _, err := gitops.RunValidationWorker(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a"); err != nil {
+		t.Fatal(err)
+	}
+
+	writeCLIFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/cutover-runbook.md", `# Cutover Runbook
+
+## Preconditions
+
+- Export executor evidence succeeded.
+- Import executor evidence succeeded.
+- CDC checkpoint is caught up.
+- Validation executor evidence succeeded.
+- Application owner approved the cutover window.
+
+## Rollback Boundary
+
+Rollback is allowed until application writes are enabled on TiDB.
+`)
+}
+
+func writeCLIExecutorDataEvidence(t *testing.T, root, stage, payloadHash string) {
+	t.Helper()
+	argsJSON := `["sqlserver2tidb-executor", "export", "--execute"]`
+	shellCommand := "sqlserver2tidb-executor export --execute"
+	if stage == "import" {
+		argsJSON = `["sqlserver2tidb-executor", "import", "--execute", "--engine", "sql-insert"]`
+		shellCommand = "sqlserver2tidb-executor import --execute --engine sql-insert"
+	}
+	writeCLIFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-"+stage+"-run.json", fmt.Sprintf(`{
+  "stage": %q,
+  "status": "succeeded",
+  "project_id": "sales-db-to-tidb-prod-a",
+  "source_cluster_id": "prod-sqlserver-a",
+  "payload_hash": %q,
+  "commands": [
+    {
+      "id": %q,
+      "args": %s,
+      "shell_command": %q,
+      "exit_code": 0,
+      "output": "ok\n",
+      "started_at": "2026-01-02T03:04:05Z",
+      "completed_at": "2026-01-02T03:04:06Z",
+      "duration_ms": 1000,
+      "data_rows": 1,
+      "data_bytes": 64,
+      "data_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    }
+  ]
+}
+`, stage, payloadHash, stage+"-1", argsJSON, shellCommand))
+}
+
+func writeCLIExecutorCDCEvidence(t *testing.T, root, payloadHash string) {
+	t.Helper()
+	writeCLIFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-cdc-run.json", `{
+  "stage": "cdc",
+  "status": "succeeded",
+  "project_id": "sales-db-to-tidb-prod-a",
+  "source_cluster_id": "prod-sqlserver-a",
+  "payload_hash": "`+payloadHash+`",
+  "commands": [
+    {
+      "id": "sales.dbo.orders",
+      "args": ["sqlserver2tidb-executor", "cdc", "--execute", "--source-object", "sales.dbo.orders", "--target-object", "app.orders", "--from-lsn", "0x00000027000001f40001", "--to-lsn", "0x00000027000001f40002"],
+      "shell_command": "sqlserver2tidb-executor cdc --execute --source-object sales.dbo.orders --target-object app.orders --from-lsn 0x00000027000001f40001 --to-lsn 0x00000027000001f40002",
+      "exit_code": 0,
+      "output": "applied changes: 0\n",
+      "started_at": "2026-01-02T03:04:05Z",
+      "completed_at": "2026-01-02T03:04:06Z",
+      "duration_ms": 1000,
+      "cdc_applied_changes": 0
+    }
+  ]
+}
+`)
+}
+
+func writeCLIExecutorValidationEvidence(t *testing.T, root, payloadHash string) {
+	t.Helper()
+	writeCLIFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-validation-run.json", `{
+  "stage": "validation",
+  "status": "succeeded",
+  "project_id": "sales-db-to-tidb-prod-a",
+  "source_cluster_id": "prod-sqlserver-a",
+  "payload_hash": "`+payloadHash+`",
+  "commands": [
+    {
+      "id": "orders-row-count",
+      "args": ["sqlserver2tidb-executor", "validate-count", "--execute"],
+      "shell_command": "sqlserver2tidb-executor validate-count --execute",
+      "exit_code": 0,
+      "output": "row counts match\n",
+      "started_at": "2026-01-02T03:04:05Z",
+      "completed_at": "2026-01-02T03:04:06Z",
+      "duration_ms": 1000
+    }
+  ]
+}
+`)
+}
+
+func writeCLIFile(t *testing.T, root, rel, content string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(root, filepath.FromSlash(rel)), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func assertExists(t *testing.T, root, rel string) {

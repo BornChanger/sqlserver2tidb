@@ -756,7 +756,7 @@ func TestValidateRepoReportsInvalidWorkerLeasePhase(t *testing.T) {
 	if report.Valid {
 		t.Fatal("ValidateRepo() valid = true, want invalid worker lease phase")
 	}
-	assertContains(t, strings.Join(report.Errors, "\n"), `invalid cluster state clusters/prod-sqlserver-a/state/worker-lease.yaml: unsupported worker lease phase "running"; supported phases: idle, export, import, cdc, validation`)
+	assertContains(t, strings.Join(report.Errors, "\n"), `invalid cluster state clusters/prod-sqlserver-a/state/worker-lease.yaml: unsupported worker lease phase "running"; supported phases: idle, export, import, cdc, validation, cutover`)
 }
 
 func TestValidateRepoReportsIncompleteActiveWorkerLease(t *testing.T) {
@@ -7471,8 +7471,8 @@ func TestPlanWorkerReconcileReportsReadyAndBlockedProjectStages(t *testing.T) {
 	if report.Projects != 1 {
 		t.Fatalf("Projects = %d, want 1", report.Projects)
 	}
-	if report.ReadyActions != 3 || report.BlockedActions != 2 {
-		t.Fatalf("ready/blocked = %d/%d, want 3/2\nreport: %+v", report.ReadyActions, report.BlockedActions, report)
+	if report.ReadyActions != 3 || report.BlockedActions != 3 {
+		t.Fatalf("ready/blocked = %d/%d, want 3/3\nreport: %+v", report.ReadyActions, report.BlockedActions, report)
 	}
 	ddl := findReconcileAction(t, report.Actions, "ddl")
 	if ddl.Status != "ready" || ddl.PayloadHash != ddlHash {
@@ -7500,6 +7500,11 @@ func TestPlanWorkerReconcileReportsReadyAndBlockedProjectStages(t *testing.T) {
 		t.Fatalf("validation action = %+v, want blocked", validation)
 	}
 	assertContains(t, validation.Reason, "validation approval is not approved")
+	cutover := findReconcileAction(t, report.Actions, "cutover")
+	if cutover.Status != "blocked" {
+		t.Fatalf("cutover action = %+v, want blocked", cutover)
+	}
+	assertContains(t, cutover.Reason, "cutover approval is not approved")
 }
 
 func TestPlanWorkerReconcileBlocksDraftExportPlan(t *testing.T) {
@@ -7792,6 +7797,45 @@ func TestExecuteNextWorkerReconcileWritesStatePRDraftWhenRequested(t *testing.T)
 	assertContains(t, body, "gh pr create --base main --head agent/sales-db-to-tidb-prod-a/reconcile-export-state")
 }
 
+func TestPlanWorkerReconcileReportsReadyCutoverWhenGatesPass(t *testing.T) {
+	root := t.TempDir()
+	createCutoverReadyProject(t, root)
+	if _, err := RunExportWorker(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a"); err != nil {
+		t.Fatalf("RunExportWorker() error = %v", err)
+	}
+	if _, err := RunImportWorker(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a"); err != nil {
+		t.Fatalf("RunImportWorker() error = %v", err)
+	}
+	cdcHash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "cdc")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(cdc) error = %v", err)
+	}
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/migration-state.yaml", `project_id: sales-db-to-tidb-prod-a
+source_cluster_id: prod-sqlserver-a
+phase: cdc
+status: planned
+payload_hash: `+cdcHash+`
+cdc_plan: plan/cdc-plan.yaml
+tracked_tables: 1
+updated_at: "2026-01-02T03:04:07Z"
+`)
+	cutoverHash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "cutover")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(cutover) error = %v", err)
+	}
+	writeStageApproval(t, root, "cutover", cutoverHash)
+
+	report, err := PlanWorkerReconcile(root)
+	if err != nil {
+		t.Fatalf("PlanWorkerReconcile() error = %v", err)
+	}
+	cutover := findReconcileAction(t, report.Actions, "cutover")
+	if cutover.Status != "ready" || cutover.PayloadHash != cutoverHash {
+		t.Fatalf("cutover action = %+v, want ready with hash %s", cutover, cutoverHash)
+	}
+	assertContains(t, cutover.Command, "worker-cutover")
+}
+
 func TestPrepareWorkerStatePRCreateBuildsGitAndGitHubCommands(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
@@ -7965,7 +8009,7 @@ func TestPrepareWorkerStatePRCreateRejectsDDLExecutorStage(t *testing.T) {
 		t.Fatal("PrepareWorkerStatePRCreate() expected unsupported ddl stage error")
 	}
 	assertContains(t, err.Error(), `unsupported worker state PR stage "ddl"`)
-	assertContains(t, err.Error(), "only generated for export, import, cdc, and validation")
+	assertContains(t, err.Error(), "only generated for export, import, cdc, validation, and cutover")
 }
 
 func TestExecuteNextWorkerReconcileBlocksWhenLeaseHeldByAnotherHolder(t *testing.T) {
@@ -8444,6 +8488,98 @@ func TestRunValidationWorkerWritesFailedEvidenceForManualReviewItems(t *testing.
 	assertContains(t, state, "manual review items remain")
 }
 
+func TestRunCutoverWorkerRequiresApprovedCutoverApproval(t *testing.T) {
+	root := t.TempDir()
+	createCutoverReadyProject(t, root)
+	stateBefore := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/migration-state.yaml")
+	cutoverEvidenceBefore := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/cutover-evidence.md")
+	postCutoverBefore := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/post-cutover-report.md")
+
+	_, err := RunCutoverWorker(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a")
+	if err == nil {
+		t.Fatal("RunCutoverWorker() expected approval error")
+	}
+	assertContains(t, err.Error(), "cutover approval is not approved")
+
+	stateAfter := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/migration-state.yaml")
+	cutoverEvidenceAfter := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/cutover-evidence.md")
+	postCutoverAfter := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/post-cutover-report.md")
+	if stateAfter != stateBefore {
+		t.Fatalf("cutover worker changed migration state before approval\nbefore:\n%s\nafter:\n%s", stateBefore, stateAfter)
+	}
+	if cutoverEvidenceAfter != cutoverEvidenceBefore {
+		t.Fatalf("cutover worker changed cutover evidence before approval\nbefore:\n%s\nafter:\n%s", cutoverEvidenceBefore, cutoverEvidenceAfter)
+	}
+	if postCutoverAfter != postCutoverBefore {
+		t.Fatalf("cutover worker changed post-cutover report before approval\nbefore:\n%s\nafter:\n%s", postCutoverBefore, postCutoverAfter)
+	}
+}
+
+func TestRunCutoverWorkerWritesCompletedStateWhenGatesPass(t *testing.T) {
+	root := t.TempDir()
+	createCutoverReadyProject(t, root)
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "cutover")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(cutover) error = %v", err)
+	}
+	writeStageApproval(t, root, "cutover", hash)
+
+	result, err := RunCutoverWorker(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a")
+	if err != nil {
+		t.Fatalf("RunCutoverWorker() error = %v", err)
+	}
+	if result.Stage != "cutover" || result.Status != "completed" || result.Items != 5 {
+		t.Fatalf("RunCutoverWorker() result = %+v, want completed cutover with 5 gates", result)
+	}
+	if result.PayloadHash != hash {
+		t.Fatalf("PayloadHash = %q, want %q", result.PayloadHash, hash)
+	}
+
+	state := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/migration-state.yaml")
+	assertContains(t, state, "phase: completed")
+	assertContains(t, state, "status: completed")
+	assertContains(t, state, "payload_hash: "+hash)
+	assertContains(t, state, "cutover_runbook: plan/cutover-runbook.md")
+	assertContains(t, state, "cutover_evidence: evidence/cutover-evidence.md")
+	assertContains(t, state, "post_cutover_report: evidence/post-cutover-report.md")
+
+	evidence := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/cutover-evidence.md")
+	assertContains(t, evidence, "# Cutover Evidence")
+	assertContains(t, evidence, "- Status: `completed`")
+	assertContains(t, evidence, "- Payload hash: `"+hash+"`")
+	assertContains(t, evidence, "| export executor evidence | passed |")
+	assertContains(t, evidence, "| import executor evidence | passed |")
+	assertContains(t, evidence, "| validation executor evidence | passed |")
+	assertContains(t, evidence, "| validation worker status | passed |")
+	assertContains(t, evidence, "| cdc checkpoint | passed |")
+
+	report := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/post-cutover-report.md")
+	assertContains(t, report, "# Post-Cutover Report")
+	assertContains(t, report, "- Status: `completed`")
+	assertContains(t, report, "- Cutover evidence: `evidence/cutover-evidence.md`")
+}
+
+func TestRunCutoverWorkerRejectsFailedValidationEvidence(t *testing.T) {
+	root := t.TempDir()
+	createCutoverReadyProject(t, root)
+	validationHash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "validation")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(validation) error = %v", err)
+	}
+	writeExecutorValidationEvidenceForTest(t, root, validationHash, "failed")
+	cutoverHash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "cutover")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(cutover) error = %v", err)
+	}
+	writeStageApproval(t, root, "cutover", cutoverHash)
+
+	_, err = RunCutoverWorker(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a")
+	if err == nil {
+		t.Fatal("RunCutoverWorker() expected failed validation evidence error")
+	}
+	assertContains(t, err.Error(), `validation executor evidence status is "failed", want succeeded`)
+}
+
 func assertFile(t *testing.T, root, rel string) {
 	t.Helper()
 	info, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel)))
@@ -8637,6 +8773,68 @@ func createReadyExportProjectForCluster(t *testing.T, root, sourceClusterID, pro
 	writeStageApprovalForProject(t, root, sourceClusterID, projectID, "export", hash)
 }
 
+func createCutoverReadyProject(t *testing.T, root string) {
+	t.Helper()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateSchemaDraftOnly(root))
+	must(t, GenerateDataPlansOnly(root))
+	reviewExportPlanPredicates(t, root)
+	setReviewPlanStatus(t, root, "export", "reviewed")
+	exportHash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(export) error = %v", err)
+	}
+	writeStageApproval(t, root, "export", exportHash)
+	writeExportExecutorEvidenceForTest(t, root, exportHash)
+
+	setReviewPlanStatus(t, root, "import", "reviewed")
+	importHash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(import) error = %v", err)
+	}
+	writeStageApproval(t, root, "import", importHash)
+	writeImportExecutorEvidenceForTest(t, root, importHash)
+
+	must(t, GenerateCDCPlanOnly(root))
+	setCDCPlanLSNRange(t, root, "0x00000027000001f40001", "0x00000027000001f40002")
+	setReviewPlanStatus(t, root, "cdc", "reviewed")
+	cdcHash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "cdc")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(cdc) error = %v", err)
+	}
+	writeStageApproval(t, root, "cdc", cdcHash)
+	writeCDCExecutorEvidenceForTest(t, root, cdcHash)
+	if _, err := AdvanceCDCCheckpointFromExecutorEvidence(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", CDCCheckpointAdvanceSpec{Status: "caught_up"}); err != nil {
+		t.Fatalf("AdvanceCDCCheckpointFromExecutorEvidence() error = %v", err)
+	}
+
+	setReviewPlanStatus(t, root, "validation", "reviewed")
+	validationHash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "validation")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(validation) error = %v", err)
+	}
+	writeStageApproval(t, root, "validation", validationHash)
+	writeExecutorValidationEvidenceForTest(t, root, validationHash, "succeeded")
+	if _, err := RunValidationWorker(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a"); err != nil {
+		t.Fatalf("RunValidationWorker() error = %v", err)
+	}
+
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/cutover-runbook.md", `# Cutover Runbook
+
+## Preconditions
+
+- Export executor evidence succeeded.
+- Import executor evidence succeeded.
+- CDC checkpoint is caught up.
+- Validation executor evidence succeeded.
+- Application owner approved the cutover window.
+
+## Rollback Boundary
+
+Rollback is allowed until application writes are enabled on TiDB.
+`)
+}
+
 func GenerateSchemaDraftOnly(root string) error {
 	_, err := GenerateSchemaDraft(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a")
 	return err
@@ -8737,6 +8935,88 @@ func writeExportExecutorEvidenceForTest(t *testing.T, root, payloadHash string) 
   ]
 }
 `)
+}
+
+func writeImportExecutorEvidenceForTest(t *testing.T, root, payloadHash string) {
+	t.Helper()
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-import-run.json", `{
+  "stage": "import",
+  "status": "succeeded",
+  "project_id": "sales-db-to-tidb-prod-a",
+  "source_cluster_id": "prod-sqlserver-a",
+  "payload_hash": "`+payloadHash+`",
+  "commands": [
+    {
+      "id": "import-dbo.orders.000001",
+      "args": ["sqlserver2tidb-executor", "import", "--execute", "--engine", "sql-insert"],
+      "shell_command": "sqlserver2tidb-executor import --execute --engine sql-insert",
+      "exit_code": 0,
+      "output": "imported\n",
+      "started_at": "2026-01-02T03:04:05Z",
+      "completed_at": "2026-01-02T03:04:06Z",
+      "duration_ms": 1000,
+      "data_rows": 2,
+      "data_bytes": 128,
+      "data_sha256": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    }
+  ]
+}
+`)
+}
+
+func writeCDCExecutorEvidenceForTest(t *testing.T, root, payloadHash string) {
+	t.Helper()
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-cdc-run.json", `{
+  "stage": "cdc",
+  "status": "succeeded",
+  "project_id": "sales-db-to-tidb-prod-a",
+  "source_cluster_id": "prod-sqlserver-a",
+  "payload_hash": "`+payloadHash+`",
+  "commands": [
+    {
+      "id": "sales.dbo.orders",
+      "args": ["sqlserver2tidb-executor", "cdc", "--execute", "--source-object", "sales.dbo.orders", "--target-object", "app.orders", "--from-lsn", "0x00000027000001f40001", "--to-lsn", "0x00000027000001f40002"],
+      "shell_command": "sqlserver2tidb-executor cdc --execute --source-object sales.dbo.orders --target-object app.orders --from-lsn 0x00000027000001f40001 --to-lsn 0x00000027000001f40002",
+      "exit_code": 0,
+      "output": "applied changes: 0\n",
+      "started_at": "2026-01-02T03:04:05Z",
+      "completed_at": "2026-01-02T03:04:06Z",
+      "duration_ms": 1000,
+      "cdc_applied_changes": 0
+    }
+  ]
+}
+`)
+}
+
+func writeExecutorValidationEvidenceForTest(t *testing.T, root, payloadHash, status string) {
+	t.Helper()
+	exitCode := 0
+	output := "row counts match\n"
+	if status != "succeeded" {
+		exitCode = 1
+		output = "validation mismatch\n"
+	}
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-validation-run.json", fmt.Sprintf(`{
+  "stage": "validation",
+  "status": %q,
+  "project_id": "sales-db-to-tidb-prod-a",
+  "source_cluster_id": "prod-sqlserver-a",
+  "payload_hash": %q,
+  "commands": [
+    {
+      "id": "orders-row-count",
+      "args": ["sqlserver2tidb-executor", "validate-count", "--execute"],
+      "shell_command": "sqlserver2tidb-executor validate-count --execute",
+      "exit_code": %d,
+      "output": %q,
+      "started_at": "2026-01-02T03:04:05Z",
+      "completed_at": "2026-01-02T03:04:06Z",
+      "duration_ms": 1000
+    }
+  ]
+}
+`, status, payloadHash, exitCode, output))
 }
 
 func GenerateCDCPlanOnly(root string) error {

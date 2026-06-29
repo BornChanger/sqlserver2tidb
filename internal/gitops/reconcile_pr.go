@@ -71,7 +71,7 @@ func PrepareWorkerStatePRCreate(root, sourceClusterID, projectID, stage string) 
 		return WorkerStatePRCreateSpec{}, fmt.Errorf("invalid project id %q", projectID)
 	}
 	if !workerReconcileExecutableStages[stage] {
-		return WorkerStatePRCreateSpec{}, fmt.Errorf("unsupported worker state PR stage %q; state PRs are only generated for export, import, cdc, and validation", stage)
+		return WorkerStatePRCreateSpec{}, fmt.Errorf("unsupported worker state PR stage %q; state PRs are only generated for export, import, cdc, validation, and cutover", stage)
 	}
 	if err := validateProjectAddress(root, sourceClusterID, projectID); err != nil {
 		return WorkerStatePRCreateSpec{}, err
@@ -185,6 +185,9 @@ func workerStatePRFiles(result WorkerReconcileExecutionResult) []string {
 	if action.Stage == "cdc" {
 		files = append(files, filepath.ToSlash(filepath.Join(clusterPrefix, "state/cdc-checkpoint.yaml")))
 	}
+	if action.Stage == "cutover" {
+		files = append(files, filepath.ToSlash(filepath.Join(projectPrefix, "evidence/post-cutover-report.md")))
+	}
 	if result.LeaseFile != "" {
 		files = append(files, filepath.ToSlash(filepath.Join(clusterPrefix, result.LeaseFile)))
 	}
@@ -205,6 +208,9 @@ func workerStateCommitFiles(root, sourceClusterID, projectID, stage, bodyFile st
 	}
 	if stage == "cdc" {
 		files = append(files, filepath.ToSlash(filepath.Join(clusterPrefix, "state/cdc-checkpoint.yaml")))
+	}
+	if stage == "cutover" {
+		files = append(files, filepath.ToSlash(filepath.Join(projectPrefix, "evidence/post-cutover-report.md")))
 	}
 	files = append(files,
 		filepath.ToSlash(filepath.Join(clusterPrefix, "state/worker-lease.yaml")),
@@ -263,6 +269,8 @@ func workerStateFileForStage(stage string) string {
 		return "state/migration-state.yaml"
 	case "validation":
 		return "state/validation-status.yaml"
+	case "cutover":
+		return "state/migration-state.yaml"
 	default:
 		return ""
 	}
@@ -278,6 +286,8 @@ func workerEvidenceFileForStage(stage string) string {
 		return "evidence/cdc-catchup.json"
 	case "validation":
 		return "evidence/validation-report.md"
+	case "cutover":
+		return "evidence/cutover-evidence.md"
 	default:
 		return ""
 	}
