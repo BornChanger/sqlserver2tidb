@@ -80,13 +80,13 @@ func PrepareWorkerExecutor(root, sourceClusterID, projectID, stage string, spec 
 		}
 		result.Commands = commands
 	case "export":
-		commands, err := prepareExportExecutorCommands(projectDir, binary, sourceClusterID, projectID, spec)
+		commands, err := prepareExportExecutorCommands(root, projectDir, binary, sourceClusterID, projectID, spec)
 		if err != nil {
 			return WorkerExecutorSpec{}, err
 		}
 		result.Commands = commands
 	case "import":
-		commands, err := prepareImportExecutorCommands(projectDir, binary, sourceClusterID, projectID, spec)
+		commands, err := prepareImportExecutorCommands(root, projectDir, binary, sourceClusterID, projectID, spec)
 		if err != nil {
 			return WorkerExecutorSpec{}, err
 		}
@@ -98,7 +98,7 @@ func PrepareWorkerExecutor(root, sourceClusterID, projectID, stage string, spec 
 		}
 		result.Commands = commands
 	case "validation":
-		commands, err := prepareValidationExecutorCommands(projectDir, binary, sourceClusterID, projectID, spec)
+		commands, err := prepareValidationExecutorCommands(root, projectDir, binary, sourceClusterID, projectID, spec)
 		if err != nil {
 			return WorkerExecutorSpec{}, err
 		}
@@ -144,7 +144,7 @@ func requireReviewedSchemaDiff(path string) error {
 	return nil
 }
 
-func prepareExportExecutorCommands(projectDir, binary, sourceClusterID, projectID string, spec WorkerExecutorPrepareSpec) ([]WorkerExecutorCommand, error) {
+func prepareExportExecutorCommands(root, projectDir, binary, sourceClusterID, projectID string, spec WorkerExecutorPrepareSpec) ([]WorkerExecutorCommand, error) {
 	planPath := filepath.Join(projectDir, "plan", "export-plan.yaml")
 	format, err := readPlanTopLevelScalar(planPath, "format")
 	if err != nil {
@@ -170,6 +170,9 @@ func prepareExportExecutorCommands(projectDir, binary, sourceClusterID, projectI
 		return nil, err
 	}
 	if err := validateExportPlanChunkOutputURIs(chunks); err != nil {
+		return nil, err
+	}
+	if err := requireExportPlanMatchesInventory(root, sourceClusterID, projectDir, chunks); err != nil {
 		return nil, err
 	}
 	sourceConnectionStringEnv := strings.TrimSpace(spec.SourceConnectionStringEnv)
@@ -199,7 +202,7 @@ func prepareExportExecutorCommands(projectDir, binary, sourceClusterID, projectI
 	return commands, nil
 }
 
-func prepareImportExecutorCommands(projectDir, binary, sourceClusterID, projectID string, spec WorkerExecutorPrepareSpec) ([]WorkerExecutorCommand, error) {
+func prepareImportExecutorCommands(root, projectDir, binary, sourceClusterID, projectID string, spec WorkerExecutorPrepareSpec) ([]WorkerExecutorCommand, error) {
 	planPath := filepath.Join(projectDir, "plan", "import-plan.yaml")
 	engine, err := readPlanTopLevelScalar(planPath, "engine")
 	if err != nil {
@@ -228,6 +231,9 @@ func prepareImportExecutorCommands(projectDir, binary, sourceClusterID, projectI
 		return nil, err
 	}
 	if err := validateImportPlanJobFields(engine, jobs); err != nil {
+		return nil, err
+	}
+	if err := requireImportPlanMatchesInventory(root, sourceClusterID, projectDir, engine, jobs); err != nil {
 		return nil, err
 	}
 	targetConnectionStringEnv := strings.TrimSpace(spec.TargetConnectionStringEnv)
@@ -303,9 +309,12 @@ func prepareCDCExecutorCommands(root, projectDir, binary, sourceClusterID, proje
 	return commands, nil
 }
 
-func prepareValidationExecutorCommands(projectDir, binary, sourceClusterID, projectID string, spec WorkerExecutorPrepareSpec) ([]WorkerExecutorCommand, error) {
+func prepareValidationExecutorCommands(root, projectDir, binary, sourceClusterID, projectID string, spec WorkerExecutorPrepareSpec) ([]WorkerExecutorCommand, error) {
 	checks, err := readValidationPlanChecks(filepath.Join(projectDir, "plan", "validation-plan.yaml"))
 	if err != nil {
+		return nil, err
+	}
+	if err := requireValidationPlanMatchesInventory(root, sourceClusterID, projectDir, checks); err != nil {
 		return nil, err
 	}
 	sourceConnectionStringEnv := strings.TrimSpace(spec.SourceConnectionStringEnv)

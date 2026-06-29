@@ -5709,6 +5709,58 @@ func TestPrepareWorkerExecutorBuildsExportCommandsWhenApprovedHashMatches(t *tes
 	assertContains(t, first.ShellCommand, "--output-uri https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full/dbo.orders.000001.csv")
 }
 
+func TestPrepareWorkerExecutorRejectsExportSourceSchemaDrift(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateDataPlansOnly(root))
+	reviewExportPlanPredicates(t, root)
+	setReviewPlanStatus(t, root, "export", "reviewed")
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(export) error = %v", err)
+	}
+	writeStageApproval(t, root, "export", hash)
+
+	inventoryRel := "clusters/prod-sqlserver-a/inventory/inventory.json"
+	inventory := readFile(t, root, inventoryRel)
+	inventory = strings.Replace(inventory, `"name": "orders"`, `"name": "orders_archive"`, 1)
+	writeFileForTest(t, root, inventoryRel, inventory)
+
+	_, err = PrepareWorkerExecutor(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export", WorkerExecutorPrepareSpec{})
+	if err == nil {
+		t.Fatal("PrepareWorkerExecutor() expected export source schema drift error")
+	}
+	assertContains(t, err.Error(), "source schema drift")
+	assertContains(t, err.Error(), "sales.dbo.orders")
+}
+
+func TestPrepareWorkerExecutorRejectsExportReviewedSchemaColumnDrift(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateSchemaDraftOnly(root))
+	setSchemaDiffStatus(t, root, "reviewed")
+	must(t, GenerateDataPlansOnly(root))
+	reviewExportPlanPredicates(t, root)
+	setReviewPlanStatus(t, root, "export", "reviewed")
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(export) error = %v", err)
+	}
+	writeStageApproval(t, root, "export", hash)
+
+	inventoryRel := "clusters/prod-sqlserver-a/inventory/inventory.json"
+	inventory := readFile(t, root, inventoryRel)
+	inventory = strings.Replace(inventory, `"name": "customer_name"`, `"name": "customer_full_name"`, 1)
+	writeFileForTest(t, root, inventoryRel, inventory)
+
+	_, err = PrepareWorkerExecutor(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export", WorkerExecutorPrepareSpec{})
+	if err == nil {
+		t.Fatal("PrepareWorkerExecutor() expected export reviewed schema column drift error")
+	}
+	assertContains(t, err.Error(), "source schema drift")
+	assertContains(t, err.Error(), "customer_full_name")
+}
+
 func TestPrepareWorkerExecutorPassesExportGzipCompression(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
@@ -5967,6 +6019,39 @@ func TestPrepareWorkerExecutorPassesImportJobFields(t *testing.T) {
 	first := spec.Commands[0]
 	assertContains(t, first.ShellCommand, "--fields 'id,customer_name,@sqlserver2tidb_null_bitmap'")
 	assertArgValue(t, first.Args, "--fields", "id,customer_name,@sqlserver2tidb_null_bitmap")
+}
+
+func TestPrepareWorkerExecutorRejectsImportSourceSchemaDrift(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateSchemaDraftOnly(root))
+	_, err := GenerateDataMovementPlans(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", DataMovementPlanSpec{
+		ObjectURIPrefix: "file:///tmp/sqlserver2tidb/full",
+		ChunkSizeRows:   1000000,
+		ExportFormat:    "csv",
+		ImportEngine:    "tidb-import-into",
+	})
+	if err != nil {
+		t.Fatalf("GenerateDataMovementPlans() error = %v", err)
+	}
+	setReviewPlanStatus(t, root, "import", "reviewed")
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(import) error = %v", err)
+	}
+	writeStageApproval(t, root, "import", hash)
+
+	inventoryRel := "clusters/prod-sqlserver-a/inventory/inventory.json"
+	inventory := readFile(t, root, inventoryRel)
+	inventory = strings.Replace(inventory, `"name": "customer_name"`, `"name": "customer_full_name"`, 1)
+	writeFileForTest(t, root, inventoryRel, inventory)
+
+	_, err = PrepareWorkerExecutor(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import", WorkerExecutorPrepareSpec{})
+	if err == nil {
+		t.Fatal("PrepareWorkerExecutor() expected import source schema drift error")
+	}
+	assertContains(t, err.Error(), "source schema drift")
+	assertContains(t, err.Error(), "customer_full_name")
 }
 
 func TestPrepareWorkerExecutorRejectsInvalidTiDBImportIntoImportJobFields(t *testing.T) {
@@ -6599,6 +6684,64 @@ checks:
 	assertContains(t, first.ShellCommand, "--target-predicate 'id >= 1'")
 	assertContains(t, first.ShellCommand, "--source-connection-string-env SQLSERVER_VALIDATE_DSN")
 	assertContains(t, first.ShellCommand, "--target-connection-string-env TIDB_VALIDATE_DSN")
+}
+
+func TestPrepareWorkerExecutorRejectsValidationSourceSchemaDrift(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/validation-plan.yaml", `status: reviewed
+checks:
+  - id: orders-row-count
+    type: row_count
+    source_object: sales.dbo.orders
+    target_object: app.orders
+`)
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "validation")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(validation) error = %v", err)
+	}
+	writeStageApproval(t, root, "validation", hash)
+
+	inventoryRel := "clusters/prod-sqlserver-a/inventory/inventory.json"
+	inventory := readFile(t, root, inventoryRel)
+	inventory = strings.Replace(inventory, `"name": "orders"`, `"name": "orders_archive"`, 1)
+	writeFileForTest(t, root, inventoryRel, inventory)
+
+	_, err = PrepareWorkerExecutor(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "validation", WorkerExecutorPrepareSpec{})
+	if err == nil {
+		t.Fatal("PrepareWorkerExecutor() expected validation source schema drift error")
+	}
+	assertContains(t, err.Error(), "source schema drift")
+	assertContains(t, err.Error(), "sales.dbo.orders")
+}
+
+func TestPrepareWorkerExecutorRejectsValidationQuerySourceSchemaDrift(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/validation-plan.yaml", `status: reviewed
+checks:
+  - id: orders-business-sql
+    type: business_sql
+    source_sql: "SELECT SUM(id) FROM sales.dbo.orders"
+    target_sql: "SELECT SUM(id) FROM app.orders"
+`)
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "validation")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(validation) error = %v", err)
+	}
+	writeStageApproval(t, root, "validation", hash)
+
+	inventoryRel := "clusters/prod-sqlserver-a/inventory/inventory.json"
+	inventory := readFile(t, root, inventoryRel)
+	inventory = strings.Replace(inventory, `"name": "orders"`, `"name": "orders_archive"`, 1)
+	writeFileForTest(t, root, inventoryRel, inventory)
+
+	_, err = PrepareWorkerExecutor(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "validation", WorkerExecutorPrepareSpec{})
+	if err == nil {
+		t.Fatal("PrepareWorkerExecutor() expected validation query source schema drift error")
+	}
+	assertContains(t, err.Error(), "source schema drift")
+	assertContains(t, err.Error(), "sales.dbo.orders")
 }
 
 func TestPrepareWorkerExecutorRejectsInvalidValidationTargetObjectName(t *testing.T) {

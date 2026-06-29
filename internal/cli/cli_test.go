@@ -2910,6 +2910,31 @@ func TestRunWorkerExecutorValidationDryRunCommand(t *testing.T) {
 	}, &stdout, &stderr); code != 0 {
 		t.Fatalf("create-project code = %d, stderr = %s", code, stderr.String())
 	}
+	inventoryPath := filepath.Join(root, "clusters", "prod-sqlserver-a", "inventory", "inventory.json")
+	if err := os.WriteFile(inventoryPath, []byte(`{
+  "status": "discovered",
+  "databases": [
+    {
+      "name": "sales",
+      "schemas": [
+        {
+          "name": "dbo",
+          "tables": [
+            {
+              "name": "orders",
+              "columns": [
+                {"name": "id", "type": "int"}
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	validationPlanPath := filepath.Join(root, "clusters", "prod-sqlserver-a", "projects", "sales-db-to-tidb-prod-a", "plan", "validation-plan.yaml")
 	if err := os.WriteFile(validationPlanPath, []byte(`status: reviewed
 checks:
