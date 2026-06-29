@@ -943,6 +943,15 @@ func (w *httpExportWriter) Close() error {
 	return uploadErr
 }
 
+func (w *httpExportWriter) Abort() error {
+	if w == nil || w.writer == nil {
+		return nil
+	}
+	closeErr := w.writer.CloseWithError(errors.New("CSV export upload aborted"))
+	uploadErr := <-w.done
+	return errors.Join(closeErr, uploadErr)
+}
+
 func buildSQLServerExportQuery(sourceObject, predicate string) (string, error) {
 	parts := strings.Split(strings.TrimSpace(sourceObject), ".")
 	if len(parts) != 2 && len(parts) != 3 {

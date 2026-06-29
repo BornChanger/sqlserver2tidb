@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 const nonEmptyTargetTestDriverName = "sqlserver2tidb_non_empty_target_test"
@@ -2364,6 +2365,40 @@ func TestWriteCSVExportRowsHTTPGzipOutput(t *testing.T) {
 	want := "id,name,__sqlserver2tidb_null_bitmap\n1,Ada,00\n2,,01\n"
 	if string(decompressed) != want {
 		t.Fatalf("decompressed HTTP body = %q, want %q", string(decompressed), want)
+	}
+}
+
+func TestCSVExportOutputAbortCancelsHTTPUpload(t *testing.T) {
+	readErrCh := make(chan error, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, err := io.Copy(io.Discard, r.Body)
+		readErrCh <- err
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+
+	output, err := openCSVExportOutput(context.Background(), exportOutputURI{
+		scheme: "http",
+		uri:    server.URL + "/dbo.orders.000001.csv",
+	}, compressionNone)
+	if err != nil {
+		t.Fatalf("openCSVExportOutput() error = %v", err)
+	}
+
+	if _, err := output.Write([]byte("partial csv")); err != nil {
+		t.Fatalf("output.Write() error = %v", err)
+	}
+	if err := output.Abort(); err == nil {
+		t.Fatal("output.Abort() error = nil, want canceled upload error")
+	}
+
+	select {
+	case err := <-readErrCh:
+		if err == nil {
+			t.Fatal("HTTP server body read error = nil, want aborted request error")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for HTTP server read")
 	}
 }
 
