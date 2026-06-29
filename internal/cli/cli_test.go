@@ -1334,8 +1334,8 @@ func TestReusableWorkerExecutorCommandEvidenceRequiresDataAuditForExportAndSQLIn
 		ShellCommand: renderArgsForEvidence(remoteImportIntoArgs),
 		ExitCode:     0,
 	}
-	if !isReusableWorkerExecutorCommandEvidence("import", remoteImportIntoEvidence, remoteImportIntoArgs) {
-		t.Fatal("GCS tidb-import-into evidence without data audit was not reusable")
+	if isReusableWorkerExecutorCommandEvidence("import", remoteImportIntoEvidence, remoteImportIntoArgs) {
+		t.Fatal("GCS tidb-import-into evidence without data audit was reusable, want rerun")
 	}
 }
 

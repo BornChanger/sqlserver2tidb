@@ -404,10 +404,8 @@ func executorEvidenceImportSourceNeedsLocalAudit(sourceURI string) bool {
 		return true
 	}
 	switch parsed.Scheme {
-	case "", "file", "s3":
+	case "", "file", "s3", "gs":
 		return true
-	case "gs":
-		return false
 	default:
 		return true
 	}

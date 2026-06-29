@@ -7,6 +7,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/csv"
 	"encoding/hex"
 	"errors"
@@ -674,19 +675,27 @@ func parseExportOutputURI(outputURI string) (exportOutputURI, error) {
 			scheme: parsed.Scheme,
 			uri:    parsed.String(),
 		}, nil
-	case "s3":
+	case "s3", "gs":
 		if strings.TrimSpace(parsed.Host) == "" {
-			return exportOutputURI{}, fmt.Errorf("s3 output URI bucket is required")
+			return exportOutputURI{}, fmt.Errorf("%s output URI bucket is required", parsed.Scheme)
 		}
 		if strings.Trim(strings.TrimSpace(parsed.Path), "/") == "" {
-			return exportOutputURI{}, fmt.Errorf("s3 output URI object path is required")
+			return exportOutputURI{}, fmt.Errorf("%s output URI object path is required", parsed.Scheme)
+		}
+		return exportOutputURI{
+			scheme: parsed.Scheme,
+			uri:    parsed.String(),
+		}, nil
+	case "azblob":
+		if _, err := parseAzureBlobTarget(parsed.String()); err != nil {
+			return exportOutputURI{}, err
 		}
 		return exportOutputURI{
 			scheme: parsed.Scheme,
 			uri:    parsed.String(),
 		}, nil
 	default:
-		return exportOutputURI{}, fmt.Errorf("only file://, http://, https://, and s3:// output URIs are supported for CSV export")
+		return exportOutputURI{}, fmt.Errorf("only file://, http://, https://, s3://, gs://, and azblob:// output URIs are supported for CSV export")
 	}
 }
 
@@ -707,6 +716,32 @@ func prepareExportOutputURI(output exportOutputURI) error {
 			return err
 		}
 		if _, err := buildS3ObjectURL(config, target); err != nil {
+			return err
+		}
+		return nil
+	case "gs":
+		target, err := parseGCSObjectTarget(output.uri)
+		if err != nil {
+			return err
+		}
+		config, err := loadGCSExportConfig()
+		if err != nil {
+			return err
+		}
+		if _, err := buildGCSObjectURL(config, target); err != nil {
+			return err
+		}
+		return nil
+	case "azblob":
+		target, err := parseAzureBlobTarget(output.uri)
+		if err != nil {
+			return err
+		}
+		config, err := loadAzureBlobExportConfig()
+		if err != nil {
+			return err
+		}
+		if _, err := buildAzureBlobURL(config, target); err != nil {
 			return err
 		}
 		return nil
@@ -806,6 +841,18 @@ func openCSVExportOutput(ctx context.Context, output exportOutputURI, compressio
 		base = writer
 	case "s3":
 		writer, err := newS3ExportWriter(ctx, output.uri, compression)
+		if err != nil {
+			return nil, err
+		}
+		base = writer
+	case "gs":
+		writer, err := newGCSExportWriter(ctx, output.uri, compression)
+		if err != nil {
+			return nil, err
+		}
+		base = writer
+	case "azblob":
+		writer, err := newAzureBlobExportWriter(ctx, output.uri, compression)
 		if err != nil {
 			return nil, err
 		}
@@ -1380,6 +1427,541 @@ func hmacSHA256(key, data []byte) []byte {
 	mac := hmac.New(sha256.New, key)
 	_, _ = mac.Write(data)
 	return mac.Sum(nil)
+}
+
+type objectExportWriter struct {
+	ctx         context.Context
+	file        *os.File
+	tempPath    string
+	label       string
+	compression string
+	upload      func(context.Context, string, string) error
+	closed      bool
+}
+
+func newObjectExportWriter(ctx context.Context, label, compression string, upload func(context.Context, string, string) error) (*objectExportWriter, error) {
+	file, err := os.CreateTemp("", "sqlserver2tidb-"+label+"-export-*.tmp")
+	if err != nil {
+		return nil, fmt.Errorf("create %s export temp file: %w", label, err)
+	}
+	return &objectExportWriter{
+		ctx:         ctx,
+		file:        file,
+		tempPath:    file.Name(),
+		label:       label,
+		compression: compression,
+		upload:      upload,
+	}, nil
+}
+
+func (w *objectExportWriter) Write(p []byte) (int, error) {
+	label := "object"
+	if w != nil && strings.TrimSpace(w.label) != "" {
+		label = w.label
+	}
+	if w == nil || w.file == nil {
+		return 0, fmt.Errorf("%s export writer is closed", label)
+	}
+	return w.file.Write(p)
+}
+
+func (w *objectExportWriter) Close() error {
+	if w == nil || w.closed {
+		return nil
+	}
+	w.closed = true
+	if err := w.file.Close(); err != nil {
+		w.file = nil
+		_ = os.Remove(w.tempPath)
+		return err
+	}
+	w.file = nil
+	defer os.Remove(w.tempPath)
+	return w.upload(w.ctx, w.tempPath, w.compression)
+}
+
+func (w *objectExportWriter) Abort() error {
+	if w == nil || w.closed {
+		return nil
+	}
+	w.closed = true
+	var closeErr error
+	if w.file != nil {
+		closeErr = w.file.Close()
+		w.file = nil
+	}
+	removeErr := os.Remove(w.tempPath)
+	if errors.Is(removeErr, os.ErrNotExist) {
+		removeErr = nil
+	}
+	return errors.Join(closeErr, removeErr)
+}
+
+type gcsObjectTarget struct {
+	Bucket string
+	Key    string
+}
+
+type gcsConfig struct {
+	AccessKey string
+	SecretKey string
+	Endpoint  string
+}
+
+func newGCSExportWriter(ctx context.Context, outputURI, compression string) (*objectExportWriter, error) {
+	target, err := parseGCSObjectTarget(outputURI)
+	if err != nil {
+		return nil, err
+	}
+	return newObjectExportWriter(ctx, "gcs", compression, func(ctx context.Context, tempPath, compression string) error {
+		return uploadGCSExportTempFile(ctx, tempPath, target, compression)
+	})
+}
+
+func parseGCSObjectTarget(outputURI string) (gcsObjectTarget, error) {
+	return parseGCSObjectURI(outputURI, "output URI")
+}
+
+func parseGCSObjectSource(sourceURI string) (gcsObjectTarget, error) {
+	return parseGCSObjectURI(sourceURI, "source URI")
+}
+
+func parseGCSObjectURI(objectURI, kind string) (gcsObjectTarget, error) {
+	parsed, err := url.Parse(strings.TrimSpace(objectURI))
+	if err != nil {
+		return gcsObjectTarget{}, fmt.Errorf("parse GCS %s: %w", kind, err)
+	}
+	if parsed.Scheme != "gs" {
+		return gcsObjectTarget{}, fmt.Errorf("GCS %s must use gs://", kind)
+	}
+	if strings.TrimSpace(parsed.Host) == "" {
+		return gcsObjectTarget{}, fmt.Errorf("gs %s bucket is required", kind)
+	}
+	key := strings.TrimPrefix(parsed.Path, "/")
+	if strings.TrimSpace(key) == "" {
+		return gcsObjectTarget{}, fmt.Errorf("gs %s object path is required", kind)
+	}
+	return gcsObjectTarget{Bucket: parsed.Host, Key: key}, nil
+}
+
+func uploadGCSExportTempFile(ctx context.Context, tempPath string, target gcsObjectTarget, compression string) error {
+	config, err := loadGCSExportConfig()
+	if err != nil {
+		return err
+	}
+	file, err := os.Open(tempPath)
+	if err != nil {
+		return fmt.Errorf("open GCS export temp file: %w", err)
+	}
+	defer file.Close()
+	stat, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("stat GCS export temp file: %w", err)
+	}
+	payloadHash, err := sha256HexReader(file)
+	if err != nil {
+		return fmt.Errorf("hash GCS export payload: %w", err)
+	}
+	requestURL, err := buildGCSObjectURL(config, target)
+	if err != nil {
+		return err
+	}
+	response, err := doCSVHTTPRequestWithRetry(ctx, "upload GCS CSV output", func() (*http.Request, error) {
+		body := io.NewSectionReader(file, 0, stat.Size())
+		request, err := http.NewRequestWithContext(ctx, http.MethodPut, requestURL.String(), body)
+		if err != nil {
+			return nil, fmt.Errorf("create GCS object upload request: %w", err)
+		}
+		request.ContentLength = stat.Size()
+		request.Header.Set("Content-Type", "text/csv")
+		if compression == compressionGzip {
+			request.Header.Set("Content-Encoding", "gzip")
+		}
+		signGCSRequest(request, config, payloadHash, time.Now().UTC())
+		return request, nil
+	})
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	_, _ = io.Copy(io.Discard, response.Body)
+	return nil
+}
+
+func openGCSImportSource(ctx context.Context, sourceURI string) (io.ReadCloser, error) {
+	target, err := parseGCSObjectSource(sourceURI)
+	if err != nil {
+		return nil, err
+	}
+	config, err := loadGCSImportConfig()
+	if err != nil {
+		return nil, err
+	}
+	requestURL, err := buildGCSObjectURL(config, target)
+	if err != nil {
+		return nil, err
+	}
+	response, err := doCSVHTTPRequestWithRetry(ctx, "download GCS CSV source", func() (*http.Request, error) {
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL.String(), nil)
+		if err != nil {
+			return nil, fmt.Errorf("create GCS CSV source request: %w", err)
+		}
+		request.Header.Set("Accept-Encoding", "identity")
+		signGCSRequest(request, config, "UNSIGNED-PAYLOAD", time.Now().UTC())
+		return request, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return response.Body, nil
+}
+
+func loadGCSExportConfig() (gcsConfig, error) {
+	return loadGCSConfig("gcs export output")
+}
+
+func loadGCSImportConfig() (gcsConfig, error) {
+	return loadGCSConfig("gcs import source")
+}
+
+func loadGCSConfig(purpose string) (gcsConfig, error) {
+	config := gcsConfig{
+		AccessKey: firstNonEmptyEnv("GCS_ACCESS_KEY_ID", "GOOG_ACCESS_KEY_ID"),
+		SecretKey: firstNonEmptyEnv("GCS_SECRET_ACCESS_KEY", "GOOG_SECRET_ACCESS_KEY"),
+		Endpoint:  strings.TrimSpace(os.Getenv("GCS_ENDPOINT_URL")),
+	}
+	if config.Endpoint == "" {
+		config.Endpoint = "https://storage.googleapis.com"
+	}
+	if config.AccessKey == "" {
+		return gcsConfig{}, fmt.Errorf("GCS_ACCESS_KEY_ID is required for %s", purpose)
+	}
+	if config.SecretKey == "" {
+		return gcsConfig{}, fmt.Errorf("GCS_SECRET_ACCESS_KEY is required for %s", purpose)
+	}
+	return config, nil
+}
+
+func buildGCSObjectURL(config gcsConfig, target gcsObjectTarget) (*url.URL, error) {
+	endpoint, err := url.Parse(config.Endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("parse GCS_ENDPOINT_URL: %w", err)
+	}
+	if endpoint.Scheme == "" || endpoint.Host == "" {
+		return nil, fmt.Errorf("GCS_ENDPOINT_URL must include scheme and host")
+	}
+	endpoint.RawQuery = ""
+	endpoint.Fragment = ""
+	endpoint.Path = joinURLPath(endpoint.Path, target.Bucket, target.Key)
+	return endpoint, nil
+}
+
+func signGCSRequest(request *http.Request, config gcsConfig, payloadHash string, now time.Time) {
+	googDate := now.Format("20060102T150405Z")
+	dateStamp := now.Format("20060102")
+	request.Header.Set("X-Goog-Date", googDate)
+	request.Header.Set("X-Goog-Content-Sha256", payloadHash)
+
+	signedHeaders := gcsSignedHeaderNames(request)
+	canonicalRequest := strings.Join([]string{
+		request.Method,
+		s3CanonicalURI(request.URL),
+		s3CanonicalQuery(request.URL),
+		s3CanonicalHeaders(request, signedHeaders),
+		strings.Join(signedHeaders, ";"),
+		payloadHash,
+	}, "\n")
+	scope := strings.Join([]string{dateStamp, "auto", "storage", "goog4_request"}, "/")
+	stringToSign := strings.Join([]string{
+		"GOOG4-HMAC-SHA256",
+		googDate,
+		scope,
+		hexSHA256String(canonicalRequest),
+	}, "\n")
+	signature := hex.EncodeToString(hmacSHA256(gcsSigningKey(config.SecretKey, dateStamp), []byte(stringToSign)))
+	request.Header.Set("Authorization", fmt.Sprintf(
+		"GOOG4-HMAC-SHA256 Credential=%s/%s, SignedHeaders=%s, Signature=%s",
+		config.AccessKey,
+		scope,
+		strings.Join(signedHeaders, ";"),
+		signature,
+	))
+}
+
+func gcsSignedHeaderNames(request *http.Request) []string {
+	names := []string{"host", "x-goog-content-sha256", "x-goog-date"}
+	if request.Header.Get("Content-Type") != "" {
+		names = append(names, "content-type")
+	}
+	if request.Header.Get("Content-Encoding") != "" {
+		names = append(names, "content-encoding")
+	}
+	sort.Strings(names)
+	return names
+}
+
+func gcsSigningKey(secretKey, dateStamp string) []byte {
+	dateKey := hmacSHA256([]byte("GOOG4"+secretKey), []byte(dateStamp))
+	regionKey := hmacSHA256(dateKey, []byte("auto"))
+	serviceKey := hmacSHA256(regionKey, []byte("storage"))
+	return hmacSHA256(serviceKey, []byte("goog4_request"))
+}
+
+type azureBlobTarget struct {
+	Container string
+	Blob      string
+}
+
+type azureBlobConfig struct {
+	Account    string
+	AccountKey []byte
+	Endpoint   string
+}
+
+const azureBlobServiceVersion = "2023-11-03"
+
+func newAzureBlobExportWriter(ctx context.Context, outputURI, compression string) (*objectExportWriter, error) {
+	target, err := parseAzureBlobTarget(outputURI)
+	if err != nil {
+		return nil, err
+	}
+	return newObjectExportWriter(ctx, "azure-blob", compression, func(ctx context.Context, tempPath, compression string) error {
+		return uploadAzureBlobExportTempFile(ctx, tempPath, target, compression)
+	})
+}
+
+func parseAzureBlobTarget(outputURI string) (azureBlobTarget, error) {
+	return parseAzureBlobURI(outputURI, "output URI")
+}
+
+func parseAzureBlobSource(sourceURI string) (azureBlobTarget, error) {
+	return parseAzureBlobURI(sourceURI, "source URI")
+}
+
+func parseAzureBlobURI(objectURI, kind string) (azureBlobTarget, error) {
+	parsed, err := url.Parse(strings.TrimSpace(objectURI))
+	if err != nil {
+		return azureBlobTarget{}, fmt.Errorf("parse Azure Blob %s: %w", kind, err)
+	}
+	if parsed.Scheme != "azblob" {
+		return azureBlobTarget{}, fmt.Errorf("Azure Blob %s must use azblob://", kind)
+	}
+	if strings.TrimSpace(parsed.Host) == "" {
+		return azureBlobTarget{}, fmt.Errorf("azblob %s container is required", kind)
+	}
+	blob := strings.TrimPrefix(parsed.Path, "/")
+	if strings.TrimSpace(blob) == "" {
+		return azureBlobTarget{}, fmt.Errorf("azblob %s blob path is required", kind)
+	}
+	return azureBlobTarget{Container: parsed.Host, Blob: blob}, nil
+}
+
+func uploadAzureBlobExportTempFile(ctx context.Context, tempPath string, target azureBlobTarget, compression string) error {
+	config, err := loadAzureBlobExportConfig()
+	if err != nil {
+		return err
+	}
+	file, err := os.Open(tempPath)
+	if err != nil {
+		return fmt.Errorf("open Azure Blob export temp file: %w", err)
+	}
+	defer file.Close()
+	stat, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("stat Azure Blob export temp file: %w", err)
+	}
+	requestURL, err := buildAzureBlobURL(config, target)
+	if err != nil {
+		return err
+	}
+	response, err := doCSVHTTPRequestWithRetry(ctx, "upload Azure Blob CSV output", func() (*http.Request, error) {
+		body := io.NewSectionReader(file, 0, stat.Size())
+		request, err := http.NewRequestWithContext(ctx, http.MethodPut, requestURL.String(), body)
+		if err != nil {
+			return nil, fmt.Errorf("create Azure Blob upload request: %w", err)
+		}
+		request.ContentLength = stat.Size()
+		request.Header.Set("Content-Type", "text/csv")
+		request.Header.Set("X-Ms-Blob-Type", "BlockBlob")
+		if compression == compressionGzip {
+			request.Header.Set("Content-Encoding", "gzip")
+		}
+		signAzureBlobRequest(request, config, time.Now().UTC())
+		return request, nil
+	})
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	_, _ = io.Copy(io.Discard, response.Body)
+	return nil
+}
+
+func openAzureBlobImportSource(ctx context.Context, sourceURI string) (io.ReadCloser, error) {
+	target, err := parseAzureBlobSource(sourceURI)
+	if err != nil {
+		return nil, err
+	}
+	config, err := loadAzureBlobImportConfig()
+	if err != nil {
+		return nil, err
+	}
+	requestURL, err := buildAzureBlobURL(config, target)
+	if err != nil {
+		return nil, err
+	}
+	response, err := doCSVHTTPRequestWithRetry(ctx, "download Azure Blob CSV source", func() (*http.Request, error) {
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL.String(), nil)
+		if err != nil {
+			return nil, fmt.Errorf("create Azure Blob CSV source request: %w", err)
+		}
+		request.Header.Set("Accept-Encoding", "identity")
+		signAzureBlobRequest(request, config, time.Now().UTC())
+		return request, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return response.Body, nil
+}
+
+func loadAzureBlobExportConfig() (azureBlobConfig, error) {
+	return loadAzureBlobConfig("azure blob export output")
+}
+
+func loadAzureBlobImportConfig() (azureBlobConfig, error) {
+	return loadAzureBlobConfig("azure blob import source")
+}
+
+func loadAzureBlobConfig(purpose string) (azureBlobConfig, error) {
+	account := strings.TrimSpace(os.Getenv("AZURE_STORAGE_ACCOUNT"))
+	rawKey := strings.TrimSpace(os.Getenv("AZURE_STORAGE_KEY"))
+	if account == "" {
+		return azureBlobConfig{}, fmt.Errorf("AZURE_STORAGE_ACCOUNT is required for %s", purpose)
+	}
+	if rawKey == "" {
+		return azureBlobConfig{}, fmt.Errorf("AZURE_STORAGE_KEY is required for %s", purpose)
+	}
+	key, err := base64.StdEncoding.DecodeString(rawKey)
+	if err != nil {
+		return azureBlobConfig{}, fmt.Errorf("AZURE_STORAGE_KEY must be base64-encoded for %s: %w", purpose, err)
+	}
+	return azureBlobConfig{
+		Account:    account,
+		AccountKey: key,
+		Endpoint:   strings.TrimSpace(os.Getenv("AZURE_BLOB_ENDPOINT_URL")),
+	}, nil
+}
+
+func buildAzureBlobURL(config azureBlobConfig, target azureBlobTarget) (*url.URL, error) {
+	if config.Endpoint == "" {
+		return &url.URL{
+			Scheme: "https",
+			Host:   config.Account + ".blob.core.windows.net",
+			Path:   joinURLPath("", target.Container, target.Blob),
+		}, nil
+	}
+	endpoint, err := url.Parse(config.Endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("parse AZURE_BLOB_ENDPOINT_URL: %w", err)
+	}
+	if endpoint.Scheme == "" || endpoint.Host == "" {
+		return nil, fmt.Errorf("AZURE_BLOB_ENDPOINT_URL must include scheme and host")
+	}
+	endpoint.RawQuery = ""
+	endpoint.Fragment = ""
+	endpoint.Path = joinURLPath(endpoint.Path, target.Container, target.Blob)
+	return endpoint, nil
+}
+
+func signAzureBlobRequest(request *http.Request, config azureBlobConfig, now time.Time) {
+	request.Header.Set("X-Ms-Date", now.UTC().Format(http.TimeFormat))
+	request.Header.Set("X-Ms-Version", azureBlobServiceVersion)
+	stringToSign := azureBlobStringToSign(request, config.Account)
+	signature := base64.StdEncoding.EncodeToString(hmacSHA256(config.AccountKey, []byte(stringToSign)))
+	request.Header.Set("Authorization", "SharedKey "+config.Account+":"+signature)
+}
+
+func azureBlobStringToSign(request *http.Request, account string) string {
+	contentLength := ""
+	if request.ContentLength > 0 {
+		contentLength = strconv.FormatInt(request.ContentLength, 10)
+	}
+	standardHeaders := []string{
+		request.Method,
+		azureBlobHeaderValue(request, "Content-Encoding"),
+		azureBlobHeaderValue(request, "Content-Language"),
+		contentLength,
+		azureBlobHeaderValue(request, "Content-MD5"),
+		azureBlobHeaderValue(request, "Content-Type"),
+		"",
+		azureBlobHeaderValue(request, "If-Modified-Since"),
+		azureBlobHeaderValue(request, "If-Match"),
+		azureBlobHeaderValue(request, "If-None-Match"),
+		azureBlobHeaderValue(request, "If-Unmodified-Since"),
+		azureBlobHeaderValue(request, "Range"),
+	}
+	return strings.Join(standardHeaders, "\n") + "\n" +
+		azureBlobCanonicalizedHeaders(request) +
+		azureBlobCanonicalizedResource(account, request.URL)
+}
+
+func azureBlobHeaderValue(request *http.Request, name string) string {
+	return strings.Join(strings.Fields(request.Header.Get(name)), " ")
+}
+
+func azureBlobCanonicalizedHeaders(request *http.Request) string {
+	values := make(map[string]string)
+	for name, headerValues := range request.Header {
+		lowerName := strings.ToLower(name)
+		if !strings.HasPrefix(lowerName, "x-ms-") {
+			continue
+		}
+		cleaned := make([]string, 0, len(headerValues))
+		for _, value := range headerValues {
+			cleaned = append(cleaned, strings.Join(strings.Fields(value), " "))
+		}
+		values[lowerName] = strings.Join(cleaned, ",")
+	}
+	names := make([]string, 0, len(values))
+	for name := range values {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var b strings.Builder
+	for _, name := range names {
+		fmt.Fprintf(&b, "%s:%s\n", name, values[name])
+	}
+	return b.String()
+}
+
+func azureBlobCanonicalizedResource(account string, u *url.URL) string {
+	path := u.EscapedPath()
+	if path == "" {
+		path = "/"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "/%s%s", account, path)
+	query := u.Query()
+	if len(query) == 0 {
+		return b.String()
+	}
+	keys := make([]string, 0, len(query))
+	for key := range query {
+		keys = append(keys, strings.ToLower(key))
+	}
+	sort.Strings(keys)
+	seen := make(map[string]struct{}, len(keys))
+	for _, lowerKey := range keys {
+		if _, ok := seen[lowerKey]; ok {
+			continue
+		}
+		seen[lowerKey] = struct{}{}
+		values := append([]string(nil), query[lowerKey]...)
+		sort.Strings(values)
+		fmt.Fprintf(&b, "\n%s:%s", lowerKey, strings.Join(values, ","))
+	}
+	return b.String()
 }
 
 func buildSQLServerExportQuery(sourceObject, predicate string) (string, error) {
@@ -2149,19 +2731,27 @@ func parseImportSourceURI(sourceURI string) (importSourceURI, error) {
 			scheme: parsed.Scheme,
 			uri:    parsed.String(),
 		}, nil
-	case "s3":
+	case "s3", "gs":
 		if strings.TrimSpace(parsed.Host) == "" {
-			return importSourceURI{}, fmt.Errorf("s3 source URI bucket is required")
+			return importSourceURI{}, fmt.Errorf("%s source URI bucket is required", parsed.Scheme)
 		}
 		if strings.Trim(strings.TrimSpace(parsed.Path), "/") == "" {
-			return importSourceURI{}, fmt.Errorf("s3 source URI object path is required")
+			return importSourceURI{}, fmt.Errorf("%s source URI object path is required", parsed.Scheme)
+		}
+		return importSourceURI{
+			scheme: parsed.Scheme,
+			uri:    parsed.String(),
+		}, nil
+	case "azblob":
+		if _, err := parseAzureBlobSource(parsed.String()); err != nil {
+			return importSourceURI{}, err
 		}
 		return importSourceURI{
 			scheme: parsed.Scheme,
 			uri:    parsed.String(),
 		}, nil
 	default:
-		return importSourceURI{}, fmt.Errorf("only file://, http://, https://, and s3:// source URIs are supported for sql-insert import")
+		return importSourceURI{}, fmt.Errorf("only file://, http://, https://, s3://, gs://, and azblob:// source URIs are supported for sql-insert import")
 	}
 }
 
@@ -2199,6 +2789,18 @@ func openParsedCSVImportSource(ctx context.Context, source importSourceURI) (io.
 		return response.Body, nil
 	case "s3":
 		reader, err := openS3ImportSource(ctx, source.uri)
+		if err != nil {
+			return nil, err
+		}
+		return reader, nil
+	case "gs":
+		reader, err := openGCSImportSource(ctx, source.uri)
+		if err != nil {
+			return nil, err
+		}
+		return reader, nil
+	case "azblob":
+		reader, err := openAzureBlobImportSource(ctx, source.uri)
 		if err != nil {
 			return nil, err
 		}
@@ -2629,15 +3231,8 @@ func validateTiDBImportIntoFields(fields []string, label string) error {
 }
 
 func requireTiDBImportIntoFieldsForUnsupportedRemoteSource(sourceURI string, fields []string) error {
-	parsed, err := url.Parse(strings.TrimSpace(sourceURI))
-	if err != nil {
+	if _, err := url.Parse(strings.TrimSpace(sourceURI)); err != nil {
 		return fmt.Errorf("parse IMPORT INTO source URI: %w", err)
-	}
-	switch parsed.Scheme {
-	case "gs":
-		if len(fields) == 0 {
-			return fmt.Errorf("fields are required for %s tidb-import-into source URI because remote header inspection is not implemented", parsed.Scheme)
-		}
 	}
 	return nil
 }
@@ -2675,6 +3270,13 @@ func inspectTiDBImportIntoSource(ctx context.Context, sourceURI string, fields [
 	}
 	if parsed.Scheme == "s3" {
 		reader, err := openS3ImportSource(ctx, sourceURI)
+		if err != nil {
+			return tiDBImportIntoSourceInspection{}, err
+		}
+		return inspectTiDBImportIntoCSVReader(reader, fields)
+	}
+	if parsed.Scheme == "gs" {
+		reader, err := openGCSImportSource(ctx, sourceURI)
 		if err != nil {
 			return tiDBImportIntoSourceInspection{}, err
 		}
@@ -2785,6 +3387,13 @@ func auditTiDBImportIntoSource(ctx context.Context, sourceURI string) (dataChann
 		}
 		return auditTiDBImportIntoCSVReader(reader)
 	}
+	if parsed.Scheme == "gs" {
+		reader, err := openGCSImportSource(ctx, sourceURI)
+		if err != nil {
+			return dataChannelAudit{}, true, err
+		}
+		return auditTiDBImportIntoCSVReader(reader)
+	}
 	return auditTiDBImportIntoLocalSource(sourceURI)
 }
 
@@ -2840,6 +3449,20 @@ func readTiDBImportIntoFieldsFromSource(ctx context.Context, sourceURI string) (
 	}
 	if parsed.Scheme == "s3" {
 		reader, err := openS3ImportSource(ctx, sourceURI)
+		if err != nil {
+			return nil, err
+		}
+		defer reader.Close()
+
+		csvReader := csv.NewReader(reader)
+		columns, err := csvReader.Read()
+		if err != nil {
+			return nil, fmt.Errorf("read IMPORT INTO CSV header: %w", err)
+		}
+		return buildTiDBImportIntoFieldsFromCSVHeader(columns)
+	}
+	if parsed.Scheme == "gs" {
+		reader, err := openGCSImportSource(ctx, sourceURI)
 		if err != nil {
 			return nil, err
 		}

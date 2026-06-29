@@ -223,6 +223,70 @@ func TestRunExportDryRunAcceptsS3OutputURI(t *testing.T) {
 	assertOutputContains(t, stdout.String(), "output uri: s3://migration/prod/full/dbo.orders.000001.csv")
 }
 
+func TestRunExportDryRunAcceptsGCSAndAzureBlobOutputURIs(t *testing.T) {
+	for _, outputURI := range []string{
+		"gs://migration/prod/full/dbo.orders.000001.csv",
+		"azblob://migration/prod/full/dbo.orders.000001.csv",
+	} {
+		t.Run(outputURI, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+
+			code := Run([]string{
+				"export",
+				"--root", ".",
+				"--source-cluster-id", "prod-sqlserver-a",
+				"--project-id", "sales-db-to-tidb-prod-a",
+				"--chunk-id", "dbo.orders.000001",
+				"--source-object", "sales.dbo.orders",
+				"--target-object", "app.orders",
+				"--output-uri", outputURI,
+			}, &stdout, &stderr)
+			if code != 0 {
+				t.Fatalf("export dry-run code = %d, stderr = %s", code, stderr.String())
+			}
+			assertOutputContains(t, stdout.String(), "output uri: "+outputURI)
+		})
+	}
+}
+
+func TestRunExportDryRunRejectsMalformedAzureBlobOutputURI(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		outputURI string
+		want      string
+	}{
+		{
+			name:      "missing container",
+			outputURI: "azblob:///prod/full/dbo.orders.000001.csv",
+			want:      "executor export: azblob output URI container is required",
+		},
+		{
+			name:      "missing blob path",
+			outputURI: "azblob://migration",
+			want:      "executor export: azblob output URI blob path is required",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+
+			code := Run([]string{
+				"export",
+				"--root", ".",
+				"--source-cluster-id", "prod-sqlserver-a",
+				"--project-id", "sales-db-to-tidb-prod-a",
+				"--chunk-id", "dbo.orders.000001",
+				"--source-object", "sales.dbo.orders",
+				"--target-object", "app.orders",
+				"--output-uri", tc.outputURI,
+			}, &stdout, &stderr)
+			if code == 0 {
+				t.Fatalf("export dry-run code = 0, want non-zero; stdout = %s", stdout.String())
+			}
+			assertOutputContains(t, stderr.String(), tc.want)
+		})
+	}
+}
+
 func TestRunExportDryRunRejectsUnsupportedOutputURI(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 
@@ -239,7 +303,7 @@ func TestRunExportDryRunRejectsUnsupportedOutputURI(t *testing.T) {
 	if code == 0 {
 		t.Fatalf("export dry-run code = 0, want non-zero; stdout = %s", stdout.String())
 	}
-	assertOutputContains(t, stderr.String(), "executor export: only file://, http://, https://, and s3:// output URIs are supported for CSV export")
+	assertOutputContains(t, stderr.String(), "executor export: only file://, http://, https://, s3://, gs://, and azblob:// output URIs are supported for CSV export")
 }
 
 func TestRunExportDryRunRejectsTODOExportPredicate(t *testing.T) {
@@ -344,6 +408,68 @@ func TestRunImportDryRunAcceptsSQLInsertS3SourceURI(t *testing.T) {
 	assertOutputContains(t, stdout.String(), "source uri: s3://migration/prod/full/dbo.orders.000001.csv")
 }
 
+func TestRunImportDryRunAcceptsSQLInsertGCSAndAzureBlobSourceURIs(t *testing.T) {
+	for _, sourceURI := range []string{
+		"gs://migration/prod/full/dbo.orders.000001.csv",
+		"azblob://migration/prod/full/dbo.orders.000001.csv",
+	} {
+		t.Run(sourceURI, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+
+			code := Run([]string{
+				"import",
+				"--root", ".",
+				"--source-cluster-id", "prod-sqlserver-a",
+				"--project-id", "sales-db-to-tidb-prod-a",
+				"--job-id", "import-dbo.orders.000001",
+				"--target-object", "app.orders",
+				"--source-uri", sourceURI,
+			}, &stdout, &stderr)
+			if code != 0 {
+				t.Fatalf("import dry-run code = %d, stderr = %s", code, stderr.String())
+			}
+			assertOutputContains(t, stdout.String(), "source uri: "+sourceURI)
+		})
+	}
+}
+
+func TestRunImportDryRunRejectsMalformedAzureBlobSourceURI(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		sourceURI string
+		want      string
+	}{
+		{
+			name:      "missing container",
+			sourceURI: "azblob:///prod/full/dbo.orders.000001.csv",
+			want:      "executor import: azblob source URI container is required",
+		},
+		{
+			name:      "missing blob path",
+			sourceURI: "azblob://migration",
+			want:      "executor import: azblob source URI blob path is required",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+
+			code := Run([]string{
+				"import",
+				"--root", ".",
+				"--source-cluster-id", "prod-sqlserver-a",
+				"--project-id", "sales-db-to-tidb-prod-a",
+				"--job-id", "import-dbo.orders.000001",
+				"--target-object", "app.orders",
+				"--source-uri", tc.sourceURI,
+			}, &stdout, &stderr)
+			if code == 0 {
+				t.Fatalf("import dry-run code = 0, want non-zero; stdout = %s", stdout.String())
+			}
+			assertOutputContains(t, stderr.String(), tc.want)
+		})
+	}
+}
+
 func TestRunImportDryRunRejectsTiDBImportIntoGzipCompression(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 
@@ -380,7 +506,7 @@ func TestRunImportDryRunRejectsUnsupportedSQLInsertSourceURI(t *testing.T) {
 	if code == 0 {
 		t.Fatalf("import dry-run code = 0, want non-zero; stdout = %s", stdout.String())
 	}
-	assertOutputContains(t, stderr.String(), "executor import: only file://, http://, https://, and s3:// source URIs are supported for sql-insert import")
+	assertOutputContains(t, stderr.String(), "executor import: only file://, http://, https://, s3://, gs://, and azblob:// source URIs are supported for sql-insert import")
 }
 
 func TestRunImportDryRunRejectsUnsupportedTiDBImportIntoSourceURI(t *testing.T) {
@@ -549,7 +675,7 @@ func TestRunImportExecuteRejectsUnsupportedSQLInsertSourceURI(t *testing.T) {
 	if code == 0 {
 		t.Fatalf("import execute code = 0, want non-zero")
 	}
-	assertOutputContains(t, stderr.String(), "executor import: only file://, http://, https://, and s3:// source URIs are supported for sql-insert import")
+	assertOutputContains(t, stderr.String(), "executor import: only file://, http://, https://, s3://, gs://, and azblob:// source URIs are supported for sql-insert import")
 }
 
 func TestRunImportExecuteRequiresConnectionStringEnv(t *testing.T) {
@@ -717,6 +843,28 @@ func TestRunImportDryRunAcceptsS3TiDBImportIntoSourceWithoutFields(t *testing.T)
 	assertOutputContains(t, output, "source uri: s3://migration/prod/full/dbo.orders.000001.csv")
 }
 
+func TestRunImportDryRunAcceptsGCSTiDBImportIntoSourceWithoutFields(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"import",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--job-id", "import-dbo.orders.000001",
+		"--target-object", "app.orders",
+		"--source-uri", "gs://migration/prod/full/dbo.orders.000001.csv",
+		"--engine", "tidb-import-into",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("import dry-run code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	assertOutputContains(t, output, "executor import dry run")
+	assertOutputContains(t, output, "engine: tidb-import-into")
+	assertOutputContains(t, output, "source uri: gs://migration/prod/full/dbo.orders.000001.csv")
+}
+
 func TestExecuteTiDBImportValidatesBatchSizeBeforeSourceURI(t *testing.T) {
 	_, err := executeTiDBImport(context.Background(), importExecuteSpec{
 		TargetObject:              "app.orders",
@@ -728,18 +876,6 @@ func TestExecuteTiDBImportValidatesBatchSizeBeforeSourceURI(t *testing.T) {
 		t.Fatal("executeTiDBImport() error = nil, want import batch size error")
 	}
 	assertOutputContains(t, err.Error(), "executor import: import batch size must be positive")
-}
-
-func TestExecuteTiDBImportIntoRejectsGCSRemoteSourceWithoutFieldsBeforeConnectionString(t *testing.T) {
-	_, err := executeTiDBImportInto(context.Background(), importExecuteSpec{
-		TargetObject:              "app.orders",
-		SourceURI:                 "gs://migration/prod/full/dbo.orders.000001.csv",
-		TargetConnectionStringEnv: "MISSING_TIDB_DSN",
-	})
-	if err == nil {
-		t.Fatal("executeTiDBImportInto() error = nil, want GCS remote fields error")
-	}
-	assertOutputContains(t, err.Error(), "executor import: fields are required for gs tidb-import-into source URI because remote header inspection is not implemented")
 }
 
 func TestRunImportExecuteRequireEmptyTargetRejectsNonEmptyTargetBeforeOpeningSource(t *testing.T) {
@@ -1350,6 +1486,55 @@ func TestInspectTiDBImportIntoS3SourceDerivesFieldsAndAuditWithSingleGET(t *test
 	}
 }
 
+func TestInspectTiDBImportIntoGCSSourceDerivesFieldsAndAuditWithSingleGET(t *testing.T) {
+	data := []byte("id,name,__sqlserver2tidb_null_bitmap\n1,Ada,00\n2,Lin,00\n")
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.Method != http.MethodGet {
+			t.Fatalf("method = %q, want GET", r.Method)
+		}
+		if r.URL.EscapedPath() != "/migration-bucket/full/orders.csv" {
+			t.Fatalf("request path = %q, want path-style bucket/object path", r.URL.EscapedPath())
+		}
+		if r.Header.Get("Accept-Encoding") != "identity" {
+			t.Fatalf("Accept-Encoding = %q, want identity", r.Header.Get("Accept-Encoding"))
+		}
+		assertOutputContains(t, r.Header.Get("Authorization"), "GOOG4-HMAC-SHA256 Credential=GOOGACCESS/")
+		_, _ = w.Write(data)
+	}))
+	defer server.Close()
+	t.Setenv("GCS_ACCESS_KEY_ID", "GOOGACCESS")
+	t.Setenv("GCS_SECRET_ACCESS_KEY", "GOOGSECRET")
+	t.Setenv("GCS_ENDPOINT_URL", server.URL)
+
+	inspection, err := inspectTiDBImportIntoSource(context.Background(), "gs://migration-bucket/full/orders.csv", nil)
+	if err != nil {
+		t.Fatalf("inspectTiDBImportIntoSource() error = %v", err)
+	}
+	wantFields := []string{"id", "name", "@sqlserver2tidb_null_bitmap"}
+	if !reflect.DeepEqual(inspection.Fields, wantFields) {
+		t.Fatalf("inspection fields = %v, want %v", inspection.Fields, wantFields)
+	}
+	if !inspection.HasAudit {
+		t.Fatal("inspection HasAudit = false, want true")
+	}
+	if inspection.Audit.Rows != 2 {
+		t.Fatalf("audit rows = %d, want 2", inspection.Audit.Rows)
+	}
+	if inspection.Audit.Bytes != int64(len(data)) {
+		t.Fatalf("audit bytes = %d, want %d", inspection.Audit.Bytes, len(data))
+	}
+	sum := sha256.Sum256(data)
+	wantSHA := "sha256:" + hex.EncodeToString(sum[:])
+	if inspection.Audit.SHA256 != wantSHA {
+		t.Fatalf("audit sha = %q, want %q", inspection.Audit.SHA256, wantSHA)
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("GCS GET requests = %d, want 1", requests.Load())
+	}
+}
+
 func TestReadCSVImportFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "orders.csv")
 	if err := os.WriteFile(path, []byte("id,name\n1,Ada\n2,\n"), 0o644); err != nil {
@@ -1535,6 +1720,114 @@ func TestReadCSVImportS3Source(t *testing.T) {
 		t.Fatalf("X-Amz-Content-Sha256 = %q, want UNSIGNED-PAYLOAD", contentSHA)
 	}
 	assertOutputContains(t, authorization, "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/")
+	if strings.Join(columns, ",") != "id,name" {
+		t.Fatalf("columns = %v, want [id name]", columns)
+	}
+	if len(records) != 2 {
+		t.Fatalf("records len = %d, want 2", len(records))
+	}
+	if records[1][0] != "2" || records[1][1] != "Lin" {
+		t.Fatalf("records[1] = %v, want [2 Lin]", records[1])
+	}
+}
+
+func TestReadCSVImportGCSSource(t *testing.T) {
+	var method string
+	var requestPath string
+	var acceptEncoding string
+	var authorization string
+	var contentSHA string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method = r.Method
+		requestPath = r.URL.EscapedPath()
+		acceptEncoding = r.Header.Get("Accept-Encoding")
+		authorization = r.Header.Get("Authorization")
+		contentSHA = r.Header.Get("X-Goog-Content-Sha256")
+		w.Header().Set("Content-Type", "text/csv")
+		_, _ = io.WriteString(w, "id,name\n1,Ada\n2,Lin\n")
+	}))
+	defer server.Close()
+	t.Setenv("GCS_ACCESS_KEY_ID", "GOOGACCESS")
+	t.Setenv("GCS_SECRET_ACCESS_KEY", "GOOGSECRET")
+	t.Setenv("GCS_ENDPOINT_URL", server.URL)
+
+	source, err := openCSVImportFile("gs://migration-bucket/full/orders.csv")
+	if err != nil {
+		t.Fatalf("openCSVImportFile() error = %v", err)
+	}
+	defer source.Close()
+
+	columns, records, err := readCSVImportRecords(source)
+	if err != nil {
+		t.Fatalf("readCSVImportRecords() error = %v", err)
+	}
+	if method != http.MethodGet {
+		t.Fatalf("method = %q, want GET", method)
+	}
+	if requestPath != "/migration-bucket/full/orders.csv" {
+		t.Fatalf("request path = %q, want path-style bucket/object path", requestPath)
+	}
+	if acceptEncoding != "identity" {
+		t.Fatalf("Accept-Encoding = %q, want identity", acceptEncoding)
+	}
+	if contentSHA != "UNSIGNED-PAYLOAD" {
+		t.Fatalf("X-Goog-Content-Sha256 = %q, want UNSIGNED-PAYLOAD", contentSHA)
+	}
+	assertOutputContains(t, authorization, "GOOG4-HMAC-SHA256 Credential=GOOGACCESS/")
+	if strings.Join(columns, ",") != "id,name" {
+		t.Fatalf("columns = %v, want [id name]", columns)
+	}
+	if len(records) != 2 {
+		t.Fatalf("records len = %d, want 2", len(records))
+	}
+	if records[1][0] != "2" || records[1][1] != "Lin" {
+		t.Fatalf("records[1] = %v, want [2 Lin]", records[1])
+	}
+}
+
+func TestReadCSVImportAzureBlobSource(t *testing.T) {
+	var method string
+	var requestPath string
+	var acceptEncoding string
+	var authorization string
+	var version string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method = r.Method
+		requestPath = r.URL.EscapedPath()
+		acceptEncoding = r.Header.Get("Accept-Encoding")
+		authorization = r.Header.Get("Authorization")
+		version = r.Header.Get("X-Ms-Version")
+		w.Header().Set("Content-Type", "text/csv")
+		_, _ = io.WriteString(w, "id,name\n1,Ada\n2,Lin\n")
+	}))
+	defer server.Close()
+	t.Setenv("AZURE_STORAGE_ACCOUNT", "devstoreaccount1")
+	t.Setenv("AZURE_STORAGE_KEY", "c2VjcmV0")
+	t.Setenv("AZURE_BLOB_ENDPOINT_URL", server.URL)
+
+	source, err := openCSVImportFile("azblob://migration/full/orders.csv")
+	if err != nil {
+		t.Fatalf("openCSVImportFile() error = %v", err)
+	}
+	defer source.Close()
+
+	columns, records, err := readCSVImportRecords(source)
+	if err != nil {
+		t.Fatalf("readCSVImportRecords() error = %v", err)
+	}
+	if method != http.MethodGet {
+		t.Fatalf("method = %q, want GET", method)
+	}
+	if requestPath != "/migration/full/orders.csv" {
+		t.Fatalf("request path = %q, want container/blob path", requestPath)
+	}
+	if acceptEncoding != "identity" {
+		t.Fatalf("Accept-Encoding = %q, want identity", acceptEncoding)
+	}
+	if version == "" {
+		t.Fatal("X-Ms-Version is empty")
+	}
+	assertOutputContains(t, authorization, "SharedKey devstoreaccount1:")
 	if strings.Join(columns, ",") != "id,name" {
 		t.Fatalf("columns = %v, want [id name]", columns)
 	}
@@ -2372,7 +2665,7 @@ func TestRunExportExecuteRejectsUnsupportedOutputURI(t *testing.T) {
 	if code == 0 {
 		t.Fatalf("export execute code = 0, want non-zero")
 	}
-	assertOutputContains(t, stderr.String(), "executor export: only file://, http://, https://, and s3:// output URIs are supported for CSV export")
+	assertOutputContains(t, stderr.String(), "executor export: only file://, http://, https://, s3://, gs://, and azblob:// output URIs are supported for CSV export")
 }
 
 func TestRunExportExecuteAcceptsHTTPOutputURIBeforeConnectionStringEnv(t *testing.T) {
@@ -2805,6 +3098,140 @@ func TestWriteCSVExportRowsS3Output(t *testing.T) {
 	assertOutputContains(t, authorization, "Signature=")
 }
 
+func TestWriteCSVExportRowsGCSOutput(t *testing.T) {
+	var method string
+	var requestPath string
+	var authorization string
+	var contentSHA string
+	var body bytes.Buffer
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method = r.Method
+		requestPath = r.URL.EscapedPath()
+		authorization = r.Header.Get("Authorization")
+		contentSHA = r.Header.Get("X-Goog-Content-Sha256")
+		if _, err := io.Copy(&body, r.Body); err != nil {
+			t.Fatalf("read request body: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	t.Setenv("GCS_ACCESS_KEY_ID", "GOOGACCESS")
+	t.Setenv("GCS_SECRET_ACCESS_KEY", "GOOGSECRET")
+	t.Setenv("GCS_ENDPOINT_URL", server.URL)
+
+	output, err := openCSVExportOutput(context.Background(), exportOutputURI{
+		scheme: "gs",
+		uri:    "gs://migration-bucket/full/dbo.orders.000001.csv",
+	}, compressionNone)
+	if err != nil {
+		t.Fatalf("openCSVExportOutput() error = %v", err)
+	}
+	rows := &fakeExportRows{
+		columns: []string{"id", "name"},
+		values: [][]any{
+			{int64(1), "Ada"},
+			{int64(2), nil},
+		},
+	}
+
+	exportedRows, err := writeCSVExportRows(output, rows)
+	if err != nil {
+		t.Fatalf("writeCSVExportRows() error = %v", err)
+	}
+	if exportedRows != 2 {
+		t.Fatalf("exported rows = %d, want 2", exportedRows)
+	}
+	if err := output.Close(); err != nil {
+		t.Fatalf("output.Close() error = %v", err)
+	}
+
+	if method != http.MethodPut {
+		t.Fatalf("method = %q, want PUT", method)
+	}
+	if requestPath != "/migration-bucket/full/dbo.orders.000001.csv" {
+		t.Fatalf("request path = %q, want path-style bucket/object path", requestPath)
+	}
+	wantBody := "id,name,__sqlserver2tidb_null_bitmap\n1,Ada,00\n2,,01\n"
+	if body.String() != wantBody {
+		t.Fatalf("request body = %q, want %q", body.String(), wantBody)
+	}
+	sum := sha256.Sum256([]byte(wantBody))
+	if contentSHA != hex.EncodeToString(sum[:]) {
+		t.Fatalf("X-Goog-Content-Sha256 = %q, want payload hash", contentSHA)
+	}
+	assertOutputContains(t, authorization, "GOOG4-HMAC-SHA256 Credential=GOOGACCESS/")
+	assertOutputContains(t, authorization, "SignedHeaders=")
+	assertOutputContains(t, authorization, "Signature=")
+}
+
+func TestWriteCSVExportRowsAzureBlobOutput(t *testing.T) {
+	var method string
+	var requestPath string
+	var authorization string
+	var blobType string
+	var version string
+	var body bytes.Buffer
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method = r.Method
+		requestPath = r.URL.EscapedPath()
+		authorization = r.Header.Get("Authorization")
+		blobType = r.Header.Get("X-Ms-Blob-Type")
+		version = r.Header.Get("X-Ms-Version")
+		if _, err := io.Copy(&body, r.Body); err != nil {
+			t.Fatalf("read request body: %v", err)
+		}
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+	t.Setenv("AZURE_STORAGE_ACCOUNT", "devstoreaccount1")
+	t.Setenv("AZURE_STORAGE_KEY", "c2VjcmV0")
+	t.Setenv("AZURE_BLOB_ENDPOINT_URL", server.URL)
+
+	output, err := openCSVExportOutput(context.Background(), exportOutputURI{
+		scheme: "azblob",
+		uri:    "azblob://migration/full/dbo.orders.000001.csv",
+	}, compressionNone)
+	if err != nil {
+		t.Fatalf("openCSVExportOutput() error = %v", err)
+	}
+	rows := &fakeExportRows{
+		columns: []string{"id", "name"},
+		values: [][]any{
+			{int64(1), "Ada"},
+			{int64(2), nil},
+		},
+	}
+
+	exportedRows, err := writeCSVExportRows(output, rows)
+	if err != nil {
+		t.Fatalf("writeCSVExportRows() error = %v", err)
+	}
+	if exportedRows != 2 {
+		t.Fatalf("exported rows = %d, want 2", exportedRows)
+	}
+	if err := output.Close(); err != nil {
+		t.Fatalf("output.Close() error = %v", err)
+	}
+
+	if method != http.MethodPut {
+		t.Fatalf("method = %q, want PUT", method)
+	}
+	if requestPath != "/migration/full/dbo.orders.000001.csv" {
+		t.Fatalf("request path = %q, want container/blob path", requestPath)
+	}
+	if blobType != "BlockBlob" {
+		t.Fatalf("X-Ms-Blob-Type = %q, want BlockBlob", blobType)
+	}
+	if version == "" {
+		t.Fatal("X-Ms-Version is empty")
+	}
+	wantBody := "id,name,__sqlserver2tidb_null_bitmap\n1,Ada,00\n2,,01\n"
+	if body.String() != wantBody {
+		t.Fatalf("request body = %q, want %q", body.String(), wantBody)
+	}
+	assertOutputContains(t, authorization, "SharedKey devstoreaccount1:")
+}
+
 func TestWriteCSVExportRowsS3OutputRetriesTransientStatus(t *testing.T) {
 	var requests atomic.Int64
 	var bodies []string
@@ -2955,6 +3382,18 @@ func TestCSVExportOutputAbortDoesNotStartHTTPUpload(t *testing.T) {
 	case <-requestStarted:
 		t.Fatal("HTTP upload started after abort, want no request")
 	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func TestObjectExportWriterNilWriteReturnsError(t *testing.T) {
+	var writer *objectExportWriter
+
+	_, err := writer.Write([]byte("csv"))
+	if err == nil {
+		t.Fatal("Write() error = nil, want closed writer error")
+	}
+	if !strings.Contains(err.Error(), "object export writer is closed") {
+		t.Fatalf("Write() error = %v, want closed object writer error", err)
 	}
 }
 

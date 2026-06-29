@@ -2567,7 +2567,7 @@ jobs:
 	}
 }
 
-func TestValidateRepoReportsTiDBImportIntoGCSRemoteSourceWithoutFields(t *testing.T) {
+func TestValidateRepoAcceptsTiDBImportIntoGCSRemoteSourceWithoutFields(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
 	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml", `status: reviewed
@@ -2583,10 +2583,9 @@ jobs:
 	if err != nil {
 		t.Fatalf("ValidateRepo() error = %v", err)
 	}
-	if report.Valid {
-		t.Fatalf("ValidateRepo() valid = true, want false")
+	if !report.Valid {
+		t.Fatalf("ValidateRepo() valid = false, errors = %v", report.Errors)
 	}
-	assertContains(t, strings.Join(report.Errors, "\n"), "invalid import plan clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml: import job import-dbo.orders.000001 fields are required for gs tidb-import-into source_uri because remote header inspection is not implemented")
 }
 
 func TestValidateRepoAcceptsTiDBImportIntoEngine(t *testing.T) {
@@ -4431,6 +4430,51 @@ func TestGenerateExecutorEvidencePRDraftRequiresS3TiDBImportIntoDataAudit(t *tes
 	assertContains(t, err.Error(), "executor evidence command import-dbo.orders.000001 requires data_rows, data_bytes, and data_sha256 for import data audit")
 }
 
+func TestGenerateExecutorEvidencePRDraftRequiresGCSTiDBImportIntoDataAudit(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	_, err := GenerateDataMovementPlans(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", DataMovementPlanSpec{
+		ObjectURIPrefix: "gs://migration-bucket/sqlserver2tidb/full",
+		ChunkSizeRows:   1000,
+		ExportFormat:    "csv",
+		ImportEngine:    "tidb-import-into",
+	})
+	must(t, err)
+	setReviewPlanStatus(t, root, "import", "reviewed")
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(import) error = %v", err)
+	}
+	writeStageApproval(t, root, "import", hash)
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-import-run.json", `{
+  "stage": "import",
+  "status": "succeeded",
+  "project_id": "sales-db-to-tidb-prod-a",
+  "source_cluster_id": "prod-sqlserver-a",
+  "payload_hash": "`+hash+`",
+  "generated_at": "2026-01-02T03:04:07Z",
+  "commands": [
+    {
+      "id": "import-dbo.orders.000001",
+      "args": ["sqlserver2tidb-executor", "import", "--execute", "--engine", "tidb-import-into", "--source-uri", "gs://migration-bucket/sqlserver2tidb/full/dbo.orders.000001.csv"],
+      "shell_command": "sqlserver2tidb-executor import --execute --engine tidb-import-into --source-uri gs://migration-bucket/sqlserver2tidb/full/dbo.orders.000001.csv",
+      "exit_code": 0,
+      "output": "executor import completed\n",
+      "started_at": "2026-01-02T03:04:05Z",
+      "completed_at": "2026-01-02T03:04:06Z",
+      "duration_ms": 1000
+    }
+  ]
+	}
+`)
+
+	_, err = GenerateExecutorEvidencePRDraft(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import")
+	if err == nil {
+		t.Fatal("GenerateExecutorEvidencePRDraft() expected missing GCS tidb-import-into data audit error")
+	}
+	assertContains(t, err.Error(), "executor evidence command import-dbo.orders.000001 requires data_rows, data_bytes, and data_sha256 for import data audit")
+}
+
 func TestGenerateExecutorEvidencePRDraftRejectsFailedStatusWithoutFailedCommand(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
@@ -5104,6 +5148,68 @@ func TestGenerateDataMovementPlansSupportsS3PrefixForSQLInsertEngine(t *testing.
 	importPlan := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml")
 	assertContains(t, exportPlan, "output_uri: s3://migration/prod/full/dbo.orders.000001.csv")
 	assertContains(t, importPlan, "source_uri: s3://migration/prod/full/dbo.orders.000001.csv")
+}
+
+func TestGenerateDataMovementPlansSupportsGCSAndAzureBlobPrefixesForSQLInsertEngine(t *testing.T) {
+	for _, objectURIPrefix := range []string{
+		"gs://migration/prod/full",
+		"azblob://migration/prod/full",
+	} {
+		t.Run(objectURIPrefix, func(t *testing.T) {
+			root := t.TempDir()
+			createValidationWorkerProject(t, root, dataWorkerInventory())
+
+			_, err := GenerateDataMovementPlans(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", DataMovementPlanSpec{
+				ObjectURIPrefix: objectURIPrefix,
+				ChunkSizeRows:   1000000,
+				ExportFormat:    "csv",
+				ImportEngine:    "sql-insert",
+			})
+			if err != nil {
+				t.Fatalf("GenerateDataMovementPlans() error = %v", err)
+			}
+			exportPlan := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/export-plan.yaml")
+			importPlan := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml")
+			assertContains(t, exportPlan, "output_uri: "+objectURIPrefix+"/dbo.orders.000001.csv")
+			assertContains(t, importPlan, "source_uri: "+objectURIPrefix+"/dbo.orders.000001.csv")
+		})
+	}
+}
+
+func TestGenerateDataMovementPlansSupportsGCSPrefixForTiDBImportIntoEngine(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+
+	_, err := GenerateDataMovementPlans(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", DataMovementPlanSpec{
+		ObjectURIPrefix: "gs://migration/prod/full",
+		ChunkSizeRows:   1000000,
+		ExportFormat:    "csv",
+		ImportEngine:    "tidb-import-into",
+	})
+	if err != nil {
+		t.Fatalf("GenerateDataMovementPlans() error = %v", err)
+	}
+	exportPlan := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/export-plan.yaml")
+	importPlan := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml")
+	assertContains(t, exportPlan, "output_uri: gs://migration/prod/full/dbo.orders.000001.csv")
+	assertContains(t, importPlan, "source_uri: gs://migration/prod/full/dbo.orders.000001.csv")
+	assertContains(t, importPlan, "fields:\n      - \"id\"\n      - \"customer_name\"\n      - \"@sqlserver2tidb_null_bitmap\"")
+}
+
+func TestGenerateDataMovementPlansRejectsAzureBlobPrefixForTiDBImportIntoEngine(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+
+	_, err := GenerateDataMovementPlans(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", DataMovementPlanSpec{
+		ObjectURIPrefix: "azblob://migration/prod/full",
+		ChunkSizeRows:   1000000,
+		ExportFormat:    "csv",
+		ImportEngine:    "tidb-import-into",
+	})
+	if err == nil {
+		t.Fatal("GenerateDataMovementPlans() expected Azure Blob prefix error for tidb-import-into")
+	}
+	assertContains(t, err.Error(), "object URI prefix scheme azblob is not supported by executable tidb-import-into data plans")
 }
 
 func TestGenerateDataMovementPlansRejectsUnsupportedObjectURIScheme(t *testing.T) {
@@ -5926,6 +6032,38 @@ jobs:
 	}
 }
 
+func TestPrepareWorkerExecutorAcceptsTiDBImportIntoGCSRemoteSourceWithoutFields(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml", `status: reviewed
+project_id: sales-db-to-tidb-prod-a
+source_cluster_id: prod-sqlserver-a
+engine: tidb-import-into
+mode: append
+jobs:
+  - id: import-dbo.orders.000001
+    target_object: app.orders
+    source_uri: gs://migration-bucket/full/dbo.orders.000001.csv
+    depends_on_export_chunk: dbo.orders.000001
+`)
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(import) error = %v", err)
+	}
+	writeStageApproval(t, root, "import", hash)
+
+	spec, err := PrepareWorkerExecutor(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import", WorkerExecutorPrepareSpec{})
+	if err != nil {
+		t.Fatalf("PrepareWorkerExecutor() error = %v", err)
+	}
+	if len(spec.Commands) != 1 {
+		t.Fatalf("commands len = %d, want 1", len(spec.Commands))
+	}
+	if strings.Contains(spec.Commands[0].ShellCommand, "--fields") {
+		t.Fatalf("command = %q, should not require reviewed fields for GCS tidb-import-into", spec.Commands[0].ShellCommand)
+	}
+}
+
 func TestPrepareWorkerExecutorRejectsTiDBImportIntoHTTPSourceURI(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
@@ -6703,7 +6841,7 @@ func TestRunImportWorkerRejectsInvalidTiDBImportIntoImportJobFields(t *testing.T
 	assertContains(t, err.Error(), "import job import-dbo.orders.000001 fields contains invalid user variable \"@bad-name\"")
 }
 
-func TestRunImportWorkerRejectsTiDBImportIntoRemoteSourceWithoutFields(t *testing.T) {
+func TestRunImportWorkerAcceptsTiDBImportIntoGCSRemoteSourceWithoutFields(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
 	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml", `status: reviewed
@@ -6723,11 +6861,15 @@ jobs:
 	}
 	writeStageApproval(t, root, "import", hash)
 
-	_, err = RunImportWorker(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a")
-	if err == nil {
-		t.Fatal("RunImportWorker() expected remote fields error")
+	if _, err = RunImportWorker(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a"); err != nil {
+		t.Fatalf("RunImportWorker() error = %v", err)
 	}
-	assertContains(t, err.Error(), "import job import-dbo.orders.000001 fields are required for gs tidb-import-into source_uri because remote header inspection is not implemented")
+
+	state := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/import-jobs.yaml")
+	assertContains(t, state, "source_uri: gs://migration-bucket/full/dbo.orders.000001.csv")
+	if strings.Contains(state, "fields:") {
+		t.Fatalf("import state = %s\nshould not require reviewed fields for GCS tidb-import-into", state)
+	}
 }
 
 func TestRunImportWorkerRejectsTiDBImportIntoHTTPSourceURI(t *testing.T) {

@@ -342,7 +342,7 @@ func runGenerateDataPlans(args []string, stdout, stderr io.Writer) int {
 	root := fs.String("root", ".", "repository root")
 	sourceClusterID := fs.String("source-cluster-id", "", "upstream SQL Server cluster id")
 	projectID := fs.String("project-id", "", "migration project id")
-	objectURIPrefix := fs.String("object-uri-prefix", "", "CSV output URI prefix for exported full-load files; use file:// or HTTP(S) for the included executor")
+	objectURIPrefix := fs.String("object-uri-prefix", "", "CSV output URI prefix for exported full-load files; supported sql-insert prefixes: file://, http(s)://, s3://, gs://, azblob://")
 	chunkSizeRows := fs.Int64("chunk-size-rows", 1000000, "estimated rows per export chunk")
 	exportFormat := fs.String("export-format", "csv", "export file format")
 	importEngine := fs.String("import-engine", "sql-insert", "TiDB import engine")
@@ -1121,10 +1121,8 @@ func workerExecutorImportSourceNeedsLocalAudit(sourceURI string) bool {
 		return true
 	}
 	switch parsed.Scheme {
-	case "", "file", "s3":
+	case "", "file", "s3", "gs":
 		return true
-	case "gs":
-		return false
 	default:
 		return true
 	}

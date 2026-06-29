@@ -169,12 +169,12 @@ func validateExecutableObjectURIPrefix(prefix, importEngine string) error {
 		switch parsed.Scheme {
 		case "file":
 			return validateLocalFileObjectURIPrefix(parsed)
-		case "s3":
+		case "s3", "gs":
 			return validateObjectStorageObjectURIPrefix(parsed)
 		case "":
-			return fmt.Errorf("object URI prefix must use file:// or s3:// for executable tidb-import-into data plans")
+			return fmt.Errorf("object URI prefix must use file://, s3://, or gs:// for executable tidb-import-into data plans")
 		default:
-			return fmt.Errorf("object URI prefix scheme %s is not supported by executable tidb-import-into data plans; supported schemes: file, s3", parsed.Scheme)
+			return fmt.Errorf("object URI prefix scheme %s is not supported by executable tidb-import-into data plans; supported schemes: file, s3, gs", parsed.Scheme)
 		}
 	default:
 		switch parsed.Scheme {
@@ -185,12 +185,12 @@ func validateExecutableObjectURIPrefix(prefix, importEngine string) error {
 				return fmt.Errorf("%s object URI prefix host is required", parsed.Scheme)
 			}
 			return nil
-		case "s3":
+		case "s3", "gs", "azblob":
 			return validateObjectStorageObjectURIPrefix(parsed)
 		case "":
-			return fmt.Errorf("object URI prefix must use file://, http://, https://, or s3://")
+			return fmt.Errorf("object URI prefix must use file://, http://, https://, s3://, gs://, or azblob://")
 		default:
-			return fmt.Errorf("object URI prefix scheme %s is not supported by sqlserver2tidb-executor; supported schemes: file, http, https, s3", parsed.Scheme)
+			return fmt.Errorf("object URI prefix scheme %s is not supported by sqlserver2tidb-executor; supported schemes: file, http, https, s3, gs, azblob", parsed.Scheme)
 		}
 	}
 }
@@ -277,7 +277,7 @@ func validateTiDBImportIntoPlanFieldsForSource(job dataImportJobState) error {
 	if !ok || len(job.Fields) > 0 {
 		return nil
 	}
-	if scheme == "s3" {
+	if scheme == "s3" || scheme == "gs" {
 		return nil
 	}
 	return fmt.Errorf("import job %s fields are required for %s tidb-import-into source_uri because remote header inspection is not implemented", job.ID, scheme)
@@ -349,15 +349,15 @@ func validateImportPlanJobSourceURI(engine string, job dataImportJobState) error
 				return fmt.Errorf("import job %s source_uri: %s source URI host is required", job.ID, parsed.Scheme)
 			}
 			return nil
-		case "s3":
+		case "s3", "gs", "azblob":
 			if err := validateObjectStorageImportSourceURI(parsed); err != nil {
 				return fmt.Errorf("import job %s source_uri: %w", job.ID, err)
 			}
 			return nil
 		case "":
-			return fmt.Errorf("import job %s source_uri must use file://, http://, https://, or s3:// for sql-insert", job.ID)
+			return fmt.Errorf("import job %s source_uri must use file://, http://, https://, s3://, gs://, or azblob:// for sql-insert", job.ID)
 		default:
-			return fmt.Errorf("import job %s source_uri scheme %s is not supported by sql-insert; supported schemes: file, http, https, s3", job.ID, parsed.Scheme)
+			return fmt.Errorf("import job %s source_uri scheme %s is not supported by sql-insert; supported schemes: file, http, https, s3, gs, azblob", job.ID, parsed.Scheme)
 		}
 	}
 }
@@ -411,15 +411,15 @@ func validateExportPlanChunkOutputURI(chunk dataExportChunkState) error {
 			return fmt.Errorf("export chunk %s output_uri: %s output URI host is required", chunk.ID, parsed.Scheme)
 		}
 		return nil
-	case "s3":
+	case "s3", "gs", "azblob":
 		if err := validateObjectStorageExportOutputURI(parsed); err != nil {
 			return fmt.Errorf("export chunk %s output_uri: %w", chunk.ID, err)
 		}
 		return nil
 	case "":
-		return fmt.Errorf("export chunk %s output_uri must use file://, http://, https://, or s3://", chunk.ID)
+		return fmt.Errorf("export chunk %s output_uri must use file://, http://, https://, s3://, gs://, or azblob://", chunk.ID)
 	default:
-		return fmt.Errorf("export chunk %s output_uri scheme %s is not supported by sqlserver2tidb-executor; supported schemes: file, http, https, s3", chunk.ID, parsed.Scheme)
+		return fmt.Errorf("export chunk %s output_uri scheme %s is not supported by sqlserver2tidb-executor; supported schemes: file, http, https, s3, gs, azblob", chunk.ID, parsed.Scheme)
 	}
 }
 
