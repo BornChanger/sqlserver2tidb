@@ -467,9 +467,16 @@ func runCDCOrchestrator(args []string, stdout, stderr io.Writer) int {
 	projectID := fs.String("project-id", "", "migration project id")
 	executorBinary := fs.String("executor-binary", "sqlserver2tidb-executor", "executor binary used to probe SQL Server CDC max LSN")
 	sourceConnectionStringEnv := fs.String("source-connection-string-env", "SQLSERVER2TIDB_SOURCE_CONNECTION_STRING", "environment variable containing the SQL Server CDC connection string")
+	targetConnectionStringEnv := fs.String("target-connection-string-env", "SQLSERVER2TIDB_TARGET_CONNECTION_STRING", "environment variable containing the TiDB/MySQL connection string for CDC apply")
 	maxLSNOverride := fs.String("max-lsn", "", "skip executor probing and use this SQL Server CDC max LSN")
 	fromLSN := fs.String("from-lsn", "", "initial CDC from LSN for tables without checkpoint state")
 	prDraft := fs.Bool("pr-draft", false, "write a CDC range PR draft when a new range is prepared")
+	applyApproved := fs.Bool("apply-approved", false, "execute an already approved CDC range before probing the next SQL Server max LSN")
+	checkpointStatus := fs.String("checkpoint-status", "running", "checkpoint status to write after approved CDC apply: running or caught_up")
+	commandTimeout := fs.Duration("command-timeout", 0, "maximum runtime per CDC apply executor command; 0 disables the timeout")
+	commandRetries := fs.Int("command-retries", 0, "number of retries for a failed CDC apply executor command")
+	retryBackoff := fs.Duration("retry-backoff", time.Second, "fixed backoff between CDC apply executor command retries")
+	resume := fs.Bool("resume", false, "skip matching successful CDC apply commands from existing executor evidence")
 	poll := fs.Bool("poll", false, "continue polling when the project is caught up")
 	maxIterations := fs.Int("max-iterations", 0, "maximum probe iterations; 0 means unlimited")
 	interval := fs.Duration("interval", 5*time.Second, "sleep interval between caught-up polling iterations")
@@ -489,14 +496,50 @@ func runCDCOrchestrator(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "cdc-orchestrator --idle-iterations must be non-negative")
 		return 2
 	}
+	if *commandTimeout < 0 {
+		fmt.Fprintln(stderr, "cdc-orchestrator --command-timeout must be non-negative")
+		return 2
+	}
+	if *commandRetries < 0 {
+		fmt.Fprintln(stderr, "cdc-orchestrator --command-retries must be non-negative")
+		return 2
+	}
+	if *retryBackoff < 0 {
+		fmt.Fprintln(stderr, "cdc-orchestrator --retry-backoff must be non-negative")
+		return 2
+	}
 
 	fmt.Fprintln(stdout, "cdc orchestrator")
 	prepared := 0
+	applied := 0
 	idle := 0
 	for iteration := 1; ; iteration++ {
 		if *maxIterations > 0 && iteration > *maxIterations {
 			fmt.Fprintf(stdout, "prepared iterations: %d\n", prepared)
+			fmt.Fprintf(stdout, "applied iterations: %d\n", applied)
 			return 0
+		}
+		if *applyApproved {
+			status, err := runCDCOrchestratorApplyApproved(cdcOrchestratorApplySpec{
+				Root:                      *root,
+				SourceClusterID:           *sourceClusterID,
+				ProjectID:                 *projectID,
+				ExecutorBinary:            *executorBinary,
+				SourceConnectionStringEnv: *sourceConnectionStringEnv,
+				TargetConnectionStringEnv: *targetConnectionStringEnv,
+				CheckpointStatus:          *checkpointStatus,
+				CommandTimeout:            *commandTimeout,
+				CommandRetries:            *commandRetries,
+				RetryBackoff:              *retryBackoff,
+				Resume:                    *resume,
+			}, stdout, stderr)
+			if err != nil {
+				fmt.Fprintf(stderr, "cdc orchestrator: %v\n", err)
+				return 1
+			}
+			if status.Applied {
+				applied++
+			}
 		}
 		maxLSN, err := cdcOrchestratorMaxLSN(*root, *sourceClusterID, *projectID, *executorBinary, *sourceConnectionStringEnv, *maxLSNOverride)
 		if err != nil {
@@ -522,6 +565,7 @@ func runCDCOrchestrator(args []string, stdout, stderr io.Writer) int {
 				fmt.Fprintf(stdout, "PR draft: %s\n", result.PRBodyFile)
 			}
 			fmt.Fprintf(stdout, "prepared iterations: %d\n", prepared)
+			fmt.Fprintf(stdout, "applied iterations: %d\n", applied)
 			return 0
 		}
 		if result.Status != gitops.CDCIterationStatusCaughtUp {
@@ -530,16 +574,108 @@ func runCDCOrchestrator(args []string, stdout, stderr io.Writer) int {
 		}
 		if !*poll {
 			fmt.Fprintf(stdout, "prepared iterations: %d\n", prepared)
+			fmt.Fprintf(stdout, "applied iterations: %d\n", applied)
 			return 0
 		}
 		idle++
 		fmt.Fprintf(stdout, "idle iteration %d: caught_up\n", idle)
 		if *idleIterations > 0 && idle >= *idleIterations {
 			fmt.Fprintf(stdout, "prepared iterations: %d\n", prepared)
+			fmt.Fprintf(stdout, "applied iterations: %d\n", applied)
 			return 0
 		}
 		time.Sleep(*interval)
 	}
+}
+
+type cdcOrchestratorApplySpec struct {
+	Root                      string
+	SourceClusterID           string
+	ProjectID                 string
+	ExecutorBinary            string
+	SourceConnectionStringEnv string
+	TargetConnectionStringEnv string
+	CheckpointStatus          string
+	CommandTimeout            time.Duration
+	CommandRetries            int
+	RetryBackoff              time.Duration
+	Resume                    bool
+}
+
+type cdcOrchestratorApplyStatus struct {
+	Applied bool
+}
+
+func runCDCOrchestratorApplyApproved(spec cdcOrchestratorApplySpec, stdout, stderr io.Writer) (cdcOrchestratorApplyStatus, error) {
+	_, err := gitops.PrepareWorkerExecutor(spec.Root, spec.SourceClusterID, spec.ProjectID, "cdc", gitops.WorkerExecutorPrepareSpec{
+		Binary:                    spec.ExecutorBinary,
+		SourceConnectionStringEnv: spec.SourceConnectionStringEnv,
+		TargetConnectionStringEnv: spec.TargetConnectionStringEnv,
+	})
+	if err != nil {
+		if isCDCOrchestratorApplyNotReadyError(err) {
+			fmt.Fprintf(stdout, "approved cdc apply not ready: %v\n", err)
+			return cdcOrchestratorApplyStatus{}, nil
+		}
+		return cdcOrchestratorApplyStatus{}, err
+	}
+	applyStatus, err := gitops.CheckCDCPlanApplyStatus(spec.Root, spec.SourceClusterID, spec.ProjectID)
+	if err != nil {
+		return cdcOrchestratorApplyStatus{}, err
+	}
+	if !applyStatus.Needed {
+		fmt.Fprintf(stdout, "approved cdc apply skipped: %s\n", applyStatus.Reason)
+		return cdcOrchestratorApplyStatus{}, nil
+	}
+	args := []string{
+		"worker-executor",
+		"--root", spec.Root,
+		"--source-cluster-id", spec.SourceClusterID,
+		"--project-id", spec.ProjectID,
+		"--stage", "cdc",
+		"--executor-binary", spec.ExecutorBinary,
+		"--source-connection-string-env", spec.SourceConnectionStringEnv,
+		"--target-connection-string-env", spec.TargetConnectionStringEnv,
+		"--execute",
+	}
+	if spec.CommandTimeout > 0 {
+		args = append(args, "--command-timeout", spec.CommandTimeout.String())
+	}
+	if spec.CommandRetries > 0 {
+		args = append(args, "--command-retries", strconv.Itoa(spec.CommandRetries))
+	}
+	if spec.RetryBackoff != time.Second {
+		args = append(args, "--retry-backoff", spec.RetryBackoff.String())
+	}
+	if spec.Resume {
+		args = append(args, "--resume")
+	}
+	if code := runWorkerExecutor(args[1:], stdout, stderr); code != 0 {
+		return cdcOrchestratorApplyStatus{}, fmt.Errorf("approved cdc apply failed")
+	}
+	result, err := gitops.AdvanceCDCCheckpointFromExecutorEvidence(spec.Root, spec.SourceClusterID, spec.ProjectID, gitops.CDCCheckpointAdvanceSpec{
+		Status: spec.CheckpointStatus,
+	})
+	if err != nil {
+		return cdcOrchestratorApplyStatus{}, err
+	}
+	fmt.Fprintln(stdout, "approved cdc apply completed")
+	fmt.Fprintf(stdout, "checkpoint status: %s\n", result.Status)
+	fmt.Fprintf(stdout, "checkpoint updated tables: %d\n", result.UpdatedTables)
+	fmt.Fprintf(stdout, "checkpoint applied changes: %d\n", result.AppliedChanges)
+	fmt.Fprintf(stdout, "wrote %s\n", result.CheckpointFile)
+	return cdcOrchestratorApplyStatus{Applied: true}, nil
+}
+
+func isCDCOrchestratorApplyNotReadyError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := err.Error()
+	return strings.Contains(message, "cdc approval is not approved") ||
+		strings.Contains(message, "cdc approval payload hash mismatch") ||
+		strings.Contains(message, "cdc plan status is ") ||
+		strings.Contains(message, "read approval:")
 }
 
 func cdcOrchestratorMaxLSN(root, sourceClusterID, projectID, executorBinary, sourceConnectionStringEnv, maxLSNOverride string) (string, error) {
@@ -1884,7 +2020,7 @@ Usage:
   sqlserver2tidb generate-cdc-plan --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
   sqlserver2tidb prepare-cdc-range --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --to-lsn 0x00000027000001f40003
   sqlserver2tidb prepare-cdc-iteration --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --max-lsn 0x00000027000001f40004 --pr-draft
-  sqlserver2tidb cdc-orchestrator --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --poll --pr-draft
+  sqlserver2tidb cdc-orchestrator --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --apply-approved --poll --pr-draft
   sqlserver2tidb generate-validation-plan --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
   sqlserver2tidb generate-pr-draft --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage schema
   sqlserver2tidb create-pr --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage schema

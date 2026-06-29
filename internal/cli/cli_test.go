@@ -2467,6 +2467,104 @@ func TestRunCDCOrchestratorPollStopsAfterCaughtUpIdleLimit(t *testing.T) {
 	}
 }
 
+func TestRunCDCOrchestratorApplyApprovedExecutesCDCAndAdvancesCheckpoint(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	createCLIProjectWithCDCPlanAndCheckpoint(t, root, &stdout, &stderr, "0x00000000000000000001", "0x00000000000000000002")
+	setCLICDCPlanLSNRange(t, root, "0x00000000000000000002", "0x00000000000000000003")
+	setCLIReviewPlanStatus(t, root, "cdc", "reviewed")
+	hash, err := gitops.ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "cdc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeCLIStageApproval(t, root, "cdc", hash)
+
+	fakeExecutor := filepath.Join(root, "fake-cdc-apply")
+	if err := os.WriteFile(fakeExecutor, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> cdc-apply-args.log\nprintf 'executor cdc completed\\n'\nprintf 'applied changes: 7\\n'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"cdc-orchestrator",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--executor-binary", "./fake-cdc-apply",
+		"--source-connection-string-env", "SQLSERVER_CDC_TEST_DSN",
+		"--target-connection-string-env", "TIDB_TEST_DSN",
+		"--max-lsn", "0x00000000000000000003",
+		"--apply-approved",
+		"--max-iterations", "1",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("cdc-orchestrator apply-approved code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "approved cdc apply completed") {
+		t.Fatalf("cdc-orchestrator apply-approved stdout = %q, want apply completion", output)
+	}
+	if !strings.Contains(output, "checkpoint status: running") {
+		t.Fatalf("cdc-orchestrator apply-approved stdout = %q, want checkpoint status", output)
+	}
+	if !strings.Contains(output, "status: caught_up") {
+		t.Fatalf("cdc-orchestrator apply-approved stdout = %q, want caught_up after checkpoint advance", output)
+	}
+	argsLog := readCLIRelFile(t, root, "cdc-apply-args.log")
+	if !strings.Contains(argsLog, "cdc --execute --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a") {
+		t.Fatalf("cdc apply args = %q, want executor cdc command", argsLog)
+	}
+	if !strings.Contains(argsLog, "--source-connection-string-env SQLSERVER_CDC_TEST_DSN") || !strings.Contains(argsLog, "--target-connection-string-env TIDB_TEST_DSN") {
+		t.Fatalf("cdc apply args = %q, want source and target env flags", argsLog)
+	}
+	checkpoint := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/state/cdc-checkpoint.yaml")
+	if !strings.Contains(checkpoint, "to_lsn: 0x00000000000000000003") || !strings.Contains(checkpoint, "applied_changes: 7") {
+		t.Fatalf("checkpoint = %q, want advanced LSN and applied changes", checkpoint)
+	}
+}
+
+func TestRunCDCOrchestratorApplyApprovedSkipsAlreadyCheckpointedRange(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	createCLIProjectWithCDCPlanAndCheckpoint(t, root, &stdout, &stderr, "0x00000000000000000002", "0x00000000000000000003")
+	setCLICDCPlanLSNRange(t, root, "0x00000000000000000002", "0x00000000000000000003")
+	setCLIReviewPlanStatus(t, root, "cdc", "reviewed")
+	hash, err := gitops.ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "cdc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeCLIStageApproval(t, root, "cdc", hash)
+
+	fakeExecutor := filepath.Join(root, "fake-cdc-apply")
+	if err := os.WriteFile(fakeExecutor, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> cdc-apply-args.log\nprintf 'executor cdc completed\\n'\nprintf 'applied changes: 7\\n'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"cdc-orchestrator",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--executor-binary", "./fake-cdc-apply",
+		"--max-lsn", "0x00000000000000000003",
+		"--apply-approved",
+		"--max-iterations", "1",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("cdc-orchestrator skip-applied code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "approved cdc apply skipped: current CDC range already checkpointed") {
+		t.Fatalf("cdc-orchestrator skip-applied stdout = %q, want skip message", output)
+	}
+	if _, err := os.Stat(filepath.Join(root, "cdc-apply-args.log")); !os.IsNotExist(err) {
+		t.Fatalf("cdc apply executor should not have been called, stat err = %v", err)
+	}
+}
+
 func TestRunGenerateValidationPlanCommand(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer
