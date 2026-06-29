@@ -467,13 +467,13 @@ go run ./cmd/sqlserver2tidb worker-agent \
 
 `worker-agent` is the same deterministic metadata-only loop packaged as a stable process entrypoint for local runs and containers. It requires a holder, uses the source-cluster lease, can be scoped with `--source-cluster-id`, can emit state PR drafts, and stops only when no ready metadata-only action remains unless `--poll` is enabled. In poll mode, `--idle-iterations 0` means keep waiting for new ready metadata actions; set a positive value for bounded smoke tests or batch jobs.
 
-Run optional SQL Server + TiDB executor integration tests:
+Run optional SQL Server + TiDB integration tests:
 
 ```bash
 make integration-test
 ```
 
-This starts the Docker Compose environment in `tests/integration/`, runs the build-tagged executor integration test, and exercises SQL Server export to local CSV, TiDB import, and row-count validation. The target is intentionally outside default `make ci` because it pulls database images and requires Docker.
+This starts the Docker Compose environment in `tests/integration/` unless `SQLSERVER2TIDB_INTEGRATION_SOURCE_DSN` and `SQLSERVER2TIDB_INTEGRATION_TARGET_DSN` are already set. It runs both the direct executor full-load flow and the CLI/GitOps E2E flow: real SQL Server catalog discovery, schema/data/validation plan generation, approval hash checks, `worker-executor --execute` DDL/export/import/validation, `worker-validate`, and `validate-repo`. The target is intentionally outside default `make ci` because the default path pulls database images and requires Docker.
 
 Prepare the git and GitHub commands for a worker state write-back PR:
 
