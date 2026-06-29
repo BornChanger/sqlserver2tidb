@@ -996,7 +996,7 @@ func validateExecutorEvidenceContent(path string, project *projectMetadata, expe
 	if err := validateExecutorEvidenceGeneratedAt(evidence.GeneratedAt); err != nil {
 		return err
 	}
-	return validateExecutorEvidenceCommands(status, evidence.Commands)
+	return validateExecutorEvidenceCommands(expectedStage, status, evidence.Commands)
 }
 
 func validateMigrationPlanContent(path string, project projectMetadata) error {

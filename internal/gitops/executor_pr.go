@@ -222,7 +222,7 @@ func loadExecutorEvidencePRContext(root, sourceClusterID, projectID, stage strin
 	if err := validateExecutorEvidenceGeneratedAt(evidence.GeneratedAt); err != nil {
 		return executorEvidencePRContext{}, err
 	}
-	if err := validateExecutorEvidenceCommands(status, evidence.Commands); err != nil {
+	if err := validateExecutorEvidenceCommands(stage, status, evidence.Commands); err != nil {
 		return executorEvidencePRContext{}, err
 	}
 	if err := requireExecutorInstructionReviewed(root, sourceClusterID, projectID, stage); err != nil {
@@ -252,7 +252,7 @@ func requireExecutorInstructionReviewed(root, sourceClusterID, projectID, stage 
 	}
 }
 
-func validateExecutorEvidenceCommands(status string, commands []executorEvidenceCommandSummary) error {
+func validateExecutorEvidenceCommands(stage, status string, commands []executorEvidenceCommandSummary) error {
 	if len(commands) == 0 {
 		return fmt.Errorf("executor evidence commands must contain at least one command")
 	}
@@ -332,6 +332,9 @@ func validateExecutorEvidenceCommands(status string, commands []executorEvidence
 		if strings.TrimSpace(command.DataSHA256) != "" && !isValidPayloadHash(command.DataSHA256) {
 			return fmt.Errorf("executor evidence command %s data_sha256 %q must use sha256:<64 hex chars>", commandID, command.DataSHA256)
 		}
+		if executorEvidenceCommandRequiresDataAudit(stage, status, command.Args) && !executorEvidenceCommandHasCompleteDataAudit(command) {
+			return fmt.Errorf("executor evidence command %s requires data_rows, data_bytes, and data_sha256 for %s data audit", commandID, strings.TrimSpace(stage))
+		}
 		if err := validateExecutorEvidenceCommandAttempts(commandID, command.AttemptCount, command.Attempts); err != nil {
 			return err
 		}
@@ -340,6 +343,41 @@ func validateExecutorEvidenceCommands(status string, commands []executorEvidence
 		return fmt.Errorf("executor evidence status failed requires at least one non-zero command exit_code or command error")
 	}
 	return nil
+}
+
+func executorEvidenceCommandRequiresDataAudit(stage, status string, args []string) bool {
+	if strings.TrimSpace(status) != "succeeded" {
+		return false
+	}
+	switch strings.TrimSpace(stage) {
+	case "export":
+		return true
+	case "import":
+		return executorEvidenceImportEngine(args) == importEngineSQLInsert
+	default:
+		return false
+	}
+}
+
+func executorEvidenceCommandHasCompleteDataAudit(command executorEvidenceCommandSummary) bool {
+	if command.DataRows == nil || command.DataBytes == nil {
+		return false
+	}
+	return isValidPayloadHash(strings.TrimSpace(command.DataSHA256))
+}
+
+func executorEvidenceImportEngine(args []string) string {
+	engine := importEngineSQLInsert
+	for i, arg := range args {
+		if arg == "--engine" && i+1 < len(args) {
+			engine = strings.TrimSpace(args[i+1])
+			continue
+		}
+		if strings.HasPrefix(arg, "--engine=") {
+			engine = strings.TrimSpace(strings.TrimPrefix(arg, "--engine="))
+		}
+	}
+	return normalizeImportEngine(engine)
 }
 
 func validateExecutorEvidenceCommandAttempts(commandID string, attemptCount *int, attempts []executorEvidenceCommandAttemptSummary) error {

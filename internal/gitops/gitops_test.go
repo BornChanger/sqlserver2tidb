@@ -1389,7 +1389,10 @@ func TestValidateRepoReportsInvalidExecutorEvidenceGeneratedAt(t *testing.T) {
       "exit_code": 0,
       "started_at": "2026-06-26T00:00:00Z",
       "completed_at": "2026-06-26T00:00:01Z",
-      "duration_ms": 1000
+      "duration_ms": 1000,
+      "data_rows": 2,
+      "data_bytes": 128,
+      "data_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
     }
   ]
 }
@@ -1468,7 +1471,10 @@ func TestValidateRepoReportsExecutorEvidenceAttemptCountMismatch(t *testing.T) {
       ],
       "started_at": "2026-06-26T00:00:00Z",
       "completed_at": "2026-06-26T00:00:01Z",
-      "duration_ms": 1000
+      "duration_ms": 1000,
+      "data_rows": 2,
+      "data_bytes": 128,
+      "data_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
     }
   ]
 }
@@ -4213,6 +4219,124 @@ func TestValidateRepoReportsExecutorDataSHA256WithoutDataMetrics(t *testing.T) {
 		t.Fatalf("ValidateRepo() valid = true, want incomplete executor data audit error")
 	}
 	assertContains(t, strings.Join(report.Errors, "\n"), `invalid executor evidence `+evidenceRel+`: executor evidence command dbo.orders.000001 data_sha256 requires data_rows and data_bytes`)
+}
+
+func TestValidateRepoRequiresSuccessfulExportDataAudit(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	evidenceRel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-export-run.json"
+	writeFileForTest(t, root, evidenceRel, `{
+  "stage": "export",
+  "status": "succeeded",
+  "project_id": "sales-db-to-tidb-prod-a",
+  "source_cluster_id": "prod-sqlserver-a",
+  "payload_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "generated_at": "2026-01-02T03:04:07Z",
+  "commands": [
+    {
+      "id": "dbo.orders.000001",
+      "args": ["sqlserver2tidb-executor", "export", "--execute"],
+      "shell_command": "sqlserver2tidb-executor export --execute",
+      "exit_code": 0,
+      "output": "executor export completed\n",
+      "started_at": "2026-01-02T03:04:05Z",
+      "completed_at": "2026-01-02T03:04:06Z",
+      "duration_ms": 1000
+    }
+  ]
+}
+`)
+
+	report, err := ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("ValidateRepo() valid = true, want missing export data audit error")
+	}
+	assertContains(t, strings.Join(report.Errors, "\n"), `invalid executor evidence `+evidenceRel+`: executor evidence command dbo.orders.000001 requires data_rows, data_bytes, and data_sha256 for export data audit`)
+}
+
+func TestGenerateExecutorEvidencePRDraftRequiresSuccessfulSQLInsertImportDataAudit(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateDataPlansOnly(root))
+	setReviewPlanStatus(t, root, "import", "reviewed")
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(import) error = %v", err)
+	}
+	writeStageApproval(t, root, "import", hash)
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-import-run.json", `{
+  "stage": "import",
+  "status": "succeeded",
+  "project_id": "sales-db-to-tidb-prod-a",
+  "source_cluster_id": "prod-sqlserver-a",
+  "payload_hash": "`+hash+`",
+  "generated_at": "2026-01-02T03:04:07Z",
+  "commands": [
+    {
+      "id": "import-dbo.orders.000001",
+      "args": ["sqlserver2tidb-executor", "import", "--execute"],
+      "shell_command": "sqlserver2tidb-executor import --execute",
+      "exit_code": 0,
+      "output": "executor import completed\n",
+      "started_at": "2026-01-02T03:04:05Z",
+      "completed_at": "2026-01-02T03:04:06Z",
+      "duration_ms": 1000
+    }
+  ]
+}
+`)
+
+	_, err = GenerateExecutorEvidencePRDraft(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import")
+	if err == nil {
+		t.Fatal("GenerateExecutorEvidencePRDraft() expected missing import data audit error")
+	}
+	assertContains(t, err.Error(), "executor evidence command import-dbo.orders.000001 requires data_rows, data_bytes, and data_sha256 for import data audit")
+}
+
+func TestGenerateExecutorEvidencePRDraftAllowsTiDBImportIntoWithoutDataAudit(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	_, err := GenerateDataMovementPlans(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", DataMovementPlanSpec{
+		ObjectURIPrefix: "file:///tmp/sqlserver2tidb/full",
+		ChunkSizeRows:   1000,
+		ExportFormat:    "csv",
+		ImportEngine:    "tidb-import-into",
+	})
+	must(t, err)
+	setReviewPlanStatus(t, root, "import", "reviewed")
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(import) error = %v", err)
+	}
+	writeStageApproval(t, root, "import", hash)
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-import-run.json", `{
+  "stage": "import",
+  "status": "succeeded",
+  "project_id": "sales-db-to-tidb-prod-a",
+  "source_cluster_id": "prod-sqlserver-a",
+  "payload_hash": "`+hash+`",
+  "generated_at": "2026-01-02T03:04:07Z",
+  "commands": [
+    {
+      "id": "import-dbo.orders.000001",
+      "args": ["sqlserver2tidb-executor", "import", "--execute", "--engine", "tidb-import-into"],
+      "shell_command": "sqlserver2tidb-executor import --execute --engine tidb-import-into",
+      "exit_code": 0,
+      "output": "executor import completed\n",
+      "started_at": "2026-01-02T03:04:05Z",
+      "completed_at": "2026-01-02T03:04:06Z",
+      "duration_ms": 1000
+    }
+  ]
+}
+`)
+
+	if _, err := GenerateExecutorEvidencePRDraft(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import"); err != nil {
+		t.Fatalf("GenerateExecutorEvidencePRDraft() error = %v", err)
+	}
 }
 
 func TestGenerateExecutorEvidencePRDraftRejectsFailedStatusWithoutFailedCommand(t *testing.T) {
@@ -8154,7 +8278,10 @@ func writeExportExecutorEvidenceForTest(t *testing.T, root, payloadHash string) 
       "output": "exported\n",
       "started_at": "2026-01-02T03:04:05Z",
       "completed_at": "2026-01-02T03:04:06Z",
-      "duration_ms": 1000
+      "duration_ms": 1000,
+      "data_rows": 2,
+      "data_bytes": 128,
+      "data_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
     }
   ]
 }

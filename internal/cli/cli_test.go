@@ -3065,7 +3065,10 @@ func TestRunWorkerReconcileExecuteNextCommand(t *testing.T) {
       "output": "exported\n",
       "started_at": "2026-01-02T03:04:05Z",
       "completed_at": "2026-01-02T03:04:06Z",
-      "duration_ms": 1000
+      "duration_ms": 1000,
+      "data_rows": 2,
+      "data_bytes": 128,
+      "data_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
     }
   ]
 }

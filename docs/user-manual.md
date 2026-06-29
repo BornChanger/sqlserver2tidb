@@ -2002,6 +2002,8 @@ bin/sqlserver2tidb worker-executor \
 
 export/import executor 的数据量指标有固定输出约定：export 成功时输出 `exported rows: N`、`output bytes: N` 和 `output sha256: sha256:<digest>`，`sql-insert` import 成功时输出 `imported rows: N`、`input bytes: N` 和 `input sha256: sha256:<digest>`。`worker-executor --execute` 会把完整且非负的指标对写入 command 级 `data_rows` 和 `data_bytes`，并把合法 SHA256 写入 `data_sha256`；如果只出现其中一个行数/字节数指标、值不是非负整数，或 SHA256 格式不合法，会先写 failed evidence 再返回非零退出码。
 
+`validate-repo` 和 executor evidence PR 生成也会拒绝缺少完整数据审计的成功 export / `sql-insert` import evidence；也就是说成功 evidence 必须同时具备 `data_rows`、`data_bytes` 和合法 `data_sha256`。`tidb-import-into` 当前不会输出这组数据通道指标，因此暂不套用该强制规则。
+
 本地 `file://` export 不会直接写最终文件名；executor 会在同目录写隐藏临时文件，只有 CSV/gzip 输出流成功关闭后才 rename 到目标路径。导出失败路径会 abort 并删除临时文件，避免下游 import 读到半截 CSV。
 
 HTTP(S) export 在 CSV 写入失败时会中止请求体，而不是把流正常 close 成一次成功上传。这不能替代对象存储侧的版本控制/生命周期清理策略，但可以避免 executor 主动把失败路径提交为一个完整的部分对象。
