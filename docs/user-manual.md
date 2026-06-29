@@ -1629,7 +1629,7 @@ clusters/<source_cluster_id>/cluster.yaml
 
 ### 14.3 CDC checkpoint 过期
 
-如果 checkpoint 早于 SQL Server CDC min LSN，则增量缺失。
+如果 checkpoint 早于 SQL Server CDC min LSN，则增量缺失。`cdc-orchestrator` 默认会对每张 tracked table 探测 `min_lsn`，并在写入下一段 `cdc-plan.yaml` 前 fail fast；只有外部调度平台已经做了等价检查时，才应使用 `--skip-retention-check`。
 
 处理：
 
@@ -1843,7 +1843,7 @@ bin/sqlserver2tidb cdc-orchestrator \
   --pr-draft
 ```
 
-`cdc-orchestrator` 是连续 CDC 的 probe / approved-apply / plan 入口。它会调用 `sqlserver2tidb-executor cdc-lsn --execute` 探测 SQL Server 当前 `max_lsn`，解析 executor 输出里的 `max_lsn: 0x...`，再复用 `prepare-cdc-iteration` 生成下一段 `plan/cdc-plan.yaml` 和可选 `prs/cdc-range-pr.md`。默认 executor binary 是 `sqlserver2tidb-executor`，可以用 `--executor-binary` 覆盖；SQL Server 连接串环境变量默认是 `SQLSERVER2TIDB_SOURCE_CONNECTION_STRING`，可以用 `--source-connection-string-env` 覆盖；TiDB 连接串环境变量默认是 `SQLSERVER2TIDB_TARGET_CONNECTION_STRING`，可以用 `--target-connection-string-env` 覆盖；`--from-lsn` 用于第一段还没有 checkpoint 的表。
+`cdc-orchestrator` 是连续 CDC 的 probe / approved-apply / plan 入口。它会调用 `sqlserver2tidb-executor cdc-lsn --execute` 探测 SQL Server 当前 `max_lsn`，并对每张 tracked table 追加 `--source-object` 探测 capture instance 的 `min_lsn`，再复用 `prepare-cdc-iteration` 生成下一段 `plan/cdc-plan.yaml` 和可选 `prs/cdc-range-pr.md`。如果下一段 `from_lsn` 已经早于 SQL Server 返回的 `min_lsn`，命令会在修改 plan 前失败，避免生成无法完整回放的 CDC range；只有外部 scheduler 已经完成等价 retention guard 时，才使用 `--skip-retention-check`。默认 executor binary 是 `sqlserver2tidb-executor`，可以用 `--executor-binary` 覆盖；SQL Server 连接串环境变量默认是 `SQLSERVER2TIDB_SOURCE_CONNECTION_STRING`，可以用 `--source-connection-string-env` 覆盖；TiDB 连接串环境变量默认是 `SQLSERVER2TIDB_TARGET_CONNECTION_STRING`，可以用 `--target-connection-string-env` 覆盖；`--from-lsn` 用于第一段还没有 checkpoint 的表。
 
 在 `--apply-approved` 模式下，每轮探测前会先检查当前 `plan/cdc-plan.yaml` 和 `approvals/cdc-approval.yaml` 是否已经通过 approval/hash gate。如果已通过且 checkpoint 尚未覆盖该 range，它会调用 `worker-executor --stage cdc --execute`，要求 executor 输出 `applied changes: N`，写入 `evidence/executor-cdc-run.json`，然后调用 checkpoint advance 逻辑更新源集群级 `state/cdc-checkpoint.yaml`。如果 checkpoint 已经覆盖当前 range，它会跳过 apply，避免长循环重复执行同一段 LSN。`--command-timeout`、`--command-retries`、`--retry-backoff` 和 `--resume` 会透传给内部 CDC executor 执行路径。
 

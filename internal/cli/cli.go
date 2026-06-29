@@ -471,6 +471,7 @@ func runCDCOrchestrator(args []string, stdout, stderr io.Writer) int {
 	maxLSNOverride := fs.String("max-lsn", "", "skip executor probing and use this SQL Server CDC max LSN")
 	fromLSN := fs.String("from-lsn", "", "initial CDC from LSN for tables without checkpoint state")
 	prDraft := fs.Bool("pr-draft", false, "write a CDC range PR draft when a new range is prepared")
+	skipRetentionCheck := fs.Bool("skip-retention-check", false, "skip per-table SQL Server CDC min LSN retention checks")
 	applyApproved := fs.Bool("apply-approved", false, "execute an already approved CDC range before probing the next SQL Server max LSN")
 	checkpointStatus := fs.String("checkpoint-status", "running", "checkpoint status to write after approved CDC apply: running or caught_up")
 	commandTimeout := fs.Duration("command-timeout", 0, "maximum runtime per CDC apply executor command; 0 disables the timeout")
@@ -541,16 +542,17 @@ func runCDCOrchestrator(args []string, stdout, stderr io.Writer) int {
 				applied++
 			}
 		}
-		maxLSN, err := cdcOrchestratorMaxLSN(*root, *sourceClusterID, *projectID, *executorBinary, *sourceConnectionStringEnv, *maxLSNOverride)
+		bounds, err := cdcOrchestratorProbeLSNBounds(*root, *sourceClusterID, *projectID, *executorBinary, *sourceConnectionStringEnv, *maxLSNOverride, *skipRetentionCheck)
 		if err != nil {
 			fmt.Fprintf(stderr, "cdc orchestrator: %v\n", err)
 			return 1
 		}
-		fmt.Fprintf(stdout, "iteration %d: max_lsn %s\n", iteration, maxLSN)
+		fmt.Fprintf(stdout, "iteration %d: max_lsn %s\n", iteration, bounds.MaxLSN)
 		result, err := gitops.PrepareCDCIteration(*root, *sourceClusterID, *projectID, gitops.CDCIterationSpec{
-			MaxLSN:         maxLSN,
+			MaxLSN:         bounds.MaxLSN,
 			InitialFromLSN: *fromLSN,
 			WritePRDraft:   *prDraft,
+			MinLSNs:        bounds.MinLSNs,
 		})
 		if err != nil {
 			fmt.Fprintf(stderr, "cdc orchestrator: %v\n", err)
@@ -678,6 +680,29 @@ func isCDCOrchestratorApplyNotReadyError(err error) bool {
 		strings.Contains(message, "read approval:")
 }
 
+type cdcOrchestratorLSNBounds struct {
+	MaxLSN  string
+	MinLSNs map[string]string
+}
+
+func cdcOrchestratorProbeLSNBounds(root, sourceClusterID, projectID, executorBinary, sourceConnectionStringEnv, maxLSNOverride string, skipRetentionCheck bool) (cdcOrchestratorLSNBounds, error) {
+	maxLSN, err := cdcOrchestratorMaxLSN(root, sourceClusterID, projectID, executorBinary, sourceConnectionStringEnv, maxLSNOverride)
+	if err != nil {
+		return cdcOrchestratorLSNBounds{}, err
+	}
+	minLSNs := map[string]string{}
+	if !skipRetentionCheck {
+		minLSNs, err = cdcOrchestratorMinLSNs(root, sourceClusterID, projectID, executorBinary, sourceConnectionStringEnv)
+		if err != nil {
+			return cdcOrchestratorLSNBounds{}, err
+		}
+	}
+	return cdcOrchestratorLSNBounds{
+		MaxLSN:  maxLSN,
+		MinLSNs: minLSNs,
+	}, nil
+}
+
 func cdcOrchestratorMaxLSN(root, sourceClusterID, projectID, executorBinary, sourceConnectionStringEnv, maxLSNOverride string) (string, error) {
 	if maxLSN := strings.TrimSpace(maxLSNOverride); maxLSN != "" {
 		return maxLSN, nil
@@ -709,6 +734,51 @@ func cdcOrchestratorMaxLSN(root, sourceClusterID, projectID, executorBinary, sou
 	return maxLSN, nil
 }
 
+func cdcOrchestratorMinLSNs(root, sourceClusterID, projectID, executorBinary, sourceConnectionStringEnv string) (map[string]string, error) {
+	sourceObjects, err := gitops.ListCDCTrackedSourceObjects(root, sourceClusterID, projectID)
+	if err != nil {
+		return nil, err
+	}
+	minLSNs := make(map[string]string, len(sourceObjects))
+	for _, sourceObject := range sourceObjects {
+		minLSN, err := cdcOrchestratorMinLSN(root, sourceClusterID, projectID, executorBinary, sourceConnectionStringEnv, sourceObject)
+		if err != nil {
+			return nil, err
+		}
+		minLSNs[sourceObject] = minLSN
+	}
+	return minLSNs, nil
+}
+
+func cdcOrchestratorMinLSN(root, sourceClusterID, projectID, executorBinary, sourceConnectionStringEnv, sourceObject string) (string, error) {
+	binary := strings.TrimSpace(executorBinary)
+	if binary == "" {
+		binary = "sqlserver2tidb-executor"
+	}
+	args := []string{
+		"cdc-lsn",
+		"--execute",
+		"--root", ".",
+		"--source-cluster-id", strings.TrimSpace(sourceClusterID),
+		"--project-id", strings.TrimSpace(projectID),
+		"--source-object", strings.TrimSpace(sourceObject),
+	}
+	if strings.TrimSpace(sourceConnectionStringEnv) != "" {
+		args = append(args, "--source-connection-string-env", strings.TrimSpace(sourceConnectionStringEnv))
+	}
+	cmd := newWorkerExecutorCommand(context.Background(), binary, args...)
+	cmd.Dir = root
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("cdc-lsn min probe failed for %s: %w: %s", sourceObject, err, strings.TrimSpace(string(output)))
+	}
+	minLSN, err := parseCDCMinLSNOutput(string(output))
+	if err != nil {
+		return "", fmt.Errorf("cdc-lsn min probe failed for %s: %w", sourceObject, err)
+	}
+	return minLSN, nil
+}
+
 func parseCDCMaxLSNOutput(output string) (string, error) {
 	for _, line := range strings.Split(output, "\n") {
 		line = strings.TrimSpace(line)
@@ -721,6 +791,20 @@ func parseCDCMaxLSNOutput(output string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("cdc-lsn output did not include max_lsn")
+}
+
+func parseCDCMinLSNOutput(output string) (string, error) {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "min_lsn:") {
+			minLSN := strings.TrimSpace(strings.TrimPrefix(line, "min_lsn:"))
+			if minLSN == "" {
+				return "", fmt.Errorf("cdc-lsn output min_lsn is empty")
+			}
+			return minLSN, nil
+		}
+	}
+	return "", fmt.Errorf("cdc-lsn output did not include min_lsn")
 }
 
 func runGenerateValidationPlan(args []string, stdout, stderr io.Writer) int {

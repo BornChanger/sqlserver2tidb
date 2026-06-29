@@ -17,6 +17,7 @@ type CDCIterationSpec struct {
 	MaxLSN         string
 	InitialFromLSN string
 	WritePRDraft   bool
+	MinLSNs        map[string]string
 }
 
 type CDCIterationResult struct {
@@ -104,6 +105,15 @@ func PrepareCDCIteration(root, sourceClusterID, projectID string, spec CDCIterat
 		if err != nil {
 			return CDCIterationResult{}, fmt.Errorf("cdc tracked table %s %w", table.SourceObject, err)
 		}
+		if minLSN := strings.TrimSpace(spec.MinLSNs[table.SourceObject]); minLSN != "" {
+			minLSNBytes, err := parseCDCPlanLSN(minLSN, "min_lsn")
+			if err != nil {
+				return CDCIterationResult{}, fmt.Errorf("cdc tracked table %s %w", table.SourceObject, err)
+			}
+			if bytes.Compare(fromLSNBytes, minLSNBytes) < 0 {
+				return CDCIterationResult{}, fmt.Errorf("SQL Server CDC retention no longer covers %s: from_lsn %s is before min_lsn %s", table.SourceObject, fromLSN, minLSN)
+			}
+		}
 		if bytes.Compare(fromLSNBytes, maxLSNBytes) > 0 {
 			return CDCIterationResult{}, fmt.Errorf("cdc tracked table %s checkpoint to_lsn %s is ahead of max_lsn %s", table.SourceObject, fromLSN, maxLSN)
 		}
@@ -146,6 +156,25 @@ func PrepareCDCIteration(root, sourceClusterID, projectID string, spec CDCIterat
 		result.PRBodyFile = prBodyFile
 	}
 	return result, nil
+}
+
+func ListCDCTrackedSourceObjects(root, sourceClusterID, projectID string) ([]string, error) {
+	if err := validateProjectAddress(root, sourceClusterID, projectID); err != nil {
+		return nil, err
+	}
+	planPath := filepath.Join(root, "clusters", sourceClusterID, "projects", projectID, "plan", "cdc-plan.yaml")
+	plan, err := readCDCPlanSummary(planPath)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateCDCPlanSummaryForExecution(plan, true); err != nil {
+		return nil, err
+	}
+	objects := make([]string, 0, len(plan.Tables))
+	for _, table := range plan.Tables {
+		objects = append(objects, table.SourceObject)
+	}
+	return objects, nil
 }
 
 func writeCDCIterationPRDraft(root string, result CDCIterationResult) (string, error) {

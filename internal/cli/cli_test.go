@@ -2386,7 +2386,7 @@ func TestRunCDCOrchestratorProbesMaxLSNAndWritesRangePRDraft(t *testing.T) {
 	createCLIProjectWithCDCPlanAndCheckpoint(t, root, &stdout, &stderr, "0x00000000000000000001", "0x00000000000000000002")
 
 	fakeExecutor := filepath.Join(root, "fake-cdc-lsn-executor")
-	if err := os.WriteFile(fakeExecutor, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> cdc-lsn-args.log\nprintf 'executor cdc-lsn completed\\n'\nprintf 'max_lsn: 0x00000000000000000003\\n'\n"), 0o755); err != nil {
+	if err := os.WriteFile(fakeExecutor, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> cdc-lsn-args.log\nprintf 'executor cdc-lsn completed\\n'\nprintf 'max_lsn: 0x00000000000000000003\\n'\ncase \" $* \" in\n  *' --source-object '*) printf 'min_lsn: 0x00000000000000000001\\n' ;;\nesac\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2428,6 +2428,43 @@ func TestRunCDCOrchestratorProbesMaxLSNAndWritesRangePRDraft(t *testing.T) {
 	}
 }
 
+func TestRunCDCOrchestratorRejectsCheckpointBeforeSQLServerMinLSN(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	createCLIProjectWithCDCPlanAndCheckpoint(t, root, &stdout, &stderr, "0x00000000000000000001", "0x00000000000000000002")
+	planBefore := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/cdc-plan.yaml")
+
+	fakeExecutor := filepath.Join(root, "fake-cdc-lsn-retention")
+	if err := os.WriteFile(fakeExecutor, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> cdc-lsn-args.log\nprintf 'executor cdc-lsn completed\\n'\nprintf 'max_lsn: 0x00000000000000000004\\n'\ncase \" $* \" in\n  *' --source-object '*) printf 'min_lsn: 0x00000000000000000003\\n' ;;\nesac\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"cdc-orchestrator",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--executor-binary", "./fake-cdc-lsn-retention",
+		"--max-iterations", "1",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("cdc-orchestrator code = 0, want retention failure; stdout = %s", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "SQL Server CDC retention no longer covers") {
+		t.Fatalf("cdc-orchestrator stderr = %q, want retention error", stderr.String())
+	}
+	argsLog := readCLIRelFile(t, root, "cdc-lsn-args.log")
+	if !strings.Contains(argsLog, "--source-object sales.dbo.orders") {
+		t.Fatalf("cdc-lsn args log = %q, want per-table min_lsn probe", argsLog)
+	}
+	planAfter := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/cdc-plan.yaml")
+	if planAfter != planBefore {
+		t.Fatalf("cdc-orchestrator mutated plan after retention failure\nbefore:\n%s\nafter:\n%s", planBefore, planAfter)
+	}
+}
+
 func TestRunCDCOrchestratorPollStopsAfterCaughtUpIdleLimit(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer
@@ -2435,7 +2472,7 @@ func TestRunCDCOrchestratorPollStopsAfterCaughtUpIdleLimit(t *testing.T) {
 	planBefore := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/cdc-plan.yaml")
 
 	fakeExecutor := filepath.Join(root, "fake-cdc-lsn-caught-up")
-	if err := os.WriteFile(fakeExecutor, []byte("#!/bin/sh\nprintf 'executor cdc-lsn completed\\n'\nprintf 'max_lsn: 0x00000000000000000002\\n'\n"), 0o755); err != nil {
+	if err := os.WriteFile(fakeExecutor, []byte("#!/bin/sh\nprintf 'executor cdc-lsn completed\\n'\nprintf 'max_lsn: 0x00000000000000000002\\n'\ncase \" $* \" in\n  *' --source-object '*) printf 'min_lsn: 0x00000000000000000001\\n' ;;\nesac\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2480,7 +2517,7 @@ func TestRunCDCOrchestratorApplyApprovedExecutesCDCAndAdvancesCheckpoint(t *test
 	writeCLIStageApproval(t, root, "cdc", hash)
 
 	fakeExecutor := filepath.Join(root, "fake-cdc-apply")
-	if err := os.WriteFile(fakeExecutor, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> cdc-apply-args.log\nprintf 'executor cdc completed\\n'\nprintf 'applied changes: 7\\n'\n"), 0o755); err != nil {
+	if err := os.WriteFile(fakeExecutor, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> cdc-apply-args.log\ncase \"$1\" in\n  cdc-lsn)\n    printf 'executor cdc-lsn completed\\n'\n    printf 'max_lsn: 0x00000000000000000003\\n'\n    printf 'min_lsn: 0x00000000000000000001\\n'\n    ;;\n  cdc)\n    printf 'executor cdc completed\\n'\n    printf 'applied changes: 7\\n'\n    ;;\nesac\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2537,7 +2574,7 @@ func TestRunCDCOrchestratorApplyApprovedSkipsAlreadyCheckpointedRange(t *testing
 	writeCLIStageApproval(t, root, "cdc", hash)
 
 	fakeExecutor := filepath.Join(root, "fake-cdc-apply")
-	if err := os.WriteFile(fakeExecutor, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> cdc-apply-args.log\nprintf 'executor cdc completed\\n'\nprintf 'applied changes: 7\\n'\n"), 0o755); err != nil {
+	if err := os.WriteFile(fakeExecutor, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> cdc-apply-args.log\ncase \"$1\" in\n  cdc-lsn)\n    printf 'executor cdc-lsn completed\\n'\n    printf 'max_lsn: 0x00000000000000000003\\n'\n    printf 'min_lsn: 0x00000000000000000001\\n'\n    ;;\n  cdc)\n    printf 'executor cdc completed\\n'\n    printf 'applied changes: 7\\n'\n    ;;\nesac\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2560,8 +2597,9 @@ func TestRunCDCOrchestratorApplyApprovedSkipsAlreadyCheckpointedRange(t *testing
 	if !strings.Contains(output, "approved cdc apply skipped: current CDC range already checkpointed") {
 		t.Fatalf("cdc-orchestrator skip-applied stdout = %q, want skip message", output)
 	}
-	if _, err := os.Stat(filepath.Join(root, "cdc-apply-args.log")); !os.IsNotExist(err) {
-		t.Fatalf("cdc apply executor should not have been called, stat err = %v", err)
+	argsLog := readCLIRelFile(t, root, "cdc-apply-args.log")
+	if strings.Contains(argsLog, "cdc --execute") {
+		t.Fatalf("cdc apply executor should not have been called, args log = %q", argsLog)
 	}
 }
 
