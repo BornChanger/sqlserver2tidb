@@ -2075,6 +2075,7 @@ func TestRunCDCEnableDryRunCommand(t *testing.T) {
 	assertOutputContains(t, output, "capture instance: dbo_orders_custom")
 	assertOutputContains(t, output, "role name: cdc_reader")
 	assertOutputContains(t, output, "supports net changes: true")
+	assertOutputContains(t, output, "preflight checks: SQL Server Agent, CDC capture job, CDC cleanup job, retention, and permissions")
 	assertOutputContains(t, output, "No SQL Server CDC enablement will be executed.")
 }
 
@@ -2119,6 +2120,11 @@ func TestRunCDCEnableExecutePrintsStatus(t *testing.T) {
 		return cdcEnableResult{
 			DatabaseCDCAlreadyEnabled: false,
 			TableCDCAlreadyEnabled:    true,
+			SQLServerAgentRunning:     true,
+			CaptureJobPresent:         true,
+			CleanupJobPresent:         true,
+			RetentionMinutes:          10080,
+			PermissionCheckPassed:     true,
 		}, nil
 	}
 
@@ -2140,6 +2146,32 @@ func TestRunCDCEnableExecutePrintsStatus(t *testing.T) {
 	assertOutputContains(t, output, "capture instance: dbo_orders")
 	assertOutputContains(t, output, "database cdc already enabled: false")
 	assertOutputContains(t, output, "table cdc already enabled: true")
+	assertOutputContains(t, output, "sql server agent running: true")
+	assertOutputContains(t, output, "cdc capture job present: true")
+	assertOutputContains(t, output, "cdc cleanup job present: true")
+	assertOutputContains(t, output, "cdc cleanup retention minutes: 10080")
+	assertOutputContains(t, output, "cdc admin permission check passed: true")
+}
+
+func TestBuildSQLServerCDCEnablePreflightQueries(t *testing.T) {
+	queries, err := buildSQLServerCDCEnablePreflightQueries("sales.dbo.orders")
+	if err != nil {
+		t.Fatalf("buildSQLServerCDCEnablePreflightQueries() error = %v", err)
+	}
+	assertOutputContains(t, queries.SQLServerAgentStatus, "FROM sys.dm_server_services")
+	assertOutputContains(t, queries.SQLServerAgentStatus, "SQL Server Agent")
+	assertOutputContains(t, queries.CDCCaptureJobStatus, "FROM msdb.dbo.sysjobs")
+	if queries.CaptureJobName != "cdc.sales_capture" {
+		t.Fatalf("capture job name = %q, want cdc.sales_capture", queries.CaptureJobName)
+	}
+	if queries.CleanupJobName != "cdc.sales_cleanup" {
+		t.Fatalf("cleanup job name = %q, want cdc.sales_cleanup", queries.CleanupJobName)
+	}
+	assertOutputContains(t, queries.CDCCleanupJobStatus, "FROM msdb.dbo.sysjobs")
+	assertOutputContains(t, queries.CDCCleanupRetention, "FROM msdb.dbo.cdc_jobs")
+	assertOutputContains(t, queries.CDCCleanupRetention, "job_type = N'cleanup'")
+	assertOutputContains(t, queries.PermissionCheck, "IS_SRVROLEMEMBER('sysadmin')")
+	assertOutputContains(t, queries.PermissionCheck, "IS_MEMBER('db_owner')")
 }
 
 func TestRunCDCDryRunRequiresLSNRange(t *testing.T) {

@@ -376,9 +376,13 @@ func prepareCDCEnableExecutorCommands(root, projectDir, binary, sourceClusterID,
 	sourceConnectionStringEnv := strings.TrimSpace(spec.SourceConnectionStringEnv)
 	commands := make([]WorkerExecutorCommand, 0, len(plan.Tables))
 	for _, table := range plan.Tables {
-		captureInstance, err := cdcCaptureInstanceForSourceObject(table.SourceObject)
-		if err != nil {
-			return nil, err
+		captureInstance := strings.TrimSpace(table.CaptureInstance)
+		if captureInstance == "" {
+			var err error
+			captureInstance, err = cdcCaptureInstanceForSourceObject(table.SourceObject)
+			if err != nil {
+				return nil, err
+			}
 		}
 		args := []string{
 			"cdc-enable",
@@ -387,6 +391,13 @@ func prepareCDCEnableExecutorCommands(root, projectDir, binary, sourceClusterID,
 			"--project-id", projectID,
 			"--source-object", table.SourceObject,
 			"--capture-instance", captureInstance,
+			"--retention-hours-required", strconv.Itoa(plan.RetentionHoursRequired),
+		}
+		if strings.TrimSpace(table.RoleName) != "" {
+			args = append(args, "--role-name", strings.TrimSpace(table.RoleName))
+		}
+		if table.SupportsNetChanges {
+			args = append(args, "--supports-net-changes")
 		}
 		if sourceConnectionStringEnv != "" {
 			args = append(args, "--source-connection-string-env", sourceConnectionStringEnv)

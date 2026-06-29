@@ -392,6 +392,8 @@ func runGenerateCDCPlan(args []string, stdout, stderr io.Writer) int {
 	mode := fs.String("mode", "sqlserver-cdc", "CDC mode")
 	retentionHours := fs.Int("retention-hours", 168, "required CDC retention hours")
 	applyBatchSize := fs.Int("apply-batch-size", 1000, "planned TiDB CDC apply batch size")
+	roleName := fs.String("role-name", "", "optional SQL Server CDC gating role name to render into tracked tables")
+	supportsNetChanges := fs.Bool("supports-net-changes", false, "render SQL Server CDC net changes support for tracked tables")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -399,6 +401,8 @@ func runGenerateCDCPlan(args []string, stdout, stderr io.Writer) int {
 		Mode:                   *mode,
 		RetentionHoursRequired: *retentionHours,
 		ApplyBatchSize:         *applyBatchSize,
+		RoleName:               *roleName,
+		SupportsNetChanges:     *supportsNetChanges,
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "generate cdc plan: %v\n", err)

@@ -265,10 +265,12 @@ go run ./cmd/sqlserver2tidb generate-cdc-plan \
   --project-id sales-db-to-tidb-prod-a \
   --mode sqlserver-cdc \
   --retention-hours 168 \
-  --apply-batch-size 1000
+  --apply-batch-size 1000 \
+  --role-name cdc_reader \
+  --supports-net-changes
 ```
 
-This writes `plan/cdc-plan.yaml` under the project. The command records tracked source/target table pairs, captured CDC columns, target apply key columns, and checkpoint policy. Captured columns come from discovered non-computed SQL Server table columns. It chooses key columns from the discovered SQL Server primary key first, then from a non-filtered unique index; tables without such an index produce an empty `key_columns` list that must be reviewed before execution. The draft-generation command itself does not mutate SQL Server, start Debezium, start Kafka, or apply changes to TiDB. After the CDC plan is reviewed and `approvals/cdc-approval.yaml` matches the current CDC payload hash, run `worker-executor --stage cdc-enable --execute` to enable SQL Server database/table CDC idempotently before running `worker-executor --stage cdc --execute` for LSN apply work.
+This writes `plan/cdc-plan.yaml` under the project. The command records tracked source/target table pairs, SQL Server CDC `capture_instance`, optional `role_name`, `supports_net_changes`, captured CDC columns, target apply key columns, and checkpoint policy. Captured columns come from discovered non-computed SQL Server table columns. It chooses key columns from the discovered SQL Server primary key first, then from a non-filtered unique index; tables without such an index produce an empty `key_columns` list that must be reviewed before execution. The draft-generation command itself does not mutate SQL Server, start Debezium, start Kafka, or apply changes to TiDB. After the CDC plan is reviewed and `approvals/cdc-approval.yaml` matches the current CDC payload hash, run `worker-executor --stage cdc-enable --execute` to enable SQL Server database/table CDC idempotently before running `worker-executor --stage cdc --execute` for LSN apply work. `cdc-enable` now treats the reviewed plan as the setup source of truth: it passes `capture_instance`, `role_name`, `supports_net_changes`, and `retention_hours_required` to the executor. Execute mode preflights SQL Server Agent status and CDC admin permissions, enables DB/table CDC only when needed, then verifies capture and cleanup jobs are present/enabled and that cleanup retention is at least the reviewed `retention_hours_required`.
 
 Prepare an explicit CDC LSN range for review:
 

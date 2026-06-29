@@ -279,6 +279,9 @@ approval_required:
         "properties": {
           "source_object": {"type": "string", "minLength": 1},
           "target_object": {"type": "string", "minLength": 1},
+          "capture_instance": {"type": "string"},
+          "role_name": {"type": "string"},
+          "supports_net_changes": {"type": "boolean"},
           "apply_batch_size": {"type": "integer", "minimum": 1},
           "status": {"type": "string"}
         },

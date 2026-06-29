@@ -30,3 +30,25 @@ func validateTiDBTargetObjectName(field, targetObject string) error {
 	}
 	return nil
 }
+
+func validateSQLServerCDCSysname(field, value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	if len(value) > 128 {
+		return fmt.Errorf("%s %q exceeds SQL Server sysname length 128", field, value)
+	}
+	for index, r := range value {
+		if index == 0 {
+			if !((r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || r == '_') {
+				return fmt.Errorf("%s %q must start with a letter or underscore", field, value)
+			}
+			continue
+		}
+		if !((r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_') {
+			return fmt.Errorf("%s %q contains unsupported character %q", field, value, r)
+		}
+	}
+	return nil
+}

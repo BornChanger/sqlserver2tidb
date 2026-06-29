@@ -6839,6 +6839,10 @@ func TestPrepareWorkerExecutorBuildsCDCEnableCommandsFromApprovedCDCPlan(t *test
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
 	must(t, GenerateCDCPlanOnly(root))
+	planRel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/cdc-plan.yaml"
+	plan := readFile(t, root, planRel)
+	plan = strings.Replace(plan, "    capture_instance: dbo_orders\n    role_name: \"\"\n    supports_net_changes: false", "    capture_instance: dbo_orders_custom\n    role_name: cdc_reader\n    supports_net_changes: true", 1)
+	writeFileForTest(t, root, planRel, plan)
 	setReviewPlanStatus(t, root, "cdc", "reviewed")
 	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "cdc")
 	if err != nil {
@@ -6861,11 +6865,40 @@ func TestPrepareWorkerExecutorBuildsCDCEnableCommandsFromApprovedCDCPlan(t *test
 	}
 	assertContains(t, first.ShellCommand, "sqlserver2tidb-executor cdc-enable")
 	assertContains(t, first.ShellCommand, "--source-object sales.dbo.orders")
-	assertContains(t, first.ShellCommand, "--capture-instance dbo_orders")
+	assertContains(t, first.ShellCommand, "--capture-instance dbo_orders_custom")
+	assertContains(t, first.ShellCommand, "--retention-hours-required 168")
+	assertContains(t, first.ShellCommand, "--role-name cdc_reader")
+	assertContains(t, first.ShellCommand, "--supports-net-changes")
 	assertContains(t, first.ShellCommand, "--source-connection-string-env SQLSERVER_CDC_ADMIN_DSN")
 	assertArgValue(t, first.Args, "--source-object", "sales.dbo.orders")
-	assertArgValue(t, first.Args, "--capture-instance", "dbo_orders")
+	assertArgValue(t, first.Args, "--capture-instance", "dbo_orders_custom")
+	assertArgValue(t, first.Args, "--retention-hours-required", "168")
+	assertArgValue(t, first.Args, "--role-name", "cdc_reader")
+	assertArgPresent(t, first.Args, "--supports-net-changes")
 	assertArgValue(t, first.Args, "--source-connection-string-env", "SQLSERVER_CDC_ADMIN_DSN")
+}
+
+func TestPrepareWorkerExecutorRejectsInvalidCDCEnablePlanSettings(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateCDCPlanOnly(root))
+	planRel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/cdc-plan.yaml"
+	plan := readFile(t, root, planRel)
+	plan = strings.Replace(plan, "    capture_instance: dbo_orders\n    role_name: \"\"\n    supports_net_changes: false", "    capture_instance: bad-name\n    role_name: cdc-reader\n    supports_net_changes: false", 1)
+	writeFileForTest(t, root, planRel, plan)
+	setReviewPlanStatus(t, root, "cdc", "reviewed")
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "cdc")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(cdc) error = %v", err)
+	}
+	writeStageApproval(t, root, "cdc", hash)
+
+	_, err = PrepareWorkerExecutor(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "cdc-enable", WorkerExecutorPrepareSpec{})
+	if err == nil {
+		t.Fatal("PrepareWorkerExecutor(cdc-enable) error = nil, want invalid CDC enable settings error")
+	}
+	assertContains(t, err.Error(), "capture_instance")
+	assertContains(t, err.Error(), "bad-name")
 }
 
 func TestPrepareWorkerExecutorRejectsCDCSourceSchemaDrift(t *testing.T) {

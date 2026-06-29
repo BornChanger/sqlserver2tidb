@@ -848,18 +848,22 @@ type dataImportJobState struct {
 }
 
 type cdcPlanSummary struct {
-	Mode   string
-	Tables []cdcTrackedTableState
+	Mode                   string
+	RetentionHoursRequired int
+	Tables                 []cdcTrackedTableState
 }
 
 type cdcTrackedTableState struct {
-	SourceObject   string
-	TargetObject   string
-	Columns        []string
-	KeyColumns     []string
-	FromLSN        string
-	ToLSN          string
-	ApplyBatchSize int
+	SourceObject       string
+	TargetObject       string
+	CaptureInstance    string
+	RoleName           string
+	SupportsNetChanges bool
+	Columns            []string
+	KeyColumns         []string
+	FromLSN            string
+	ToLSN              string
+	ApplyBatchSize     int
 }
 
 func readCDCPlanSummary(path string) (cdcPlanSummary, error) {
@@ -867,7 +871,7 @@ func readCDCPlanSummary(path string) (cdcPlanSummary, error) {
 	if err != nil {
 		return cdcPlanSummary{}, fmt.Errorf("read cdc plan: %w", err)
 	}
-	plan := cdcPlanSummary{Mode: "sqlserver-cdc"}
+	plan := cdcPlanSummary{Mode: "sqlserver-cdc", RetentionHoursRequired: 168}
 	listKey := ""
 	for _, raw := range strings.Split(string(data), "\n") {
 		trimmed := strings.TrimSpace(raw)
@@ -877,6 +881,13 @@ func readCDCPlanSummary(path string) (cdcPlanSummary, error) {
 			if mode != "" {
 				plan.Mode = mode
 			}
+		case strings.HasPrefix(trimmed, "retention_hours_required:"):
+			value := trimYAMLScalar(strings.TrimPrefix(trimmed, "retention_hours_required:"))
+			retentionHours, err := strconv.Atoi(value)
+			if err != nil {
+				return cdcPlanSummary{}, fmt.Errorf("parse cdc retention_hours_required %q: %w", value, err)
+			}
+			plan.RetentionHoursRequired = retentionHours
 		case strings.HasPrefix(trimmed, "- source_object:"):
 			plan.Tables = append(plan.Tables, cdcTrackedTableState{
 				SourceObject: trimYAMLScalar(strings.TrimPrefix(trimmed, "- source_object:")),
@@ -884,6 +895,20 @@ func readCDCPlanSummary(path string) (cdcPlanSummary, error) {
 			listKey = ""
 		case strings.HasPrefix(trimmed, "target_object:") && len(plan.Tables) > 0:
 			plan.Tables[len(plan.Tables)-1].TargetObject = trimYAMLScalar(strings.TrimPrefix(trimmed, "target_object:"))
+			listKey = ""
+		case strings.HasPrefix(trimmed, "capture_instance:") && len(plan.Tables) > 0:
+			plan.Tables[len(plan.Tables)-1].CaptureInstance = trimYAMLScalar(strings.TrimPrefix(trimmed, "capture_instance:"))
+			listKey = ""
+		case strings.HasPrefix(trimmed, "role_name:") && len(plan.Tables) > 0:
+			plan.Tables[len(plan.Tables)-1].RoleName = trimYAMLScalar(strings.TrimPrefix(trimmed, "role_name:"))
+			listKey = ""
+		case strings.HasPrefix(trimmed, "supports_net_changes:") && len(plan.Tables) > 0:
+			value := trimYAMLScalar(strings.TrimPrefix(trimmed, "supports_net_changes:"))
+			supportsNetChanges, err := strconv.ParseBool(value)
+			if err != nil {
+				return cdcPlanSummary{}, fmt.Errorf("parse cdc supports_net_changes %q: %w", value, err)
+			}
+			plan.Tables[len(plan.Tables)-1].SupportsNetChanges = supportsNetChanges
 			listKey = ""
 		case strings.HasPrefix(trimmed, "columns:") && len(plan.Tables) > 0:
 			listKey = "cdc.columns"
@@ -936,6 +961,9 @@ func validateCDCPlanSummaryForExecutionWithLSN(plan cdcPlanSummary, requireKeyCo
 	if len(plan.Tables) == 0 {
 		return fmt.Errorf("cdc plan contains no tracked tables")
 	}
+	if plan.RetentionHoursRequired <= 0 {
+		return fmt.Errorf("cdc retention_hours_required must be positive")
+	}
 	seenSources := make(map[string]struct{}, len(plan.Tables))
 	for _, table := range plan.Tables {
 		sourceObject := strings.TrimSpace(table.SourceObject)
@@ -953,6 +981,12 @@ func validateCDCPlanSummaryForExecutionWithLSN(plan cdcPlanSummary, requireKeyCo
 			return fmt.Errorf("cdc tracked table %s target_object is required", table.SourceObject)
 		}
 		if err := validateTiDBTargetObjectName("cdc tracked table "+table.SourceObject+" target_object", table.TargetObject); err != nil {
+			return err
+		}
+		if err := validateSQLServerCDCSysname("cdc tracked table "+table.SourceObject+" capture_instance", table.CaptureInstance); err != nil {
+			return err
+		}
+		if err := validateSQLServerCDCSysname("cdc tracked table "+table.SourceObject+" role_name", table.RoleName); err != nil {
 			return err
 		}
 		if table.ApplyBatchSize <= 0 {

@@ -942,14 +942,16 @@ bin/sqlserver2tidb generate-cdc-plan \
   --project-id sales-db-to-tidb-prod-a \
   --mode sqlserver-cdc \
   --retention-hours 168 \
-  --apply-batch-size 1000
+  --apply-batch-size 1000 \
+  --role-name cdc_reader \
+  --supports-net-changes
 ```
 
 输出：
 
 - `clusters/<source_cluster_id>/projects/<project_id>/plan/cdc-plan.yaml`
 
-当前 `generate-cdc-plan` 只生成追踪表清单、captured columns、目标端 apply key columns 和 checkpoint 策略；生成命令本身不修改 SQL Server，不创建 Debezium connector，不读取 LSN，不写 Kafka，也不向 TiDB 回放增量。captured columns 来自 inventory 中发现的非计算列；key columns 优先来自 inventory 中发现的 SQL Server primary key，其次来自非过滤 unique index；如果没有这类索引，会生成 `key_columns: []`，必须人工 review 后补齐才能执行 CDC apply executor。CDC plan 通过 PR review 并写入匹配的 `approvals/cdc-approval.yaml` 后，先执行 `worker-executor --stage cdc-enable --execute --source-connection-string-env <SQLSERVER_ADMIN_DSN_ENV>`，由 `sqlserver2tidb-executor cdc-enable --execute` 幂等检查并启用 SQL Server database CDC 和 table CDC；之后再用 `worker-executor --stage cdc --execute` 执行具体 LSN range 的 TiDB 回放。执行 `worker-executor --stage cdc-enable` 或 `worker-executor --stage cdc` 时都会重新读取当前 `clusters/<source_cluster_id>/inventory/inventory.json`，如果已 review 的 captured columns 与当前非计算列不一致，或 `key_columns` 已不再匹配当前 primary key / 非过滤 unique index，会在生成 executor 命令前失败；这是基于 GitHub 文件的 schema drift gate，不依赖 TiDB metadata 表。
+当前 `generate-cdc-plan` 生成追踪表清单、SQL Server CDC `capture_instance`、可选 `role_name`、`supports_net_changes`、captured columns、目标端 apply key columns 和 checkpoint 策略；生成命令本身不修改 SQL Server，不创建 Debezium connector，不读取 LSN，不写 Kafka，也不向 TiDB 回放增量。captured columns 来自 inventory 中发现的非计算列；key columns 优先来自 inventory 中发现的 SQL Server primary key，其次来自非过滤 unique index；如果没有这类索引，会生成 `key_columns: []`，必须人工 review 后补齐才能执行 CDC apply executor。CDC plan 通过 PR review 并写入匹配的 `approvals/cdc-approval.yaml` 后，先执行 `worker-executor --stage cdc-enable --execute --source-connection-string-env <SQLSERVER_ADMIN_DSN_ENV>`，由 `sqlserver2tidb-executor cdc-enable --execute` 按已 review 的 `capture_instance`、`role_name`、`supports_net_changes` 和 `retention_hours_required` 幂等启用 SQL Server database CDC 和 table CDC。执行模式会先检查 SQL Server Agent 是否运行、当前账号是否具备启用 DB/table CDC 所需权限，启用后再确认 CDC capture job、cleanup job 存在且启用，并确认 cleanup retention 至少覆盖 `retention_hours_required`；任一检查失败都会返回非零并写入 executor evidence。之后再用 `worker-executor --stage cdc --execute` 执行具体 LSN range 的 TiDB 回放。执行 `worker-executor --stage cdc-enable` 或 `worker-executor --stage cdc` 时都会重新读取当前 `clusters/<source_cluster_id>/inventory/inventory.json`，如果已 review 的 captured columns 与当前非计算列不一致，或 `key_columns` 已不再匹配当前 primary key / 非过滤 unique index，会在生成 executor 命令前失败；这是基于 GitHub 文件的 schema drift gate，不依赖 TiDB metadata 表。
 
 执行 CDC 长周期运维健康检查：
 
@@ -1004,6 +1006,9 @@ checkpoint_file: ../../../state/cdc-checkpoint.yaml
 tracked_tables:
   - source_object: sales.dbo.orders
     target_object: app.orders
+    capture_instance: dbo_orders
+    role_name: "cdc_reader"
+    supports_net_changes: true
     columns:
       - id
       - customer_name
@@ -1855,10 +1860,12 @@ bin/sqlserver2tidb generate-cdc-plan \
   --project-id sales-db-to-tidb-prod-a \
   --mode sqlserver-cdc \
   --retention-hours 168 \
-  --apply-batch-size 1000
+  --apply-batch-size 1000 \
+  --role-name cdc_reader \
+  --supports-net-changes
 ```
 
-该命令读取源集群 inventory 和项目 metadata，写回项目目录下的 `plan/cdc-plan.yaml`。它只生成草稿，不启用 SQL Server CDC，不启动 Debezium，不读取 LSN，不连接 TiDB，也不执行增量回放。生成的 tracked table 会包含 `columns` 和 `key_columns`；`columns` 来自非计算列，`key_columns` 优先使用 SQL Server primary key，其次使用非过滤 unique index；缺少可用 key 时会保留空列表等待人工 review。`--mode` 默认是 `sqlserver-cdc`，`--retention-hours` 默认是 `168`，`--apply-batch-size` 默认是 `1000`。
+该命令读取源集群 inventory 和项目 metadata，写回项目目录下的 `plan/cdc-plan.yaml`。它只生成草稿，不启用 SQL Server CDC，不启动 Debezium，不读取 LSN，不连接 TiDB，也不执行增量回放。生成的 tracked table 会包含 `capture_instance`、`role_name`、`supports_net_changes`、`columns` 和 `key_columns`；`columns` 来自非计算列，`key_columns` 优先使用 SQL Server primary key，其次使用非过滤 unique index；缺少可用 key 时会保留空列表等待人工 review。`--mode` 默认是 `sqlserver-cdc`，`--retention-hours` 默认是 `168`，`--apply-batch-size` 默认是 `1000`，`--role-name` 默认空，`--supports-net-changes` 默认关闭。
 
 ### 16.9.1 prepare-cdc-range
 

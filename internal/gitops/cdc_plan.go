@@ -11,6 +11,8 @@ type CDCPlanSpec struct {
 	Mode                   string
 	RetentionHoursRequired int
 	ApplyBatchSize         int
+	RoleName               string
+	SupportsNetChanges     bool
 }
 
 type CDCPlanResult struct {
@@ -22,13 +24,16 @@ type CDCPlanResult struct {
 }
 
 type cdcTrackedTablePlan struct {
-	SourceObject   string
-	TargetObject   string
-	Columns        []string
-	KeyColumns     []string
-	FromLSN        string
-	ToLSN          string
-	ApplyBatchSize int
+	SourceObject       string
+	TargetObject       string
+	CaptureInstance    string
+	RoleName           string
+	SupportsNetChanges bool
+	Columns            []string
+	KeyColumns         []string
+	FromLSN            string
+	ToLSN              string
+	ApplyBatchSize     int
 }
 
 func GenerateCDCPlan(root, sourceClusterID, projectID string, spec CDCPlanSpec) (CDCPlanResult, error) {
@@ -36,6 +41,9 @@ func GenerateCDCPlan(root, sourceClusterID, projectID string, spec CDCPlanSpec) 
 		return CDCPlanResult{}, err
 	}
 	spec = normalizeCDCPlanSpec(spec)
+	if err := validateSQLServerCDCSysname("cdc role_name", spec.RoleName); err != nil {
+		return CDCPlanResult{}, err
+	}
 
 	clusterDir := filepath.Join(root, "clusters", sourceClusterID)
 	projectDir := filepath.Join(clusterDir, "projects", projectID)
@@ -105,11 +113,14 @@ func buildCDCTrackedTablePlan(project projectMetadata, databaseName, schemaName 
 		targetTable = schemaName + "_" + table.Name
 	}
 	return cdcTrackedTablePlan{
-		SourceObject:   joinObject(databaseName, schemaName, table.Name),
-		TargetObject:   joinObject(project.TargetDatabase, targetTable),
-		Columns:        chooseCDCCapturedColumns(table),
-		KeyColumns:     chooseCDCKeyColumns(table),
-		ApplyBatchSize: spec.ApplyBatchSize,
+		SourceObject:       joinObject(databaseName, schemaName, table.Name),
+		TargetObject:       joinObject(project.TargetDatabase, targetTable),
+		CaptureInstance:    schemaName + "_" + table.Name,
+		RoleName:           strings.TrimSpace(spec.RoleName),
+		SupportsNetChanges: spec.SupportsNetChanges,
+		Columns:            chooseCDCCapturedColumns(table),
+		KeyColumns:         chooseCDCKeyColumns(table),
+		ApplyBatchSize:     spec.ApplyBatchSize,
 	}
 }
 
@@ -162,6 +173,9 @@ func renderCDCPlanYAML(sourceClusterID string, project projectMetadata, spec CDC
 	for _, table := range tables {
 		fmt.Fprintf(&b, "  - source_object: %s\n", table.SourceObject)
 		fmt.Fprintf(&b, "    target_object: %s\n", table.TargetObject)
+		fmt.Fprintf(&b, "    capture_instance: %s\n", table.CaptureInstance)
+		fmt.Fprintf(&b, "    role_name: %q\n", table.RoleName)
+		fmt.Fprintf(&b, "    supports_net_changes: %t\n", table.SupportsNetChanges)
 		if len(table.Columns) == 0 {
 			b.WriteString("    columns: []\n")
 		} else {

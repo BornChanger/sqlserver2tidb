@@ -236,6 +236,7 @@ func runCDCEnable(args []string, stdout, stderr io.Writer) int {
 	captureInstance := fs.String("capture-instance", "", "SQL Server CDC capture instance; derived from source object when empty")
 	roleName := fs.String("role-name", "", "optional SQL Server CDC gating role name")
 	supportsNetChanges := fs.Bool("supports-net-changes", false, "enable SQL Server CDC net changes support for the table")
+	retentionHoursRequired := fs.Int("retention-hours-required", 168, "minimum SQL Server CDC cleanup retention hours required after enablement")
 	sourceConnectionStringEnv := fs.String("source-connection-string-env", defaultSourceConnectionStringEnv, "environment variable containing the SQL Server CDC admin connection string")
 	execute := fs.Bool("execute", false, "enable SQL Server CDC for the database and table")
 	if err := fs.Parse(args); err != nil {
@@ -252,6 +253,18 @@ func runCDCEnable(args []string, stdout, stderr io.Writer) int {
 	normalizedCaptureInstance, err := normalizeSQLServerCDCCaptureInstance(*sourceObject, *captureInstance)
 	if err != nil {
 		fmt.Fprintf(stderr, "executor cdc-enable: %v\n", err)
+		return 1
+	}
+	if err := validateSQLServerCDCSysname("capture instance", normalizedCaptureInstance); err != nil {
+		fmt.Fprintf(stderr, "executor cdc-enable: %v\n", err)
+		return 1
+	}
+	if err := validateSQLServerCDCSysname("role name", *roleName); err != nil {
+		fmt.Fprintf(stderr, "executor cdc-enable: %v\n", err)
+		return 1
+	}
+	if *retentionHoursRequired <= 0 {
+		fmt.Fprintln(stderr, "executor cdc-enable: retention-hours-required must be positive")
 		return 1
 	}
 	if _, err := buildSQLServerCDCEnableDBStatement(*sourceObject); err != nil {
@@ -273,6 +286,7 @@ func runCDCEnable(args []string, stdout, stderr io.Writer) int {
 			CaptureInstance:           normalizedCaptureInstance,
 			RoleName:                  *roleName,
 			SupportsNetChanges:        *supportsNetChanges,
+			RetentionHoursRequired:    *retentionHoursRequired,
 			SourceConnectionStringEnv: *sourceConnectionStringEnv,
 		})
 		if err != nil {
@@ -283,6 +297,11 @@ func runCDCEnable(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "capture instance: %s\n", normalizedCaptureInstance)
 		fmt.Fprintf(stdout, "database cdc already enabled: %t\n", result.DatabaseCDCAlreadyEnabled)
 		fmt.Fprintf(stdout, "table cdc already enabled: %t\n", result.TableCDCAlreadyEnabled)
+		fmt.Fprintf(stdout, "sql server agent running: %t\n", result.SQLServerAgentRunning)
+		fmt.Fprintf(stdout, "cdc capture job present: %t\n", result.CaptureJobPresent)
+		fmt.Fprintf(stdout, "cdc cleanup job present: %t\n", result.CleanupJobPresent)
+		fmt.Fprintf(stdout, "cdc cleanup retention minutes: %d\n", result.RetentionMinutes)
+		fmt.Fprintf(stdout, "cdc admin permission check passed: %t\n", result.PermissionCheckPassed)
 		return 0
 	}
 
@@ -296,6 +315,8 @@ func runCDCEnable(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "role name: %s\n", strings.TrimSpace(*roleName))
 	}
 	fmt.Fprintf(stdout, "supports net changes: %t\n", *supportsNetChanges)
+	fmt.Fprintf(stdout, "retention hours required: %d\n", *retentionHoursRequired)
+	fmt.Fprintln(stdout, "preflight checks: SQL Server Agent, CDC capture job, CDC cleanup job, retention, and permissions")
 	fmt.Fprintln(stdout, "No SQL Server CDC enablement will be executed.")
 	return 0
 }
@@ -305,12 +326,18 @@ type cdcEnableSpec struct {
 	CaptureInstance           string
 	RoleName                  string
 	SupportsNetChanges        bool
+	RetentionHoursRequired    int
 	SourceConnectionStringEnv string
 }
 
 type cdcEnableResult struct {
 	DatabaseCDCAlreadyEnabled bool
 	TableCDCAlreadyEnabled    bool
+	SQLServerAgentRunning     bool
+	CaptureJobPresent         bool
+	CleanupJobPresent         bool
+	RetentionMinutes          int
+	PermissionCheckPassed     bool
 }
 
 var executeCDCEnableFunc = executeSQLServerCDCEnable
@@ -319,6 +346,16 @@ func executeSQLServerCDCEnable(ctx context.Context, spec cdcEnableSpec) (cdcEnab
 	captureInstance, err := normalizeSQLServerCDCCaptureInstance(spec.SourceObject, spec.CaptureInstance)
 	if err != nil {
 		return cdcEnableResult{}, fmt.Errorf("executor cdc-enable: %w", err)
+	}
+	if err := validateSQLServerCDCSysname("capture instance", captureInstance); err != nil {
+		return cdcEnableResult{}, fmt.Errorf("executor cdc-enable: %w", err)
+	}
+	if err := validateSQLServerCDCSysname("role name", spec.RoleName); err != nil {
+		return cdcEnableResult{}, fmt.Errorf("executor cdc-enable: %w", err)
+	}
+	retentionHoursRequired := spec.RetentionHoursRequired
+	if retentionHoursRequired <= 0 {
+		retentionHoursRequired = 168
 	}
 	envName := strings.TrimSpace(spec.SourceConnectionStringEnv)
 	if envName == "" {
@@ -336,12 +373,47 @@ func executeSQLServerCDCEnable(ctx context.Context, spec cdcEnableSpec) (cdcEnab
 	defer db.Close()
 
 	result := cdcEnableResult{}
+	preflightQueries, err := buildSQLServerCDCEnablePreflightQueries(spec.SourceObject)
+	if err != nil {
+		return cdcEnableResult{}, fmt.Errorf("executor cdc-enable: %w", err)
+	}
+	databaseName := preflightQueries.DatabaseName
+	if strings.TrimSpace(databaseName) == "" {
+		databaseName, err = querySQLServerCurrentDatabaseName(ctx, db)
+		if err != nil {
+			return cdcEnableResult{}, fmt.Errorf("executor cdc-enable: query current database name: %w", err)
+		}
+	}
+	captureJobName := preflightQueries.CaptureJobName
+	if captureJobName == "" {
+		captureJobName = "cdc." + databaseName + "_capture"
+	}
+	cleanupJobName := preflightQueries.CleanupJobName
+	if cleanupJobName == "" {
+		cleanupJobName = "cdc." + databaseName + "_cleanup"
+	}
+	agentRunning, err := querySQLServerCDCAgentRunning(ctx, db, preflightQueries)
+	if err != nil {
+		return cdcEnableResult{}, fmt.Errorf("executor cdc-enable: query SQL Server Agent status: %w", err)
+	}
+	result.SQLServerAgentRunning = agentRunning
+	if !agentRunning {
+		return result, fmt.Errorf("executor cdc-enable: SQL Server Agent is not running; CDC capture and cleanup jobs cannot run")
+	}
+	permissions, err := querySQLServerCDCEnablePermissions(ctx, db, preflightQueries)
+	if err != nil {
+		return cdcEnableResult{}, fmt.Errorf("executor cdc-enable: query CDC enable permissions: %w", err)
+	}
+	result.PermissionCheckPassed = permissions.Sysadmin || permissions.DBOwner
 	databaseEnabled, err := querySQLServerCDCDatabaseEnabled(ctx, db, spec.SourceObject)
 	if err != nil {
 		return cdcEnableResult{}, fmt.Errorf("executor cdc-enable: query database CDC status: %w", err)
 	}
 	result.DatabaseCDCAlreadyEnabled = databaseEnabled
 	if !databaseEnabled {
+		if !permissions.Sysadmin {
+			return result, fmt.Errorf("executor cdc-enable: enabling database CDC requires sysadmin permission")
+		}
 		statement, err := buildSQLServerCDCEnableDBStatement(spec.SourceObject)
 		if err != nil {
 			return cdcEnableResult{}, fmt.Errorf("executor cdc-enable: %w", err)
@@ -357,6 +429,9 @@ func executeSQLServerCDCEnable(ctx context.Context, spec cdcEnableSpec) (cdcEnab
 	}
 	result.TableCDCAlreadyEnabled = tableEnabled
 	if !tableEnabled {
+		if !permissions.Sysadmin && !permissions.DBOwner {
+			return result, fmt.Errorf("executor cdc-enable: enabling table CDC requires sysadmin or db_owner permission")
+		}
 		statement, err := buildSQLServerCDCEnableTableStatement(spec.SourceObject)
 		if err != nil {
 			return cdcEnableResult{}, fmt.Errorf("executor cdc-enable: %w", err)
@@ -379,6 +454,31 @@ func executeSQLServerCDCEnable(ctx context.Context, spec cdcEnableSpec) (cdcEnab
 		); err != nil {
 			return cdcEnableResult{}, fmt.Errorf("executor cdc-enable: enable table CDC: %w", err)
 		}
+	}
+	captureJobPresent, err := querySQLServerCDCJobPresent(ctx, db, preflightQueries.CDCCaptureJobStatus, captureJobName)
+	if err != nil {
+		return cdcEnableResult{}, fmt.Errorf("executor cdc-enable: query CDC capture job %s: %w", captureJobName, err)
+	}
+	result.CaptureJobPresent = captureJobPresent
+	if !captureJobPresent {
+		return result, fmt.Errorf("executor cdc-enable: SQL Server CDC capture job %s is missing or disabled", captureJobName)
+	}
+	cleanupJobPresent, err := querySQLServerCDCJobPresent(ctx, db, preflightQueries.CDCCleanupJobStatus, cleanupJobName)
+	if err != nil {
+		return cdcEnableResult{}, fmt.Errorf("executor cdc-enable: query CDC cleanup job %s: %w", cleanupJobName, err)
+	}
+	result.CleanupJobPresent = cleanupJobPresent
+	if !cleanupJobPresent {
+		return result, fmt.Errorf("executor cdc-enable: SQL Server CDC cleanup job %s is missing or disabled", cleanupJobName)
+	}
+	retentionMinutes, err := querySQLServerCDCCleanupRetentionMinutes(ctx, db, preflightQueries, databaseName)
+	if err != nil {
+		return cdcEnableResult{}, fmt.Errorf("executor cdc-enable: query CDC cleanup retention: %w", err)
+	}
+	result.RetentionMinutes = retentionMinutes
+	requiredMinutes := retentionHoursRequired * 60
+	if retentionMinutes < requiredMinutes {
+		return result, fmt.Errorf("executor cdc-enable: SQL Server CDC cleanup retention %d minutes is below required %d minutes", retentionMinutes, requiredMinutes)
 	}
 	return result, nil
 }
@@ -418,6 +518,72 @@ func querySQLServerCDCTableEnabled(ctx context.Context, db *sql.DB, sourceObject
 	return count > 0, nil
 }
 
+type sqlServerCDCEnablePreflightQueries struct {
+	DatabaseName         string
+	CaptureJobName       string
+	CleanupJobName       string
+	SQLServerAgentStatus string
+	CDCCaptureJobStatus  string
+	CDCCleanupJobStatus  string
+	CDCCleanupRetention  string
+	PermissionCheck      string
+}
+
+type sqlServerCDCEnablePermissions struct {
+	Sysadmin bool
+	DBOwner  bool
+}
+
+func querySQLServerCurrentDatabaseName(ctx context.Context, db *sql.DB) (string, error) {
+	var databaseName string
+	if err := db.QueryRowContext(ctx, "SELECT DB_NAME()").Scan(&databaseName); err != nil {
+		return "", err
+	}
+	databaseName = strings.TrimSpace(databaseName)
+	if databaseName == "" {
+		return "", fmt.Errorf("current database name is empty")
+	}
+	return databaseName, nil
+}
+
+func querySQLServerCDCAgentRunning(ctx context.Context, db *sql.DB, queries sqlServerCDCEnablePreflightQueries) (bool, error) {
+	var count int64
+	if err := db.QueryRowContext(ctx, queries.SQLServerAgentStatus).Scan(&count); err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+func querySQLServerCDCEnablePermissions(ctx context.Context, db *sql.DB, queries sqlServerCDCEnablePreflightQueries) (sqlServerCDCEnablePermissions, error) {
+	var sysadmin, dbOwner int
+	if err := db.QueryRowContext(ctx, queries.PermissionCheck).Scan(&sysadmin, &dbOwner); err != nil {
+		return sqlServerCDCEnablePermissions{}, err
+	}
+	return sqlServerCDCEnablePermissions{
+		Sysadmin: sysadmin == 1,
+		DBOwner:  dbOwner == 1,
+	}, nil
+}
+
+func querySQLServerCDCJobPresent(ctx context.Context, db *sql.DB, query, jobName string) (bool, error) {
+	var count int64
+	if err := db.QueryRowContext(ctx, query, sql.Named("job_name", jobName)).Scan(&count); err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+func querySQLServerCDCCleanupRetentionMinutes(ctx context.Context, db *sql.DB, queries sqlServerCDCEnablePreflightQueries, databaseName string) (int, error) {
+	var retentionMinutes int
+	if err := db.QueryRowContext(ctx, queries.CDCCleanupRetention, sql.Named("database_name", strings.TrimSpace(databaseName))).Scan(&retentionMinutes); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, fmt.Errorf("CDC cleanup retention row for database %s was not found", strings.TrimSpace(databaseName))
+		}
+		return 0, err
+	}
+	return retentionMinutes, nil
+}
+
 func normalizeSQLServerCDCCaptureInstance(sourceObject, captureInstance string) (string, error) {
 	captureInstance = strings.TrimSpace(captureInstance)
 	if captureInstance == "" {
@@ -434,6 +600,28 @@ func normalizeSQLServerCDCCaptureInstance(sourceObject, captureInstance string) 
 		return "", fmt.Errorf("capture instance must be 100 characters or fewer")
 	}
 	return captureInstance, nil
+}
+
+func validateSQLServerCDCSysname(field, value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	if len(value) > 128 {
+		return fmt.Errorf("%s %q exceeds SQL Server sysname length 128", field, value)
+	}
+	for index, r := range value {
+		if index == 0 {
+			if !((r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || r == '_') {
+				return fmt.Errorf("%s %q must start with a letter or underscore", field, value)
+			}
+			continue
+		}
+		if !((r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_') {
+			return fmt.Errorf("%s %q contains unsupported character %q", field, value, r)
+		}
+	}
+	return nil
 }
 
 type cdcLSNQuerySpec struct {
@@ -5045,6 +5233,30 @@ func buildSQLServerCDCTableStatusQuery(sourceObject string) (string, error) {
 		quoteSQLServerIdentifier("sys"),
 		quoteSQLServerIdentifier("schemas"),
 	), nil
+}
+
+func buildSQLServerCDCEnablePreflightQueries(sourceObject string) (sqlServerCDCEnablePreflightQueries, error) {
+	parts, err := sqlServerCDCObjectParts(sourceObject)
+	if err != nil {
+		return sqlServerCDCEnablePreflightQueries{}, err
+	}
+	databaseName := ""
+	if len(parts) == 3 {
+		databaseName = strings.TrimSpace(parts[0])
+	}
+	queries := sqlServerCDCEnablePreflightQueries{
+		DatabaseName:         databaseName,
+		SQLServerAgentStatus: "SELECT COUNT_BIG(1) FROM sys.dm_server_services WHERE servicename LIKE N'SQL Server Agent%' AND status_desc = N'Running'",
+		CDCCaptureJobStatus:  "SELECT COUNT_BIG(1) FROM msdb.dbo.sysjobs WHERE name = @job_name AND enabled = 1",
+		CDCCleanupJobStatus:  "SELECT COUNT_BIG(1) FROM msdb.dbo.sysjobs WHERE name = @job_name AND enabled = 1",
+		CDCCleanupRetention:  "SELECT TOP (1) retention FROM msdb.dbo.cdc_jobs WHERE database_id = DB_ID(@database_name) AND job_type = N'cleanup'",
+		PermissionCheck:      "SELECT CONVERT(int, IS_SRVROLEMEMBER('sysadmin')), CONVERT(int, IS_MEMBER('db_owner'))",
+	}
+	if databaseName != "" {
+		queries.CaptureJobName = "cdc." + databaseName + "_capture"
+		queries.CleanupJobName = "cdc." + databaseName + "_cleanup"
+	}
+	return queries, nil
 }
 
 func sqlServerCDCCaptureInstance(sourceObject string) (string, error) {
