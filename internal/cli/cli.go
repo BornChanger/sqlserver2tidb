@@ -480,6 +480,7 @@ func runCDCOrchestrator(args []string, stdout, stderr io.Writer) int {
 	commandRetries := fs.Int("command-retries", 0, "number of retries for a failed CDC apply executor command")
 	retryBackoff := fs.Duration("retry-backoff", time.Second, "fixed backoff between CDC apply executor command retries")
 	resume := fs.Bool("resume", false, "skip matching successful CDC apply commands from existing executor evidence")
+	minAppliedChanges := fs.Int("min-applied-changes", 0, "minimum total CDC applied changes required before the orchestrator can exit successfully")
 	poll := fs.Bool("poll", false, "continue polling when the project is caught up")
 	maxIterations := fs.Int("max-iterations", 0, "maximum probe iterations; 0 means unlimited")
 	interval := fs.Duration("interval", 5*time.Second, "sleep interval between caught-up polling iterations")
@@ -511,16 +512,29 @@ func runCDCOrchestrator(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "cdc-orchestrator --retry-backoff must be non-negative")
 		return 2
 	}
+	if *minAppliedChanges < 0 {
+		fmt.Fprintln(stderr, "cdc-orchestrator --min-applied-changes must be non-negative")
+		return 2
+	}
 
 	fmt.Fprintln(stdout, "cdc orchestrator")
 	prepared := 0
 	applied := 0
+	appliedChanges := 0
 	idle := 0
+	finish := func() int {
+		fmt.Fprintf(stdout, "prepared iterations: %d\n", prepared)
+		fmt.Fprintf(stdout, "applied iterations: %d\n", applied)
+		fmt.Fprintf(stdout, "applied changes: %d\n", appliedChanges)
+		if appliedChanges < *minAppliedChanges {
+			fmt.Fprintf(stderr, "cdc orchestrator: applied changes %d below required minimum %d\n", appliedChanges, *minAppliedChanges)
+			return 1
+		}
+		return 0
+	}
 	for iteration := 1; ; iteration++ {
 		if *maxIterations > 0 && iteration > *maxIterations {
-			fmt.Fprintf(stdout, "prepared iterations: %d\n", prepared)
-			fmt.Fprintf(stdout, "applied iterations: %d\n", applied)
-			return 0
+			return finish()
 		}
 		if *applyApproved {
 			status, err := runCDCOrchestratorApplyApproved(cdcOrchestratorApplySpec{
@@ -542,6 +556,7 @@ func runCDCOrchestrator(args []string, stdout, stderr io.Writer) int {
 			}
 			if status.Applied {
 				applied++
+				appliedChanges += status.AppliedChanges
 			}
 		}
 		bounds, err := cdcOrchestratorProbeLSNBounds(*root, *sourceClusterID, *projectID, *executorBinary, *sourceConnectionStringEnv, *maxLSNOverride, *skipRetentionCheck)
@@ -568,25 +583,19 @@ func runCDCOrchestrator(args []string, stdout, stderr io.Writer) int {
 			if result.PRBodyFile != "" {
 				fmt.Fprintf(stdout, "PR draft: %s\n", result.PRBodyFile)
 			}
-			fmt.Fprintf(stdout, "prepared iterations: %d\n", prepared)
-			fmt.Fprintf(stdout, "applied iterations: %d\n", applied)
-			return 0
+			return finish()
 		}
 		if result.Status != gitops.CDCIterationStatusCaughtUp {
 			fmt.Fprintf(stderr, "cdc orchestrator: unsupported cdc iteration status %q\n", result.Status)
 			return 1
 		}
 		if !*poll {
-			fmt.Fprintf(stdout, "prepared iterations: %d\n", prepared)
-			fmt.Fprintf(stdout, "applied iterations: %d\n", applied)
-			return 0
+			return finish()
 		}
 		idle++
 		fmt.Fprintf(stdout, "idle iteration %d: caught_up\n", idle)
 		if *idleIterations > 0 && idle >= *idleIterations {
-			fmt.Fprintf(stdout, "prepared iterations: %d\n", prepared)
-			fmt.Fprintf(stdout, "applied iterations: %d\n", applied)
-			return 0
+			return finish()
 		}
 		time.Sleep(*interval)
 	}
@@ -607,7 +616,8 @@ type cdcOrchestratorApplySpec struct {
 }
 
 type cdcOrchestratorApplyStatus struct {
-	Applied bool
+	Applied        bool
+	AppliedChanges int
 }
 
 func runCDCOrchestratorApplyApproved(spec cdcOrchestratorApplySpec, stdout, stderr io.Writer) (cdcOrchestratorApplyStatus, error) {
@@ -668,7 +678,7 @@ func runCDCOrchestratorApplyApproved(spec cdcOrchestratorApplySpec, stdout, stde
 	fmt.Fprintf(stdout, "checkpoint updated tables: %d\n", result.UpdatedTables)
 	fmt.Fprintf(stdout, "checkpoint applied changes: %d\n", result.AppliedChanges)
 	fmt.Fprintf(stdout, "wrote %s\n", result.CheckpointFile)
-	return cdcOrchestratorApplyStatus{Applied: true}, nil
+	return cdcOrchestratorApplyStatus{Applied: true, AppliedChanges: result.AppliedChanges}, nil
 }
 
 func isCDCOrchestratorApplyNotReadyError(err error) bool {

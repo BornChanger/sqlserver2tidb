@@ -53,3 +53,7 @@ fi
 
 (cd "${repo_root}" && go test -tags=integration ./internal/executor -run TestSQLServerToTiDBFullLoadExecutorFlow -count=1 -v)
 (cd "${repo_root}" && go test -tags=integration ./internal/cli -run TestSQLServerToTiDBGitOpsE2EFlow -count=1 -v)
+
+if [ "${SQLSERVER2TIDB_RUN_CDC_SOAK:-}" = "1" ]; then
+  (cd "${repo_root}" && go test -tags=integration ./internal/cli -run TestSQLServerToTiDBCDCSoakFlow -count=1 -v)
+fi

@@ -305,7 +305,7 @@ go run ./cmd/sqlserver2tidb cdc-orchestrator \
   --pr-draft
 ```
 
-The orchestrator invokes `sqlserver2tidb-executor cdc-lsn --execute`, parses `max_lsn`, probes each tracked table's SQL Server CDC `min_lsn`, and then calls the same deterministic `prepare-cdc-iteration` path. If a table's next `from_lsn` is older than its `min_lsn`, the orchestrator fails before mutating `plan/cdc-plan.yaml` because the CDC retention window no longer covers the requested range. Use `--skip-retention-check` only when another scheduler has already enforced the same min-LSN guard. When `--apply-approved` is set, each iteration first checks whether the current CDC plan and approval already pass the approval/hash gate; if so, it runs `worker-executor --stage cdc --execute`, records `evidence/executor-cdc-run.json`, advances `clusters/<source_cluster_id>/state/cdc-checkpoint.yaml` from that evidence, and skips reapplying a range that the checkpoint already covers. When the project is caught up it can keep polling; when a new range is prepared it writes `plan/cdc-plan.yaml` and optional `prs/cdc-range-pr.md`, then stops at the PR boundary. It does not approve or merge PRs.
+The orchestrator invokes `sqlserver2tidb-executor cdc-lsn --execute`, parses `max_lsn`, probes each tracked table's SQL Server CDC `min_lsn`, and then calls the same deterministic `prepare-cdc-iteration` path. If a table's next `from_lsn` is older than its `min_lsn`, the orchestrator fails before mutating `plan/cdc-plan.yaml` because the CDC retention window no longer covers the requested range. Use `--skip-retention-check` only when another scheduler has already enforced the same min-LSN guard. When `--apply-approved` is set, each iteration first checks whether the current CDC plan and approval already pass the approval/hash gate; if so, it runs `worker-executor --stage cdc --execute`, records `evidence/executor-cdc-run.json`, advances `clusters/<source_cluster_id>/state/cdc-checkpoint.yaml` from that evidence, and skips reapplying a range that the checkpoint already covers. `--min-applied-changes <n>` makes the orchestrator exit non-zero unless the run applied at least `n` CDC changes, which is useful for production soak validation and scheduled CDC health checks. When the project is caught up it can keep polling; when a new range is prepared it writes `plan/cdc-plan.yaml` and optional `prs/cdc-range-pr.md`, then stops at the PR boundary. It does not approve or merge PRs.
 
 Generate a project-scoped validation draft plan from the current SQL Server inventory and project metadata:
 
@@ -474,6 +474,16 @@ make integration-test
 ```
 
 This starts the Docker Compose environment in `tests/integration/` unless `SQLSERVER2TIDB_INTEGRATION_SOURCE_DSN` and `SQLSERVER2TIDB_INTEGRATION_TARGET_DSN` are already set. It runs both the direct executor full-load flow and the CLI/GitOps E2E flow: real SQL Server catalog discovery, schema/data/validation plan generation, approval hash checks, `worker-executor --execute` DDL/export/import/validation, `worker-validate`, and `validate-repo`. The target is intentionally outside default `make ci` because the default path pulls database images and requires Docker.
+
+Run the longer CDC production-validation suite explicitly:
+
+```bash
+make cdc-soak-test
+```
+
+This enables SQL Server CDC on a dedicated integration database, performs a full-load baseline, then runs multiple CDC insert/update/delete rounds through the GitOps range-review and `cdc-orchestrator --apply-approved` path. Each round requires at least one applied CDC change, verifies target rows in TiDB, and checks the source-cluster checkpoint. Set `SQLSERVER2TIDB_CDC_SOAK_ITERATIONS` to control the number of CDC rounds; the default is `3`. You can also append it to `make integration-test` with `SQLSERVER2TIDB_RUN_CDC_SOAK=1`.
+
+For shared environments, configure `SQLSERVER2TIDB_INTEGRATION_SOURCE_DSN` and `SQLSERVER2TIDB_INTEGRATION_TARGET_DSN` as GitHub secrets, then trigger the manual `.github/workflows/cdc-soak.yml` workflow with the desired iteration count.
 
 Prepare the git and GitHub commands for a worker state write-back PR:
 

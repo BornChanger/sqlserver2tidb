@@ -1,0 +1,39 @@
+name: cdc-soak
+
+on:
+  workflow_dispatch:
+    inputs:
+      iterations:
+        description: CDC mutation/apply rounds
+        required: false
+        default: "3"
+
+permissions:
+  contents: read
+
+jobs:
+  cdc-soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      SQLSERVER2TIDB_INTEGRATION_SOURCE_DSN: ${{ secrets.SQLSERVER2TIDB_INTEGRATION_SOURCE_DSN }}
+      SQLSERVER2TIDB_INTEGRATION_TARGET_DSN: ${{ secrets.SQLSERVER2TIDB_INTEGRATION_TARGET_DSN }}
+      SQLSERVER2TIDB_CDC_SOAK_ITERATIONS: ${{ inputs.iterations }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.22.x"
+          cache: true
+
+      - name: Require external integration DSNs
+        run: |
+          test -n "${SQLSERVER2TIDB_INTEGRATION_SOURCE_DSN}"
+          test -n "${SQLSERVER2TIDB_INTEGRATION_TARGET_DSN}"
+
+      - name: Run CDC soak validation
+        run: make cdc-soak-test

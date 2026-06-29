@@ -2577,6 +2577,7 @@ func TestRunCDCOrchestratorApplyApprovedExecutesCDCAndAdvancesCheckpoint(t *test
 		"--target-connection-string-env", "TIDB_TEST_DSN",
 		"--max-lsn", "0x00000000000000000003",
 		"--apply-approved",
+		"--min-applied-changes", "7",
 		"--max-iterations", "1",
 	}, &stdout, &stderr)
 	if code != 0 {
@@ -2602,6 +2603,44 @@ func TestRunCDCOrchestratorApplyApprovedExecutesCDCAndAdvancesCheckpoint(t *test
 	checkpoint := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/state/cdc-checkpoint.yaml")
 	if !strings.Contains(checkpoint, "to_lsn: 0x00000000000000000003") || !strings.Contains(checkpoint, "applied_changes: 7") {
 		t.Fatalf("checkpoint = %q, want advanced LSN and applied changes", checkpoint)
+	}
+}
+
+func TestRunCDCOrchestratorApplyApprovedFailsWhenMinimumAppliedChangesNotMet(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	createCLIProjectWithCDCPlanAndCheckpoint(t, root, &stdout, &stderr, "0x00000000000000000001", "0x00000000000000000002")
+	setCLICDCPlanLSNRange(t, root, "0x00000000000000000002", "0x00000000000000000003")
+	setCLIReviewPlanStatus(t, root, "cdc", "reviewed")
+	hash, err := gitops.ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "cdc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeCLIStageApproval(t, root, "cdc", hash)
+
+	fakeExecutor := filepath.Join(root, "fake-cdc-apply-zero")
+	if err := os.WriteFile(fakeExecutor, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> cdc-apply-args.log\ncase \"$1\" in\n  cdc-lsn)\n    printf 'executor cdc-lsn completed\\n'\n    printf 'max_lsn: 0x00000000000000000003\\n'\n    printf 'min_lsn: 0x00000000000000000001\\n'\n    ;;\n  cdc)\n    printf 'executor cdc completed\\n'\n    printf 'applied changes: 0\\n'\n    ;;\nesac\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"cdc-orchestrator",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--executor-binary", "./fake-cdc-apply-zero",
+		"--max-lsn", "0x00000000000000000003",
+		"--apply-approved",
+		"--min-applied-changes", "1",
+		"--max-iterations", "1",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("cdc-orchestrator code = 0, want min-applied-changes failure; stdout = %s", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "applied changes 0 below required minimum 1") {
+		t.Fatalf("cdc-orchestrator stderr = %q, want min-applied-changes failure", stderr.String())
 	}
 }
 
