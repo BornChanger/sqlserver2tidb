@@ -17,6 +17,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -1296,6 +1297,56 @@ func TestAuditTiDBImportIntoS3SourceRecordsRowsBytesAndSHA(t *testing.T) {
 	wantSHA := "sha256:" + hex.EncodeToString(sum[:])
 	if audit.SHA256 != wantSHA {
 		t.Fatalf("audit sha = %q, want %q", audit.SHA256, wantSHA)
+	}
+}
+
+func TestInspectTiDBImportIntoS3SourceDerivesFieldsAndAuditWithSingleGET(t *testing.T) {
+	data := []byte("id,name,__sqlserver2tidb_null_bitmap\n1,Ada,00\n2,Lin,00\n")
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.Method != http.MethodGet {
+			t.Fatalf("method = %q, want GET", r.Method)
+		}
+		if r.URL.EscapedPath() != "/migration-bucket/full/orders.csv" {
+			t.Fatalf("request path = %q, want path-style bucket/object path", r.URL.EscapedPath())
+		}
+		if r.Header.Get("Accept-Encoding") != "identity" {
+			t.Fatalf("Accept-Encoding = %q, want identity", r.Header.Get("Accept-Encoding"))
+		}
+		_, _ = w.Write(data)
+	}))
+	defer server.Close()
+	t.Setenv("AWS_ACCESS_KEY_ID", "AKIDEXAMPLE")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "SECRETEXAMPLE")
+	t.Setenv("AWS_REGION", "us-east-1")
+	t.Setenv("AWS_ENDPOINT_URL", server.URL)
+	t.Setenv("AWS_S3_FORCE_PATH_STYLE", "true")
+
+	inspection, err := inspectTiDBImportIntoSource(context.Background(), "s3://migration-bucket/full/orders.csv", nil)
+	if err != nil {
+		t.Fatalf("inspectTiDBImportIntoSource() error = %v", err)
+	}
+	wantFields := []string{"id", "name", "@sqlserver2tidb_null_bitmap"}
+	if !reflect.DeepEqual(inspection.Fields, wantFields) {
+		t.Fatalf("inspection fields = %v, want %v", inspection.Fields, wantFields)
+	}
+	if !inspection.HasAudit {
+		t.Fatal("inspection HasAudit = false, want true")
+	}
+	if inspection.Audit.Rows != 2 {
+		t.Fatalf("audit rows = %d, want 2", inspection.Audit.Rows)
+	}
+	if inspection.Audit.Bytes != int64(len(data)) {
+		t.Fatalf("audit bytes = %d, want %d", inspection.Audit.Bytes, len(data))
+	}
+	sum := sha256.Sum256(data)
+	wantSHA := "sha256:" + hex.EncodeToString(sum[:])
+	if inspection.Audit.SHA256 != wantSHA {
+		t.Fatalf("audit sha = %q, want %q", inspection.Audit.SHA256, wantSHA)
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("S3 GET requests = %d, want 1", requests.Load())
 	}
 }
 

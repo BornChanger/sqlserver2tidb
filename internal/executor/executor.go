@@ -2021,17 +2021,11 @@ func executeTiDBImportInto(ctx context.Context, spec importExecuteSpec) (importE
 	if err := requireTiDBImportIntoFieldsForUnsupportedRemoteSource(spec.SourceURI, fields); err != nil {
 		return importExecuteResult{}, fmt.Errorf("executor import: %w", err)
 	}
-	if len(fields) == 0 {
-		var err error
-		fields, err = readTiDBImportIntoFieldsFromSource(ctx, spec.SourceURI)
-		if err != nil {
-			return importExecuteResult{}, fmt.Errorf("executor import: %w", err)
-		}
-	}
-	audit, hasAudit, err := auditTiDBImportIntoSource(ctx, spec.SourceURI)
+	inspection, err := inspectTiDBImportIntoSource(ctx, spec.SourceURI, fields)
 	if err != nil {
 		return importExecuteResult{}, fmt.Errorf("executor import: %w", err)
 	}
+	fields = inspection.Fields
 	statement, err := buildTiDBImportIntoStatementWithFields(spec.TargetObject, spec.SourceURI, fields)
 	if err != nil {
 		return importExecuteResult{}, fmt.Errorf("executor import: %w", err)
@@ -2060,10 +2054,10 @@ func executeTiDBImportInto(ctx context.Context, spec importExecuteSpec) (importE
 		return importExecuteResult{}, fmt.Errorf("executor import: execute TiDB IMPORT INTO: %w", err)
 	}
 	return importExecuteResult{
-		ImportedRows: audit.Rows,
-		InputBytes:   audit.Bytes,
-		InputSHA256:  audit.SHA256,
-		HasDataAudit: hasAudit,
+		ImportedRows: inspection.Audit.Rows,
+		InputBytes:   inspection.Audit.Bytes,
+		InputSHA256:  inspection.Audit.SHA256,
+		HasDataAudit: inspection.HasAudit,
 	}, nil
 }
 
@@ -2562,6 +2556,86 @@ type dataChannelAudit struct {
 	Rows   int64
 	Bytes  int64
 	SHA256 string
+}
+
+type tiDBImportIntoSourceInspection struct {
+	Fields   []string
+	Audit    dataChannelAudit
+	HasAudit bool
+}
+
+func inspectTiDBImportIntoSource(ctx context.Context, sourceURI string, fields []string) (tiDBImportIntoSourceInspection, error) {
+	parsed, err := url.Parse(strings.TrimSpace(sourceURI))
+	if err != nil {
+		return tiDBImportIntoSourceInspection{}, fmt.Errorf("parse IMPORT INTO source URI: %w", err)
+	}
+	if parsed.Scheme == "s3" {
+		reader, err := openS3ImportSource(ctx, sourceURI)
+		if err != nil {
+			return tiDBImportIntoSourceInspection{}, err
+		}
+		return inspectTiDBImportIntoCSVReader(reader, fields)
+	}
+
+	path, ok, err := resolveTiDBImportIntoLocalSourcePath(sourceURI)
+	if err != nil {
+		return tiDBImportIntoSourceInspection{}, err
+	}
+	if !ok {
+		return tiDBImportIntoSourceInspection{
+			Fields: copyTiDBImportIntoFields(fields),
+		}, nil
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return tiDBImportIntoSourceInspection{}, fmt.Errorf("read IMPORT INTO CSV: %w", err)
+	}
+	return inspectTiDBImportIntoCSVReader(file, fields)
+}
+
+func inspectTiDBImportIntoCSVReader(reader io.ReadCloser, fields []string) (tiDBImportIntoSourceInspection, error) {
+	counter := &countingReadCloser{reader: reader, digest: sha256.New()}
+	defer counter.Close()
+
+	csvReader := csv.NewReader(counter)
+	columns, err := csvReader.Read()
+	if err != nil {
+		return tiDBImportIntoSourceInspection{}, fmt.Errorf("read IMPORT INTO CSV header: %w", err)
+	}
+	inspectedFields := copyTiDBImportIntoFields(fields)
+	if len(inspectedFields) == 0 {
+		inspectedFields, err = buildTiDBImportIntoFieldsFromCSVHeader(columns)
+		if err != nil {
+			return tiDBImportIntoSourceInspection{}, err
+		}
+	}
+
+	var rows int64
+	for {
+		if _, err := csvReader.Read(); errors.Is(err, io.EOF) {
+			return tiDBImportIntoSourceInspection{
+				Fields: inspectedFields,
+				Audit: dataChannelAudit{
+					Rows:   rows,
+					Bytes:  counter.BytesRead(),
+					SHA256: counter.SHA256(),
+				},
+				HasAudit: true,
+			}, nil
+		} else if err != nil {
+			return tiDBImportIntoSourceInspection{}, fmt.Errorf("read IMPORT INTO CSV audit row %d: %w", rows+1, err)
+		}
+		rows++
+	}
+}
+
+func copyTiDBImportIntoFields(fields []string) []string {
+	if len(fields) == 0 {
+		return nil
+	}
+	copied := make([]string, len(fields))
+	copy(copied, fields)
+	return copied
 }
 
 func auditTiDBImportIntoLocalSource(sourceURI string) (dataChannelAudit, bool, error) {
