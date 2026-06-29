@@ -2475,6 +2475,9 @@ func TestRunCDCExecutePrintsAppliedChangeCount(t *testing.T) {
 		if spec.SourceObject != "sales.dbo.orders" || spec.TargetObject != "app.orders" {
 			t.Fatalf("cdc spec objects = %s -> %s", spec.SourceObject, spec.TargetObject)
 		}
+		if spec.ApplyBatchSize != 1000 {
+			t.Fatalf("apply batch size = %d, want 1000", spec.ApplyBatchSize)
+		}
 		if !reflect.DeepEqual(spec.FromLSN, []byte{0x00, 0x00, 0x00, 0x27, 0x00, 0x00, 0x01, 0xf4, 0x00, 0x01}) {
 			t.Fatalf("from LSN = %#v", spec.FromLSN)
 		}
@@ -2642,12 +2645,13 @@ func TestApplySQLServerCDCChangesQueriesRangeAndAppliesRows(t *testing.T) {
 	toLSN := []byte{0x00, 0x00, 0x00, 0x27, 0x00, 0x00, 0x01, 0xf4, 0x00, 0x02}
 
 	applied, err := applySQLServerCDCChanges(context.Background(), source, target, cdcApplySpec{
-		SourceObject: "sales.dbo.orders",
-		TargetObject: "app.orders",
-		Columns:      []string{"id", "customer_name"},
-		KeyColumns:   []string{"id"},
-		FromLSN:      fromLSN,
-		ToLSN:        toLSN,
+		SourceObject:   "sales.dbo.orders",
+		TargetObject:   "app.orders",
+		Columns:        []string{"id", "customer_name"},
+		KeyColumns:     []string{"id"},
+		FromLSN:        fromLSN,
+		ToLSN:          toLSN,
+		ApplyBatchSize: 1000,
 	})
 	if err != nil {
 		t.Fatalf("applySQLServerCDCChanges() error = %v", err)
@@ -2670,6 +2674,42 @@ func TestApplySQLServerCDCChangesQueriesRangeAndAppliesRows(t *testing.T) {
 	}
 	if target.calls[1].query != "DELETE FROM `app`.`orders` WHERE `id` = ?" {
 		t.Fatalf("second query = %q", target.calls[1].query)
+	}
+}
+
+func TestApplySQLServerCDCChangesFlushesBatchesWhileStreaming(t *testing.T) {
+	source := &recordingCDCSource{
+		rows: &fakeExportRows{
+			columns: []string{"__$operation", "__$start_lsn", "__$seqval", "id", "customer_name"},
+			values: [][]any{
+				{int64(2), []byte{0x01}, []byte{0x01}, int64(1), "Ada"},
+				{int64(4), []byte{0x02}, []byte{0x01}, int64(2), "Lin"},
+				{int64(2), []byte{0x03}, []byte{0x01}, int64(3), "Grace"},
+			},
+			scanErrAt: 3,
+			scanErr:   errors.New("scan failed after first batch"),
+		},
+	}
+	target := &recordingMultiCDCExecutor{}
+
+	applied, err := applySQLServerCDCChanges(context.Background(), source, target, cdcApplySpec{
+		SourceObject:   "sales.dbo.orders",
+		TargetObject:   "app.orders",
+		Columns:        []string{"id", "customer_name"},
+		KeyColumns:     []string{"id"},
+		FromLSN:        []byte{0x00, 0x00, 0x00, 0x27, 0x00, 0x00, 0x01, 0xf4, 0x00, 0x01},
+		ToLSN:          []byte{0x00, 0x00, 0x00, 0x27, 0x00, 0x00, 0x01, 0xf4, 0x00, 0x02},
+		ApplyBatchSize: 2,
+	})
+	if err == nil {
+		t.Fatal("applySQLServerCDCChanges() error = nil, want scan error")
+	}
+	assertOutputContains(t, err.Error(), "scan failed after first batch")
+	if applied != 2 {
+		t.Fatalf("applied = %d, want first flushed batch count 2", applied)
+	}
+	if len(target.calls) != 2 {
+		t.Fatalf("target calls = %d, want first batch flushed before later scan error", len(target.calls))
 	}
 }
 
@@ -3626,10 +3666,12 @@ func TestObjectExportWriterNilWriteReturnsError(t *testing.T) {
 }
 
 type fakeExportRows struct {
-	columns []string
-	values  [][]any
-	idx     int
-	closed  bool
+	columns   []string
+	values    [][]any
+	idx       int
+	closed    bool
+	scanErrAt int
+	scanErr   error
 }
 
 func (rows *fakeExportRows) Columns() ([]string, error) {
@@ -3643,6 +3685,9 @@ func (rows *fakeExportRows) Next() bool {
 func (rows *fakeExportRows) Scan(dest ...any) error {
 	if rows.idx >= len(rows.values) {
 		return errors.New("scan after end")
+	}
+	if rows.scanErrAt > 0 && rows.idx+1 == rows.scanErrAt {
+		return rows.scanErr
 	}
 	for i := range dest {
 		ptr, ok := dest[i].(*any)

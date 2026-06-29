@@ -4457,6 +4457,7 @@ func runCDC(args []string, stdout, stderr io.Writer) int {
 			KeyColumns:                keyColumns,
 			FromLSN:                   fromLSN,
 			ToLSN:                     toLSN,
+			ApplyBatchSize:            *applyBatchSize,
 		})
 		if err != nil {
 			fmt.Fprintln(stderr, err)
@@ -4505,6 +4506,7 @@ type cdcExecuteSpec struct {
 	KeyColumns                []string
 	FromLSN                   []byte
 	ToLSN                     []byte
+	ApplyBatchSize            int
 }
 
 type cdcApplyResult struct {
@@ -4520,6 +4522,9 @@ func executeCDCApply(ctx context.Context, spec cdcExecuteSpec) (cdcApplyResult, 
 	}
 	if len(spec.KeyColumns) == 0 {
 		return cdcApplyResult{}, fmt.Errorf("executor cdc: key columns is required")
+	}
+	if spec.ApplyBatchSize <= 0 {
+		return cdcApplyResult{}, fmt.Errorf("executor cdc: apply batch size must be positive")
 	}
 	columnSet := make(map[string]string, len(spec.Columns))
 	for _, column := range spec.Columns {
@@ -4576,12 +4581,13 @@ func executeCDCApply(ctx context.Context, spec cdcExecuteSpec) (cdcApplyResult, 
 	defer targetDB.Close()
 
 	applied, err := applySQLServerCDCChanges(ctx, sqlServerCDCQuerier{db: sourceDB}, targetDB, cdcApplySpec{
-		SourceObject: spec.SourceObject,
-		TargetObject: spec.TargetObject,
-		Columns:      spec.Columns,
-		KeyColumns:   spec.KeyColumns,
-		FromLSN:      spec.FromLSN,
-		ToLSN:        spec.ToLSN,
+		SourceObject:   spec.SourceObject,
+		TargetObject:   spec.TargetObject,
+		Columns:        spec.Columns,
+		KeyColumns:     spec.KeyColumns,
+		FromLSN:        spec.FromLSN,
+		ToLSN:          spec.ToLSN,
+		ApplyBatchSize: spec.ApplyBatchSize,
 	})
 	if err != nil {
 		return cdcApplyResult{}, fmt.Errorf("executor cdc: %w", err)
@@ -4590,12 +4596,13 @@ func executeCDCApply(ctx context.Context, spec cdcExecuteSpec) (cdcApplyResult, 
 }
 
 type cdcApplySpec struct {
-	SourceObject string
-	TargetObject string
-	Columns      []string
-	KeyColumns   []string
-	FromLSN      []byte
-	ToLSN        []byte
+	SourceObject   string
+	TargetObject   string
+	Columns        []string
+	KeyColumns     []string
+	FromLSN        []byte
+	ToLSN          []byte
+	ApplyBatchSize int
 }
 
 type cdcChangeQuerier interface {
@@ -4611,6 +4618,9 @@ func (querier sqlServerCDCQuerier) QueryCDCChanges(ctx context.Context, query st
 }
 
 func applySQLServerCDCChanges(ctx context.Context, source cdcChangeQuerier, target cdcStatementExecutor, spec cdcApplySpec) (int, error) {
+	if spec.ApplyBatchSize <= 0 {
+		return 0, fmt.Errorf("executor cdc: apply batch size must be positive")
+	}
 	query, err := buildSQLServerCDCChangesQuery(spec.SourceObject, spec.Columns)
 	if err != nil {
 		return 0, err
@@ -4619,18 +4629,41 @@ func applySQLServerCDCChanges(ctx context.Context, source cdcChangeQuerier, targ
 	if err != nil {
 		return 0, fmt.Errorf("query SQL Server CDC changes: %w", err)
 	}
-	changes, err := readSQLServerCDCChangeRows(rows, spec.Columns)
-	if err != nil {
-		return 0, fmt.Errorf("read SQL Server CDC changes: %w", err)
-	}
+
 	applied := 0
-	for i, change := range changes {
-		if err := applyTiDBCDCChange(ctx, target, spec.TargetObject, spec.KeyColumns, change); err != nil {
-			return applied, fmt.Errorf("apply CDC change %d: %w", i+1, err)
+	rowNumber := 0
+	batchStartRow := 1
+	batch := make([]cdcChangeRow, 0, spec.ApplyBatchSize)
+	flush := func() error {
+		if len(batch) == 0 {
+			return nil
 		}
-		if change.Operation != cdcApplySkip {
-			applied++
+		batchApplied, err := applyTiDBCDCChangeBatch(ctx, target, spec.TargetObject, spec.KeyColumns, batch, batchStartRow)
+		if err != nil {
+			return err
 		}
+		applied += batchApplied
+		batch = batch[:0]
+		batchStartRow = rowNumber + 1
+		return nil
+	}
+	var applyErr error
+	if err := streamSQLServerCDCChangeRows(rows, spec.Columns, func(change cdcChangeRow) error {
+		rowNumber++
+		batch = append(batch, change)
+		if len(batch) < spec.ApplyBatchSize {
+			return nil
+		}
+		applyErr = flush()
+		return applyErr
+	}); err != nil {
+		if applyErr != nil {
+			return applied, applyErr
+		}
+		return applied, fmt.Errorf("read SQL Server CDC changes: %w", err)
+	}
+	if err := flush(); err != nil {
+		return applied, err
 	}
 	return applied, nil
 }
@@ -4753,6 +4786,10 @@ type cdcStatementExecutor interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 }
 
+type cdcApplyTransactionStarter interface {
+	BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error)
+}
+
 func normalizeSQLServerCDCOperation(operation int) (cdcApplyOperation, error) {
 	switch operation {
 	case 1:
@@ -4798,6 +4835,50 @@ func applyTiDBCDCChange(ctx context.Context, exec cdcStatementExecutor, targetOb
 	default:
 		return fmt.Errorf("unsupported CDC apply operation %q", change.Operation)
 	}
+}
+
+func applyTiDBCDCChangeBatch(ctx context.Context, target cdcStatementExecutor, targetObject string, keyColumns []string, changes []cdcChangeRow, startRow int) (int, error) {
+	if len(changes) == 0 {
+		return 0, nil
+	}
+	exec := target
+	var tx *sql.Tx
+	if starter, ok := target.(cdcApplyTransactionStarter); ok && batchHasExecutableCDCChange(changes) {
+		var err error
+		tx, err = starter.BeginTx(ctx, nil)
+		if err != nil {
+			return 0, fmt.Errorf("begin CDC apply batch at row %d: %w", startRow, err)
+		}
+		exec = tx
+	}
+
+	applied := 0
+	for i, change := range changes {
+		if err := applyTiDBCDCChange(ctx, exec, targetObject, keyColumns, change); err != nil {
+			if tx != nil {
+				_ = tx.Rollback()
+			}
+			return applied, fmt.Errorf("apply CDC change %d: %w", startRow+i, err)
+		}
+		if change.Operation != cdcApplySkip {
+			applied++
+		}
+	}
+	if tx != nil {
+		if err := tx.Commit(); err != nil {
+			return applied, fmt.Errorf("commit CDC apply batch at row %d: %w", startRow, err)
+		}
+	}
+	return applied, nil
+}
+
+func batchHasExecutableCDCChange(changes []cdcChangeRow) bool {
+	for _, change := range changes {
+		if change.Operation != cdcApplySkip {
+			return true
+		}
+	}
+	return false
 }
 
 func cdcKeyValues(columns []string, values []any, keyColumns []string) ([]any, error) {
@@ -4990,18 +5071,29 @@ func sqlServerCDCObjectParts(sourceObject string) ([]string, error) {
 }
 
 func readSQLServerCDCChangeRows(rows exportRows, capturedColumns []string) ([]cdcChangeRow, error) {
+	var changes []cdcChangeRow
+	if err := streamSQLServerCDCChangeRows(rows, capturedColumns, func(change cdcChangeRow) error {
+		changes = append(changes, change)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return changes, nil
+}
+
+func streamSQLServerCDCChangeRows(rows exportRows, capturedColumns []string, visit func(cdcChangeRow) error) error {
 	defer rows.Close()
 	columns, err := rows.Columns()
 	if err != nil {
-		return nil, err
+		return err
 	}
 	expectedColumns := append([]string{"__$operation", "__$start_lsn", "__$seqval"}, capturedColumns...)
 	if len(columns) != len(expectedColumns) {
-		return nil, fmt.Errorf("CDC query returned %d columns, want %d", len(columns), len(expectedColumns))
+		return fmt.Errorf("CDC query returned %d columns, want %d", len(columns), len(expectedColumns))
 	}
 	for i, expected := range expectedColumns {
 		if !strings.EqualFold(columns[i], expected) {
-			return nil, fmt.Errorf("CDC query column %d = %q, want %q", i+1, columns[i], expected)
+			return fmt.Errorf("CDC query column %d = %q, want %q", i+1, columns[i], expected)
 		}
 	}
 
@@ -5010,30 +5102,31 @@ func readSQLServerCDCChangeRows(rows exportRows, capturedColumns []string) ([]cd
 	for i := range values {
 		dest[i] = &values[i]
 	}
-	var changes []cdcChangeRow
 	for rows.Next() {
 		if err := rows.Scan(dest...); err != nil {
-			return nil, err
+			return err
 		}
 		operationCode, err := cdcOperationCode(values[0])
 		if err != nil {
-			return nil, err
+			return err
 		}
 		operation, err := normalizeSQLServerCDCOperation(operationCode)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		changeValues := append([]any(nil), values[3:]...)
-		changes = append(changes, cdcChangeRow{
+		if err := visit(cdcChangeRow{
 			Operation: operation,
 			Columns:   append([]string(nil), capturedColumns...),
 			Values:    changeValues,
-		})
+		}); err != nil {
+			return err
+		}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return err
 	}
-	return changes, nil
+	return nil
 }
 
 func cdcOperationCode(value any) (int, error) {
