@@ -931,7 +931,7 @@ bin/sqlserver2tidb generate-cdc-plan \
 
 - `clusters/<source_cluster_id>/projects/<project_id>/plan/cdc-plan.yaml`
 
-当前 `generate-cdc-plan` 只生成追踪表清单、captured columns、目标端 apply key columns 和 checkpoint 策略，不启用 SQL Server CDC，不创建 Debezium connector，不读取 LSN，不写 Kafka，也不向 TiDB 回放增量。captured columns 来自 inventory 中发现的非计算列；key columns 优先来自 inventory 中发现的 SQL Server primary key，其次来自非过滤 unique index；如果没有这类索引，会生成 `key_columns: []`，必须人工 review 后补齐才能执行 CDC worker 或 executor。
+当前 `generate-cdc-plan` 只生成追踪表清单、captured columns、目标端 apply key columns 和 checkpoint 策略，不启用 SQL Server CDC，不创建 Debezium connector，不读取 LSN，不写 Kafka，也不向 TiDB 回放增量。captured columns 来自 inventory 中发现的非计算列；key columns 优先来自 inventory 中发现的 SQL Server primary key，其次来自非过滤 unique index；如果没有这类索引，会生成 `key_columns: []`，必须人工 review 后补齐才能执行 CDC worker 或 executor。执行 `worker-executor --stage cdc` 时还会重新读取当前 `clusters/<source_cluster_id>/inventory/inventory.json`，如果已 review 的 captured columns 与当前非计算列不一致，或 `key_columns` 已不再匹配当前 primary key / 非过滤 unique index，会在生成 executor 命令前失败；这是基于 GitHub 文件的 schema drift gate，不依赖 TiDB metadata 表。
 
 生成或推进显式 CDC LSN range：
 
@@ -1845,7 +1845,7 @@ bin/sqlserver2tidb cdc-orchestrator \
 
 `cdc-orchestrator` 是连续 CDC 的 probe / approved-apply / plan 入口。它会调用 `sqlserver2tidb-executor cdc-lsn --execute` 探测 SQL Server 当前 `max_lsn`，并对每张 tracked table 追加 `--source-object` 探测 capture instance 的 `min_lsn`，再复用 `prepare-cdc-iteration` 生成下一段 `plan/cdc-plan.yaml` 和可选 `prs/cdc-range-pr.md`。如果下一段 `from_lsn` 已经早于 SQL Server 返回的 `min_lsn`，命令会在修改 plan 前失败，避免生成无法完整回放的 CDC range；只有外部 scheduler 已经完成等价 retention guard 时，才使用 `--skip-retention-check`。默认 executor binary 是 `sqlserver2tidb-executor`，可以用 `--executor-binary` 覆盖；SQL Server 连接串环境变量默认是 `SQLSERVER2TIDB_SOURCE_CONNECTION_STRING`，可以用 `--source-connection-string-env` 覆盖；TiDB 连接串环境变量默认是 `SQLSERVER2TIDB_TARGET_CONNECTION_STRING`，可以用 `--target-connection-string-env` 覆盖；`--from-lsn` 用于第一段还没有 checkpoint 的表。
 
-在 `--apply-approved` 模式下，每轮探测前会先检查当前 `plan/cdc-plan.yaml` 和 `approvals/cdc-approval.yaml` 是否已经通过 approval/hash gate。如果已通过且 checkpoint 尚未覆盖该 range，它会调用 `worker-executor --stage cdc --execute`，要求 executor 输出 `applied changes: N`，写入 `evidence/executor-cdc-run.json`，然后调用 checkpoint advance 逻辑更新源集群级 `state/cdc-checkpoint.yaml`。如果 checkpoint 已经覆盖当前 range，它会跳过 apply，避免长循环重复执行同一段 LSN。`--command-timeout`、`--command-retries`、`--retry-backoff` 和 `--resume` 会透传给内部 CDC executor 执行路径。
+在 `--apply-approved` 模式下，每轮探测前会先检查当前 `plan/cdc-plan.yaml` 和 `approvals/cdc-approval.yaml` 是否已经通过 approval/hash gate。如果已通过且 checkpoint 尚未覆盖该 range，它会调用 `worker-executor --stage cdc --execute`；该路径会先做 inventory schema drift gate，确认 reviewed CDC columns 和 key columns 仍匹配当前 inventory，再要求 executor 输出 `applied changes: N`，写入 `evidence/executor-cdc-run.json`，然后调用 checkpoint advance 逻辑更新源集群级 `state/cdc-checkpoint.yaml`。如果 checkpoint 已经覆盖当前 range，它会跳过 apply，避免长循环重复执行同一段 LSN。`--command-timeout`、`--command-retries`、`--retry-backoff` 和 `--resume` 会透传给内部 CDC executor 执行路径。
 
 在 `--poll` 模式下，如果当前 checkpoint 已经追到 `max_lsn`，命令会按 `--interval` 继续探测；`--idle-iterations 0` 表示不限制连续 caught-up 次数，正整数适合 smoke test 或批处理退出；`--max-iterations 0` 表示不限制探测次数。只要发现新 range，它会写 plan/PR 草稿并停止，让 operator 走 GitHub review 和 approval。它不会自动 approve 或 merge PR。
 

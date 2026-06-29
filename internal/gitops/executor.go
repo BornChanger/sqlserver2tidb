@@ -92,7 +92,7 @@ func PrepareWorkerExecutor(root, sourceClusterID, projectID, stage string, spec 
 		}
 		result.Commands = commands
 	case "cdc":
-		commands, err := prepareCDCExecutorCommands(projectDir, binary, sourceClusterID, projectID, spec)
+		commands, err := prepareCDCExecutorCommands(root, projectDir, binary, sourceClusterID, projectID, spec)
 		if err != nil {
 			return WorkerExecutorSpec{}, err
 		}
@@ -264,12 +264,15 @@ func prepareImportExecutorCommands(projectDir, binary, sourceClusterID, projectI
 	return commands, nil
 }
 
-func prepareCDCExecutorCommands(projectDir, binary, sourceClusterID, projectID string, spec WorkerExecutorPrepareSpec) ([]WorkerExecutorCommand, error) {
+func prepareCDCExecutorCommands(root, projectDir, binary, sourceClusterID, projectID string, spec WorkerExecutorPrepareSpec) ([]WorkerExecutorCommand, error) {
 	plan, err := readCDCPlanSummary(filepath.Join(projectDir, "plan", "cdc-plan.yaml"))
 	if err != nil {
 		return nil, err
 	}
 	if err := validateCDCPlanSummaryForExecutor(plan); err != nil {
+		return nil, err
+	}
+	if err := requireCDCPlanMatchesInventory(root, sourceClusterID, plan); err != nil {
 		return nil, err
 	}
 	sourceConnectionStringEnv := strings.TrimSpace(spec.SourceConnectionStringEnv)

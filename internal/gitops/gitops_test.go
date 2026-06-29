@@ -6485,6 +6485,56 @@ func TestPrepareWorkerExecutorBuildsCDCCommandsWhenApprovedHashMatches(t *testin
 	assertArgValue(t, first.Args, "--to-lsn", "0x00000027000001f40002")
 }
 
+func TestPrepareWorkerExecutorRejectsCDCSourceSchemaDrift(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateCDCPlanOnly(root))
+	setCDCPlanLSNRange(t, root, "0x00000027000001f40001", "0x00000027000001f40002")
+	setReviewPlanStatus(t, root, "cdc", "reviewed")
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "cdc")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(cdc) error = %v", err)
+	}
+	writeStageApproval(t, root, "cdc", hash)
+
+	inventoryRel := "clusters/prod-sqlserver-a/inventory/inventory.json"
+	inventory := readFile(t, root, inventoryRel)
+	inventory = strings.Replace(inventory, `"name": "customer_name"`, `"name": "customer_full_name"`, 1)
+	writeFileForTest(t, root, inventoryRel, inventory)
+
+	_, err = PrepareWorkerExecutor(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "cdc", WorkerExecutorPrepareSpec{})
+	if err == nil {
+		t.Fatal("PrepareWorkerExecutor() expected CDC source schema drift error")
+	}
+	assertContains(t, err.Error(), "source schema drift")
+	assertContains(t, err.Error(), "customer_full_name")
+}
+
+func TestPrepareWorkerExecutorRejectsCDCKeySchemaDrift(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateCDCPlanOnly(root))
+	setCDCPlanLSNRange(t, root, "0x00000027000001f40001", "0x00000027000001f40002")
+	setReviewPlanStatus(t, root, "cdc", "reviewed")
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "cdc")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(cdc) error = %v", err)
+	}
+	writeStageApproval(t, root, "cdc", hash)
+
+	inventoryRel := "clusters/prod-sqlserver-a/inventory/inventory.json"
+	inventory := readFile(t, root, inventoryRel)
+	inventory = strings.Replace(inventory, `"columns": ["id"], "unique": true, "primary_key": true`, `"columns": ["tenant_id", "id"], "unique": true, "primary_key": true`, 1)
+	writeFileForTest(t, root, inventoryRel, inventory)
+
+	_, err = PrepareWorkerExecutor(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "cdc", WorkerExecutorPrepareSpec{})
+	if err == nil {
+		t.Fatal("PrepareWorkerExecutor() expected CDC key schema drift error")
+	}
+	assertContains(t, err.Error(), "source schema drift")
+	assertContains(t, err.Error(), "key_columns")
+}
+
 func TestPrepareWorkerExecutorAddsCDCConnectionStringEnv(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
