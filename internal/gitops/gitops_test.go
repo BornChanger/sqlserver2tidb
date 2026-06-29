@@ -4296,7 +4296,7 @@ func TestGenerateExecutorEvidencePRDraftRequiresSuccessfulSQLInsertImportDataAud
 	assertContains(t, err.Error(), "executor evidence command import-dbo.orders.000001 requires data_rows, data_bytes, and data_sha256 for import data audit")
 }
 
-func TestGenerateExecutorEvidencePRDraftAllowsTiDBImportIntoWithoutDataAudit(t *testing.T) {
+func TestGenerateExecutorEvidencePRDraftRequiresLocalTiDBImportIntoDataAudit(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
 	_, err := GenerateDataMovementPlans(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", DataMovementPlanSpec{
@@ -4322,8 +4322,53 @@ func TestGenerateExecutorEvidencePRDraftAllowsTiDBImportIntoWithoutDataAudit(t *
   "commands": [
     {
       "id": "import-dbo.orders.000001",
-      "args": ["sqlserver2tidb-executor", "import", "--execute", "--engine", "tidb-import-into"],
-      "shell_command": "sqlserver2tidb-executor import --execute --engine tidb-import-into",
+      "args": ["sqlserver2tidb-executor", "import", "--execute", "--engine", "tidb-import-into", "--source-uri", "file:///tmp/sqlserver2tidb/full/dbo.orders.000001.csv"],
+      "shell_command": "sqlserver2tidb-executor import --execute --engine tidb-import-into --source-uri file:///tmp/sqlserver2tidb/full/dbo.orders.000001.csv",
+      "exit_code": 0,
+      "output": "executor import completed\n",
+      "started_at": "2026-01-02T03:04:05Z",
+      "completed_at": "2026-01-02T03:04:06Z",
+      "duration_ms": 1000
+    }
+  ]
+}
+`)
+
+	_, err = GenerateExecutorEvidencePRDraft(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import")
+	if err == nil {
+		t.Fatal("GenerateExecutorEvidencePRDraft() expected missing local tidb-import-into data audit error")
+	}
+	assertContains(t, err.Error(), "executor evidence command import-dbo.orders.000001 requires data_rows, data_bytes, and data_sha256 for import data audit")
+}
+
+func TestGenerateExecutorEvidencePRDraftAllowsRemoteTiDBImportIntoWithoutDataAudit(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	_, err := GenerateDataMovementPlans(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", DataMovementPlanSpec{
+		ObjectURIPrefix: "s3://migration-bucket/sqlserver2tidb/full",
+		ChunkSizeRows:   1000,
+		ExportFormat:    "csv",
+		ImportEngine:    "tidb-import-into",
+	})
+	must(t, err)
+	setReviewPlanStatus(t, root, "import", "reviewed")
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "import")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(import) error = %v", err)
+	}
+	writeStageApproval(t, root, "import", hash)
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-import-run.json", `{
+  "stage": "import",
+  "status": "succeeded",
+  "project_id": "sales-db-to-tidb-prod-a",
+  "source_cluster_id": "prod-sqlserver-a",
+  "payload_hash": "`+hash+`",
+  "generated_at": "2026-01-02T03:04:07Z",
+  "commands": [
+    {
+      "id": "import-dbo.orders.000001",
+      "args": ["sqlserver2tidb-executor", "import", "--execute", "--engine", "tidb-import-into", "--source-uri", "s3://migration-bucket/sqlserver2tidb/full/dbo.orders.000001.csv"],
+      "shell_command": "sqlserver2tidb-executor import --execute --engine tidb-import-into --source-uri s3://migration-bucket/sqlserver2tidb/full/dbo.orders.000001.csv",
       "exit_code": 0,
       "output": "executor import completed\n",
       "started_at": "2026-01-02T03:04:05Z",

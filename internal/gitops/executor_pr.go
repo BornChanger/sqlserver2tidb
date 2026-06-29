@@ -3,6 +3,7 @@ package gitops
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -353,7 +354,14 @@ func executorEvidenceCommandRequiresDataAudit(stage, status string, args []strin
 	case "export":
 		return true
 	case "import":
-		return executorEvidenceImportEngine(args) == importEngineSQLInsert
+		switch executorEvidenceImportEngine(args) {
+		case importEngineSQLInsert:
+			return true
+		case importEngineTiDBImportInto:
+			return executorEvidenceImportSourceNeedsLocalAudit(executorEvidenceOptionalArgValue(args, "--source-uri"))
+		default:
+			return false
+		}
 	default:
 		return false
 	}
@@ -368,16 +376,41 @@ func executorEvidenceCommandHasCompleteDataAudit(command executorEvidenceCommand
 
 func executorEvidenceImportEngine(args []string) string {
 	engine := importEngineSQLInsert
-	for i, arg := range args {
-		if arg == "--engine" && i+1 < len(args) {
-			engine = strings.TrimSpace(args[i+1])
-			continue
-		}
-		if strings.HasPrefix(arg, "--engine=") {
-			engine = strings.TrimSpace(strings.TrimPrefix(arg, "--engine="))
-		}
+	if value := executorEvidenceOptionalArgValue(args, "--engine"); value != "" {
+		engine = value
 	}
 	return normalizeImportEngine(engine)
+}
+
+func executorEvidenceOptionalArgValue(args []string, flagName string) string {
+	for i, arg := range args {
+		if arg == flagName && i+1 < len(args) {
+			return strings.TrimSpace(args[i+1])
+		}
+		if strings.HasPrefix(arg, flagName+"=") {
+			return strings.TrimSpace(strings.TrimPrefix(arg, flagName+"="))
+		}
+	}
+	return ""
+}
+
+func executorEvidenceImportSourceNeedsLocalAudit(sourceURI string) bool {
+	sourceURI = strings.TrimSpace(sourceURI)
+	if sourceURI == "" {
+		return true
+	}
+	parsed, err := url.Parse(sourceURI)
+	if err != nil {
+		return true
+	}
+	switch parsed.Scheme {
+	case "", "file":
+		return true
+	case "s3", "gs":
+		return false
+	default:
+		return true
+	}
 }
 
 func validateExecutorEvidenceCommandAttempts(commandID string, attemptCount *int, attempts []executorEvidenceCommandAttemptSummary) error {

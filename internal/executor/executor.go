@@ -1143,7 +1143,7 @@ func runImport(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		fmt.Fprintf(stdout, "executor import completed: %s -> %s\n", *sourceURI, *targetObject)
-		if normalizedEngine == importEngineSQLInsert {
+		if result.HasDataAudit {
 			fmt.Fprintf(stdout, "imported rows: %d\n", result.ImportedRows)
 			fmt.Fprintf(stdout, "input bytes: %d\n", result.InputBytes)
 			fmt.Fprintf(stdout, "input sha256: %s\n", result.InputSHA256)
@@ -1533,6 +1533,7 @@ type importExecuteResult struct {
 	ImportedRows int64
 	InputBytes   int64
 	InputSHA256  string
+	HasDataAudit bool
 }
 
 func executeTiDBImport(ctx context.Context, spec importExecuteSpec) (importExecuteResult, error) {
@@ -1609,6 +1610,7 @@ func executeTiDBImport(ctx context.Context, spec importExecuteSpec) (importExecu
 		ImportedRows: importedRows,
 		InputBytes:   countingSourceReader.BytesRead(),
 		InputSHA256:  countingSourceReader.SHA256(),
+		HasDataAudit: true,
 	}, nil
 }
 
@@ -1630,6 +1632,10 @@ func executeTiDBImportInto(ctx context.Context, spec importExecuteSpec) (importE
 		if err != nil {
 			return importExecuteResult{}, fmt.Errorf("executor import: %w", err)
 		}
+	}
+	audit, hasAudit, err := auditTiDBImportIntoLocalSource(spec.SourceURI)
+	if err != nil {
+		return importExecuteResult{}, fmt.Errorf("executor import: %w", err)
 	}
 	statement, err := buildTiDBImportIntoStatementWithFields(spec.TargetObject, spec.SourceURI, fields)
 	if err != nil {
@@ -1658,7 +1664,12 @@ func executeTiDBImportInto(ctx context.Context, spec importExecuteSpec) (importE
 	if _, err := db.ExecContext(ctx, statement); err != nil {
 		return importExecuteResult{}, fmt.Errorf("executor import: execute TiDB IMPORT INTO: %w", err)
 	}
-	return importExecuteResult{}, nil
+	return importExecuteResult{
+		ImportedRows: audit.Rows,
+		InputBytes:   audit.Bytes,
+		InputSHA256:  audit.SHA256,
+		HasDataAudit: hasAudit,
+	}, nil
 }
 
 func openCSVImportFile(sourceURI string) (io.ReadCloser, error) {
@@ -2104,39 +2115,51 @@ func isValidTiDBImportIntoUserVariableField(field string) bool {
 	return true
 }
 
-func readTiDBImportIntoFieldsFromLocalSource(sourceURI string) ([]string, error) {
-	sourceURI = strings.TrimSpace(sourceURI)
-	if sourceURI == "" {
-		return nil, fmt.Errorf("IMPORT INTO source URI is required")
-	}
-	parsed, err := url.Parse(sourceURI)
-	if err != nil {
-		return nil, fmt.Errorf("parse IMPORT INTO source URI: %w", err)
-	}
-	var path string
-	switch parsed.Scheme {
-	case "":
-		path, err = cleanAbsoluteTiDBImportIntoLocalPath(sourceURI)
-		if err != nil {
-			return nil, err
-		}
-	case "file":
-		if parsed.Host != "" && parsed.Host != "localhost" {
-			return nil, fmt.Errorf("file source URI host must be empty or localhost")
-		}
-		if strings.TrimSpace(parsed.Path) == "" {
-			return nil, fmt.Errorf("file source URI path is required")
-		}
-		path, err = cleanAbsoluteTiDBImportIntoLocalPath(parsed.Path)
-		if err != nil {
-			return nil, err
-		}
-	case "s3", "gs":
-		return nil, nil
-	default:
-		return nil, fmt.Errorf("IMPORT INTO source URI scheme %s is not supported; supported schemes: file, s3, gs, or local path", parsed.Scheme)
-	}
+type dataChannelAudit struct {
+	Rows   int64
+	Bytes  int64
+	SHA256 string
+}
 
+func auditTiDBImportIntoLocalSource(sourceURI string) (dataChannelAudit, bool, error) {
+	path, ok, err := resolveTiDBImportIntoLocalSourcePath(sourceURI)
+	if err != nil || !ok {
+		return dataChannelAudit{}, ok, err
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return dataChannelAudit{}, true, fmt.Errorf("read IMPORT INTO CSV audit: %w", err)
+	}
+	counter := &countingReadCloser{reader: file, digest: sha256.New()}
+	defer counter.Close()
+
+	reader := csv.NewReader(counter)
+	if _, err := reader.Read(); err != nil {
+		return dataChannelAudit{}, true, fmt.Errorf("read IMPORT INTO CSV audit header: %w", err)
+	}
+	var rows int64
+	for {
+		if _, err := reader.Read(); errors.Is(err, io.EOF) {
+			return dataChannelAudit{
+				Rows:   rows,
+				Bytes:  counter.BytesRead(),
+				SHA256: counter.SHA256(),
+			}, true, nil
+		} else if err != nil {
+			return dataChannelAudit{}, true, fmt.Errorf("read IMPORT INTO CSV audit row %d: %w", rows+1, err)
+		}
+		rows++
+	}
+}
+
+func readTiDBImportIntoFieldsFromLocalSource(sourceURI string) ([]string, error) {
+	path, ok, err := resolveTiDBImportIntoLocalSourcePath(sourceURI)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, nil
+	}
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("read IMPORT INTO CSV header: %w", err)
@@ -2149,6 +2172,41 @@ func readTiDBImportIntoFieldsFromLocalSource(sourceURI string) ([]string, error)
 		return nil, fmt.Errorf("read IMPORT INTO CSV header: %w", err)
 	}
 	return buildTiDBImportIntoFieldsFromCSVHeader(columns)
+}
+
+func resolveTiDBImportIntoLocalSourcePath(sourceURI string) (string, bool, error) {
+	sourceURI = strings.TrimSpace(sourceURI)
+	if sourceURI == "" {
+		return "", false, fmt.Errorf("IMPORT INTO source URI is required")
+	}
+	parsed, err := url.Parse(sourceURI)
+	if err != nil {
+		return "", false, fmt.Errorf("parse IMPORT INTO source URI: %w", err)
+	}
+	switch parsed.Scheme {
+	case "":
+		path, err := cleanAbsoluteTiDBImportIntoLocalPath(sourceURI)
+		if err != nil {
+			return "", false, err
+		}
+		return path, true, nil
+	case "file":
+		if parsed.Host != "" && parsed.Host != "localhost" {
+			return "", false, fmt.Errorf("file source URI host must be empty or localhost")
+		}
+		if strings.TrimSpace(parsed.Path) == "" {
+			return "", false, fmt.Errorf("file source URI path is required")
+		}
+		path, err := cleanAbsoluteTiDBImportIntoLocalPath(parsed.Path)
+		if err != nil {
+			return "", false, err
+		}
+		return path, true, nil
+	case "s3", "gs":
+		return "", false, nil
+	default:
+		return "", false, fmt.Errorf("IMPORT INTO source URI scheme %s is not supported; supported schemes: file, s3, gs, or local path", parsed.Scheme)
+	}
 }
 
 func buildTiDBImportIntoFieldsFromCSVHeader(columns []string) ([]string, error) {

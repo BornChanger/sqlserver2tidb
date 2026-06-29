@@ -1164,6 +1164,33 @@ func TestReadTiDBImportIntoFieldsFromLocalSourceSkipsNullBitmap(t *testing.T) {
 	}
 }
 
+func TestAuditTiDBImportIntoLocalSourceRecordsRowsBytesAndSHA(t *testing.T) {
+	data := []byte("id,name,__sqlserver2tidb_null_bitmap\n1,Ada,00\n2,Lin,00\n")
+	path := filepath.Join(t.TempDir(), "orders.csv")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("write CSV fixture: %v", err)
+	}
+
+	audit, ok, err := auditTiDBImportIntoLocalSource("file://" + path)
+	if err != nil {
+		t.Fatalf("auditTiDBImportIntoLocalSource() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("auditTiDBImportIntoLocalSource() ok = false, want true")
+	}
+	if audit.Rows != 2 {
+		t.Fatalf("audit rows = %d, want 2", audit.Rows)
+	}
+	if audit.Bytes != int64(len(data)) {
+		t.Fatalf("audit bytes = %d, want %d", audit.Bytes, len(data))
+	}
+	sum := sha256.Sum256(data)
+	wantSHA := "sha256:" + hex.EncodeToString(sum[:])
+	if audit.SHA256 != wantSHA {
+		t.Fatalf("audit sha = %q, want %q", audit.SHA256, wantSHA)
+	}
+}
+
 func TestReadCSVImportFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "orders.csv")
 	if err := os.WriteFile(path, []byte("id,name\n1,Ada\n2,\n"), 0o644); err != nil {

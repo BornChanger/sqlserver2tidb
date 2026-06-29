@@ -1308,14 +1308,24 @@ func TestReusableWorkerExecutorCommandEvidenceRequiresDataAuditForExportAndSQLIn
 		t.Fatal("sql-insert import evidence without data audit was reusable, want rerun")
 	}
 
-	importIntoArgs := []string{"sqlserver2tidb-executor", "import", "--execute", "--engine", "tidb-import-into"}
+	importIntoArgs := []string{"sqlserver2tidb-executor", "import", "--execute", "--engine", "tidb-import-into", "--source-uri", "file:///tmp/orders.csv"}
 	importIntoEvidence := workerExecutorRunCommandEvidence{
 		Args:         importIntoArgs,
 		ShellCommand: renderArgsForEvidence(importIntoArgs),
 		ExitCode:     0,
 	}
-	if !isReusableWorkerExecutorCommandEvidence("import", importIntoEvidence, importIntoArgs) {
-		t.Fatal("tidb-import-into evidence without data audit was not reusable")
+	if isReusableWorkerExecutorCommandEvidence("import", importIntoEvidence, importIntoArgs) {
+		t.Fatal("local tidb-import-into evidence without data audit was reusable, want rerun")
+	}
+
+	remoteImportIntoArgs := []string{"sqlserver2tidb-executor", "import", "--execute", "--engine", "tidb-import-into", "--source-uri", "s3://migration-bucket/orders.csv"}
+	remoteImportIntoEvidence := workerExecutorRunCommandEvidence{
+		Args:         remoteImportIntoArgs,
+		ShellCommand: renderArgsForEvidence(remoteImportIntoArgs),
+		ExitCode:     0,
+	}
+	if !isReusableWorkerExecutorCommandEvidence("import", remoteImportIntoEvidence, remoteImportIntoArgs) {
+		t.Fatal("remote tidb-import-into evidence without data audit was not reusable")
 	}
 }
 

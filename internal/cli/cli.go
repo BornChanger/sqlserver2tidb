@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1070,7 +1071,14 @@ func workerExecutorCommandRequiresDataAudit(stage string, args []string) bool {
 	case "export":
 		return true
 	case "import":
-		return workerExecutorImportEngine(args) == "sql-insert"
+		switch workerExecutorImportEngine(args) {
+		case "sql-insert":
+			return true
+		case "tidb-import-into":
+			return workerExecutorImportSourceNeedsLocalAudit(workerExecutorArgValue(args, "--source-uri"))
+		default:
+			return false
+		}
 	default:
 		return false
 	}
@@ -1078,19 +1086,48 @@ func workerExecutorCommandRequiresDataAudit(stage string, args []string) bool {
 
 func workerExecutorImportEngine(args []string) string {
 	engine := "sql-insert"
-	for i, arg := range args {
-		if arg == "--engine" && i+1 < len(args) {
-			engine = strings.TrimSpace(args[i+1])
-			continue
-		}
-		if strings.HasPrefix(arg, "--engine=") {
-			engine = strings.TrimSpace(strings.TrimPrefix(arg, "--engine="))
-		}
+	if value := workerExecutorArgValue(args, "--engine"); value != "" {
+		engine = value
 	}
-	if engine == "" {
+	switch strings.ToLower(strings.TrimSpace(engine)) {
+	case "", "sql-insert":
 		return "sql-insert"
+	case "tidb-import-into", "import-into":
+		return "tidb-import-into"
+	default:
+		return strings.ToLower(strings.TrimSpace(engine))
 	}
-	return engine
+}
+
+func workerExecutorArgValue(args []string, flagName string) string {
+	for i, arg := range args {
+		if arg == flagName && i+1 < len(args) {
+			return strings.TrimSpace(args[i+1])
+		}
+		if strings.HasPrefix(arg, flagName+"=") {
+			return strings.TrimSpace(strings.TrimPrefix(arg, flagName+"="))
+		}
+	}
+	return ""
+}
+
+func workerExecutorImportSourceNeedsLocalAudit(sourceURI string) bool {
+	sourceURI = strings.TrimSpace(sourceURI)
+	if sourceURI == "" {
+		return true
+	}
+	parsed, err := url.Parse(sourceURI)
+	if err != nil {
+		return true
+	}
+	switch parsed.Scheme {
+	case "", "file":
+		return true
+	case "s3", "gs":
+		return false
+	default:
+		return true
+	}
 }
 
 func workerExecutorCommandHasDataAudit(command workerExecutorRunCommandEvidence) bool {
