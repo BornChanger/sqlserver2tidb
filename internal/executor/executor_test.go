@@ -1454,6 +1454,42 @@ func TestReadCSVImportHTTPSource(t *testing.T) {
 	}
 }
 
+func TestReadCSVImportHTTPSourceRetriesTransientStatus(t *testing.T) {
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		request := requests.Add(1)
+		if r.Method != http.MethodGet {
+			t.Fatalf("HTTP method = %s, want GET", r.Method)
+		}
+		if request == 1 {
+			http.Error(w, "temporary unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = io.WriteString(w, "id,name\n1,Ada\n2,Lin\n")
+	}))
+	defer server.Close()
+
+	source, err := openCSVImportFile(server.URL + "/orders.csv")
+	if err != nil {
+		t.Fatalf("openCSVImportFile() error = %v", err)
+	}
+	defer source.Close()
+
+	columns, records, err := readCSVImportRecords(source)
+	if err != nil {
+		t.Fatalf("readCSVImportRecords() error = %v", err)
+	}
+	if strings.Join(columns, ",") != "id,name" {
+		t.Fatalf("columns = %v, want [id name]", columns)
+	}
+	if len(records) != 2 {
+		t.Fatalf("records len = %d, want 2", len(records))
+	}
+	if requests.Load() != 2 {
+		t.Fatalf("HTTP GET requests = %d, want 2", requests.Load())
+	}
+}
+
 func TestReadCSVImportS3Source(t *testing.T) {
 	var method string
 	var requestPath string
@@ -1507,6 +1543,50 @@ func TestReadCSVImportS3Source(t *testing.T) {
 	}
 	if records[1][0] != "2" || records[1][1] != "Lin" {
 		t.Fatalf("records[1] = %v, want [2 Lin]", records[1])
+	}
+}
+
+func TestReadCSVImportS3SourceRetriesTransientStatus(t *testing.T) {
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		request := requests.Add(1)
+		if r.Method != http.MethodGet {
+			t.Fatalf("method = %q, want GET", r.Method)
+		}
+		if r.URL.EscapedPath() != "/migration-bucket/full/orders.csv" {
+			t.Fatalf("request path = %q, want path-style bucket/object path", r.URL.EscapedPath())
+		}
+		if request == 1 {
+			http.Error(w, "slow down", http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = io.WriteString(w, "id,name\n1,Ada\n2,Lin\n")
+	}))
+	defer server.Close()
+	t.Setenv("AWS_ACCESS_KEY_ID", "AKIDEXAMPLE")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "SECRETEXAMPLE")
+	t.Setenv("AWS_REGION", "us-east-1")
+	t.Setenv("AWS_ENDPOINT_URL", server.URL)
+	t.Setenv("AWS_S3_FORCE_PATH_STYLE", "true")
+
+	source, err := openCSVImportFile("s3://migration-bucket/full/orders.csv")
+	if err != nil {
+		t.Fatalf("openCSVImportFile() error = %v", err)
+	}
+	defer source.Close()
+
+	columns, records, err := readCSVImportRecords(source)
+	if err != nil {
+		t.Fatalf("readCSVImportRecords() error = %v", err)
+	}
+	if strings.Join(columns, ",") != "id,name" {
+		t.Fatalf("columns = %v, want [id name]", columns)
+	}
+	if len(records) != 2 {
+		t.Fatalf("records len = %d, want 2", len(records))
+	}
+	if requests.Load() != 2 {
+		t.Fatalf("S3 GET requests = %d, want 2", requests.Load())
 	}
 }
 
@@ -2649,6 +2729,70 @@ func TestWriteCSVExportRowsS3Output(t *testing.T) {
 	assertOutputContains(t, authorization, "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/")
 	assertOutputContains(t, authorization, "SignedHeaders=")
 	assertOutputContains(t, authorization, "Signature=")
+}
+
+func TestWriteCSVExportRowsS3OutputRetriesTransientStatus(t *testing.T) {
+	var requests atomic.Int64
+	var bodies []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		request := requests.Add(1)
+		if r.Method != http.MethodPut {
+			t.Fatalf("method = %q, want PUT", r.Method)
+		}
+		if r.URL.EscapedPath() != "/migration-bucket/full/dbo.orders.000001.csv" {
+			t.Fatalf("request path = %q, want path-style bucket/object path", r.URL.EscapedPath())
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read request body: %v", err)
+		}
+		bodies = append(bodies, string(body))
+		if request == 1 {
+			http.Error(w, "slow down", http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	t.Setenv("AWS_ACCESS_KEY_ID", "AKIDEXAMPLE")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "SECRETEXAMPLE")
+	t.Setenv("AWS_REGION", "us-east-1")
+	t.Setenv("AWS_ENDPOINT_URL", server.URL)
+	t.Setenv("AWS_S3_FORCE_PATH_STYLE", "true")
+
+	output, err := openCSVExportOutput(context.Background(), exportOutputURI{
+		scheme: "s3",
+		uri:    "s3://migration-bucket/full/dbo.orders.000001.csv",
+	}, compressionNone)
+	if err != nil {
+		t.Fatalf("openCSVExportOutput() error = %v", err)
+	}
+	rows := &fakeExportRows{
+		columns: []string{"id", "name"},
+		values: [][]any{
+			{int64(1), "Ada"},
+			{int64(2), nil},
+		},
+	}
+
+	exportedRows, err := writeCSVExportRows(output, rows)
+	if err != nil {
+		t.Fatalf("writeCSVExportRows() error = %v", err)
+	}
+	if exportedRows != 2 {
+		t.Fatalf("exported rows = %d, want 2", exportedRows)
+	}
+	if err := output.Close(); err != nil {
+		t.Fatalf("output.Close() error = %v", err)
+	}
+
+	wantBody := "id,name,__sqlserver2tidb_null_bitmap\n1,Ada,00\n2,,01\n"
+	if requests.Load() != 2 {
+		t.Fatalf("S3 PUT requests = %d, want 2", requests.Load())
+	}
+	if !reflect.DeepEqual(bodies, []string{wantBody, wantBody}) {
+		t.Fatalf("request bodies = %q, want two complete CSV payloads", bodies)
+	}
 }
 
 func TestWriteCSVExportRowsHTTPGzipOutput(t *testing.T) {

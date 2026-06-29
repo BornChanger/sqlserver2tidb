@@ -45,6 +45,10 @@ const (
 
 var csvHTTPClient = &http.Client{Timeout: 10 * time.Minute}
 
+const csvHTTPMaxAttempts = 3
+
+var csvHTTPRetryBaseDelay = 50 * time.Millisecond
+
 var openMySQLDB = func(connectionString string) (*sql.DB, error) {
 	return sql.Open("mysql", connectionString)
 }
@@ -1110,33 +1114,29 @@ func uploadS3ExportTempFile(ctx context.Context, tempPath string, target s3Objec
 	if err != nil {
 		return fmt.Errorf("hash S3 export payload: %w", err)
 	}
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		return fmt.Errorf("rewind S3 export payload: %w", err)
-	}
 	requestURL, err := buildS3ObjectURL(config, target)
 	if err != nil {
 		return err
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPut, requestURL.String(), file)
+	response, err := doCSVHTTPRequestWithRetry(ctx, "upload S3 CSV output", func() (*http.Request, error) {
+		body := io.NewSectionReader(file, 0, stat.Size())
+		request, err := http.NewRequestWithContext(ctx, http.MethodPut, requestURL.String(), body)
+		if err != nil {
+			return nil, fmt.Errorf("create S3 PutObject request: %w", err)
+		}
+		request.ContentLength = stat.Size()
+		request.Header.Set("Content-Type", "text/csv")
+		if compression == compressionGzip {
+			request.Header.Set("Content-Encoding", "gzip")
+		}
+		signS3Request(request, config, payloadHash, time.Now().UTC())
+		return request, nil
+	})
 	if err != nil {
-		return fmt.Errorf("create S3 PutObject request: %w", err)
-	}
-	request.ContentLength = stat.Size()
-	request.Header.Set("Content-Type", "text/csv")
-	if compression == compressionGzip {
-		request.Header.Set("Content-Encoding", "gzip")
-	}
-	signS3Request(request, config, payloadHash, time.Now().UTC())
-
-	response, err := csvHTTPClient.Do(request)
-	if err != nil {
-		return fmt.Errorf("upload S3 CSV output: %w", err)
+		return err
 	}
 	defer response.Body.Close()
 	_, _ = io.Copy(io.Discard, response.Body)
-	if response.StatusCode < 200 || response.StatusCode > 299 {
-		return fmt.Errorf("upload S3 CSV output: unexpected HTTP status %s", response.Status)
-	}
 	return nil
 }
 
@@ -2150,18 +2150,16 @@ func openParsedCSVImportSource(ctx context.Context, source importSourceURI) (io.
 		}
 		return file, nil
 	case "http", "https":
-		request, err := http.NewRequestWithContext(ctx, http.MethodGet, source.uri, nil)
+		response, err := doCSVHTTPRequestWithRetry(ctx, "download CSV source", func() (*http.Request, error) {
+			request, err := http.NewRequestWithContext(ctx, http.MethodGet, source.uri, nil)
+			if err != nil {
+				return nil, fmt.Errorf("create CSV source request: %w", err)
+			}
+			request.Header.Set("Accept-Encoding", "identity")
+			return request, nil
+		})
 		if err != nil {
-			return nil, fmt.Errorf("create CSV source request: %w", err)
-		}
-		request.Header.Set("Accept-Encoding", "identity")
-		response, err := csvHTTPClient.Do(request)
-		if err != nil {
-			return nil, fmt.Errorf("download CSV source: %w", err)
-		}
-		if response.StatusCode < 200 || response.StatusCode > 299 {
-			response.Body.Close()
-			return nil, fmt.Errorf("download CSV source: unexpected HTTP status %s", response.Status)
+			return nil, err
 		}
 		return response.Body, nil
 	case "s3":
@@ -2188,22 +2186,93 @@ func openS3ImportSource(ctx context.Context, sourceURI string) (io.ReadCloser, e
 	if err != nil {
 		return nil, err
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL.String(), nil)
+	response, err := doCSVHTTPRequestWithRetry(ctx, "download S3 CSV source", func() (*http.Request, error) {
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL.String(), nil)
+		if err != nil {
+			return nil, fmt.Errorf("create S3 CSV source request: %w", err)
+		}
+		request.Header.Set("Accept-Encoding", "identity")
+		signS3Request(request, config, "UNSIGNED-PAYLOAD", time.Now().UTC())
+		return request, nil
+	})
 	if err != nil {
-		return nil, fmt.Errorf("create S3 CSV source request: %w", err)
-	}
-	request.Header.Set("Accept-Encoding", "identity")
-	signS3Request(request, config, "UNSIGNED-PAYLOAD", time.Now().UTC())
-
-	response, err := csvHTTPClient.Do(request)
-	if err != nil {
-		return nil, fmt.Errorf("download S3 CSV source: %w", err)
-	}
-	if response.StatusCode < 200 || response.StatusCode > 299 {
-		response.Body.Close()
-		return nil, fmt.Errorf("download S3 CSV source: unexpected HTTP status %s", response.Status)
+		return nil, err
 	}
 	return response.Body, nil
+}
+
+func doCSVHTTPRequestWithRetry(ctx context.Context, operation string, newRequest func() (*http.Request, error)) (*http.Response, error) {
+	var lastErr error
+	for attempt := 0; attempt < csvHTTPMaxAttempts; attempt++ {
+		request, err := newRequest()
+		if err != nil {
+			return nil, err
+		}
+		response, err := csvHTTPClient.Do(request)
+		if err != nil {
+			lastErr = fmt.Errorf("%s: %w", operation, err)
+			if shouldRetryCSVHTTPRequest(ctx, attempt, 0, err) {
+				if waitErr := waitForCSVHTTPRetry(ctx, attempt); waitErr != nil {
+					return nil, waitErr
+				}
+				continue
+			}
+			return nil, lastErr
+		}
+		if response.StatusCode >= 200 && response.StatusCode <= 299 {
+			return response, nil
+		}
+		status := response.Status
+		retryable := isRetryableCSVHTTPStatus(response.StatusCode)
+		_, _ = io.Copy(io.Discard, response.Body)
+		response.Body.Close()
+		lastErr = fmt.Errorf("%s: unexpected HTTP status %s", operation, status)
+		if retryable && shouldRetryCSVHTTPRequest(ctx, attempt, response.StatusCode, nil) {
+			if waitErr := waitForCSVHTTPRetry(ctx, attempt); waitErr != nil {
+				return nil, waitErr
+			}
+			continue
+		}
+		return nil, lastErr
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, fmt.Errorf("%s: request failed", operation)
+}
+
+func shouldRetryCSVHTTPRequest(ctx context.Context, attempt, statusCode int, requestErr error) bool {
+	if attempt >= csvHTTPMaxAttempts-1 {
+		return false
+	}
+	if ctx.Err() != nil {
+		return false
+	}
+	if requestErr != nil {
+		return true
+	}
+	return isRetryableCSVHTTPStatus(statusCode)
+}
+
+func isRetryableCSVHTTPStatus(statusCode int) bool {
+	return statusCode == http.StatusRequestTimeout ||
+		statusCode == http.StatusTooManyRequests ||
+		(statusCode >= 500 && statusCode <= 599)
+}
+
+func waitForCSVHTTPRetry(ctx context.Context, attempt int) error {
+	delay := csvHTTPRetryBaseDelay
+	for i := 0; i < attempt; i++ {
+		delay *= 2
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 type compressedReadCloser struct {
