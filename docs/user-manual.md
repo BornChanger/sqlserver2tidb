@@ -963,14 +963,17 @@ bin/sqlserver2tidb cdc-health \
   --json \
   --metrics-file artifacts/cdc-health.json \
   --history-file clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/cdc-health-history.jsonl \
-  --feishu-alert-min-severity critical
+  --feishu-alert-min-severity critical \
+  --slack-alert-min-severity critical
 ```
 
 `cdc-health` 读取项目级 `plan/cdc-plan.yaml` 和源集群级 `state/cdc-checkpoint.yaml`。加 `--probe-lsn` 时，它会通过 `sqlserver2tidb-executor cdc-lsn --execute` 读取当前 SQL Server CDC `max_lsn`，并对每张 tracked table 读取 capture instance `min_lsn`；不希望命令连接 SQL Server 时，可以改用 `--max-lsn 0x...` 和可重复的 `--min-lsn source.object=0x...` 显式提供边界。`--max-checkpoint-age` 用于限制 checkpoint `updated_at` 到当前时间的最大年龄，`--now` 只用于测试或回放固定时间点。命令会输出 `ok`、`warning` 或 `critical`：checkpoint `failed`、缺失、过旧、超过 SQL Server 保留窗口、或 checkpoint `to_lsn` 大于当前 `max_lsn` 都是 `critical`；checkpoint 落后于当前 `max_lsn` 是 `warning`。默认只有 `critical` 返回非零；加 `--fail-on-warning` 后，`warning` 也返回非零。`--metrics-file` 会写出同一份 JSON 报告，便于 GitHub Actions artifact、日志采集或外部监控系统抓取。`--history-file` 会把每次检查结果追加为一行 compact JSON，推荐放在 `clusters/<source_cluster_id>/projects/<project_id>/state/cdc-health-history.jsonl`，用于历史趋势、SLA 回溯和告警审计；这个文件不参与 migration approval/hash gate。
 
-飞书报警群通过飞书自定义机器人 webhook 接入。默认读取 secret `SQLSERVER2TIDB_FEISHU_WEBHOOK` 作为 webhook URL，读取可选 secret `SQLSERVER2TIDB_FEISHU_SECRET` 作为签名 secret；也可以用 `--feishu-webhook-env` 和 `--feishu-secret-env` 指定其他环境变量名。`--feishu-alert-min-severity` 支持 `critical`、`warning`、`ok` 和 `none`，默认只在 `critical` 时发送。发送失败会让 `cdc-health` 返回非零，因为报警通道不可用本身就是生产健康检查失败。
+飞书报警群通过飞书自定义机器人 webhook 接入。默认读取 secret `SQLSERVER2TIDB_FEISHU_WEBHOOK` 作为 webhook URL，读取可选 secret `SQLSERVER2TIDB_FEISHU_SECRET` 作为签名 secret；也可以用 `--feishu-webhook-env` 和 `--feishu-secret-env` 指定其他环境变量名。`--feishu-alert-min-severity` 支持 `critical`、`warning`、`ok` 和 `none`，默认只在 `critical` 时发送。
 
-仓库内置 `.github/workflows/cdc-ops-health.yml`，默认每 30 分钟运行一次，也支持手动触发。它读取 repository variables `SQLSERVER2TIDB_CDC_SOURCE_CLUSTER_ID`、`SQLSERVER2TIDB_CDC_PROJECT_ID`、`SQLSERVER2TIDB_CDC_MAX_CHECKPOINT_AGE`、`SQLSERVER2TIDB_CDC_FAIL_ON_WARNING`、`SQLSERVER2TIDB_CDC_FEISHU_ALERT_MIN_SEVERITY` 和可选 `SQLSERVER2TIDB_CDC_HEALTH_HISTORY_FILE`，并使用 secret `SQLSERVER2TIDB_INTEGRATION_SOURCE_DSN` 作为 SQL Server CDC 探测连接串。未配置 DSN 时 workflow 会跳过探测并输出 notice；配置后会执行 `cdc-health --probe-lsn`，上传 `artifacts/cdc-health.json`，默认追加并提交 `clusters/<source_cluster_id>/projects/<project_id>/state/cdc-health-history.jsonl`。如果 main 分支保护不允许 `GITHUB_TOKEN` 直接 push 历史文件，配置 `SQLSERVER2TIDB_GITHUB_APP_TOKEN` 给 checkout/push 使用。
+Slack 报警群通过 Slack Incoming Webhook 接入。默认读取 secret `SQLSERVER2TIDB_SLACK_WEBHOOK` 作为 webhook URL；也可以用 `--slack-webhook-env` 指定其他环境变量名。`--slack-alert-min-severity` 支持 `critical`、`warning`、`ok` 和 `none`，默认只在 `critical` 时发送。飞书或 Slack 任一已配置报警通道发送失败，都会让 `cdc-health` 返回非零，因为报警通道不可用本身就是生产健康检查失败。
+
+仓库内置 `.github/workflows/cdc-ops-health.yml`，默认每 30 分钟运行一次，也支持手动触发。它读取 repository variables `SQLSERVER2TIDB_CDC_SOURCE_CLUSTER_ID`、`SQLSERVER2TIDB_CDC_PROJECT_ID`、`SQLSERVER2TIDB_CDC_MAX_CHECKPOINT_AGE`、`SQLSERVER2TIDB_CDC_FAIL_ON_WARNING`、`SQLSERVER2TIDB_CDC_FEISHU_ALERT_MIN_SEVERITY`、`SQLSERVER2TIDB_CDC_SLACK_ALERT_MIN_SEVERITY` 和可选 `SQLSERVER2TIDB_CDC_HEALTH_HISTORY_FILE`，并使用 secret `SQLSERVER2TIDB_INTEGRATION_SOURCE_DSN` 作为 SQL Server CDC 探测连接串。未配置 DSN 时 workflow 会跳过探测并输出 notice；配置后会执行 `cdc-health --probe-lsn`，上传 `artifacts/cdc-health.json`，默认追加并提交 `clusters/<source_cluster_id>/projects/<project_id>/state/cdc-health-history.jsonl`。如果 main 分支保护不允许 `GITHUB_TOKEN` 直接 push 历史文件，配置 `SQLSERVER2TIDB_GITHUB_APP_TOKEN` 给 checkout/push 使用。
 
 生成或推进显式 CDC LSN range：
 

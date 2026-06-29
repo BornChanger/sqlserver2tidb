@@ -35,10 +35,12 @@ jobs:
       CDC_MAX_CHECKPOINT_AGE: ${{ github.event.inputs.max_checkpoint_age || vars.SQLSERVER2TIDB_CDC_MAX_CHECKPOINT_AGE || '15m' }}
       CDC_FAIL_ON_WARNING: ${{ github.event.inputs.fail_on_warning || vars.SQLSERVER2TIDB_CDC_FAIL_ON_WARNING || 'false' }}
       CDC_FEISHU_ALERT_MIN_SEVERITY: ${{ vars.SQLSERVER2TIDB_CDC_FEISHU_ALERT_MIN_SEVERITY || 'critical' }}
+      CDC_SLACK_ALERT_MIN_SEVERITY: ${{ vars.SQLSERVER2TIDB_CDC_SLACK_ALERT_MIN_SEVERITY || 'critical' }}
       CDC_HEALTH_HISTORY_FILE: ${{ vars.SQLSERVER2TIDB_CDC_HEALTH_HISTORY_FILE }}
       SQLSERVER2TIDB_SOURCE_CONNECTION_STRING: ${{ secrets.SQLSERVER2TIDB_INTEGRATION_SOURCE_DSN }}
       SQLSERVER2TIDB_FEISHU_WEBHOOK: ${{ secrets.SQLSERVER2TIDB_FEISHU_WEBHOOK }}
       SQLSERVER2TIDB_FEISHU_SECRET: ${{ secrets.SQLSERVER2TIDB_FEISHU_SECRET }}
+      SQLSERVER2TIDB_SLACK_WEBHOOK: ${{ secrets.SQLSERVER2TIDB_SLACK_WEBHOOK }}
 
     steps:
       - name: Check out repository
@@ -82,6 +84,7 @@ jobs:
             --metrics-file artifacts/cdc-health.json
             --history-file "${history_file}"
             --feishu-alert-min-severity "${CDC_FEISHU_ALERT_MIN_SEVERITY}"
+            --slack-alert-min-severity "${CDC_SLACK_ALERT_MIN_SEVERITY}"
           )
           if [ "${CDC_FAIL_ON_WARNING}" = "true" ]; then
             args+=(--fail-on-warning)

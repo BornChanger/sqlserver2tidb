@@ -847,6 +847,8 @@ func runCDCHealth(args []string, stdout, stderr io.Writer) int {
 	feishuWebhookEnv := fs.String("feishu-webhook-env", "SQLSERVER2TIDB_FEISHU_WEBHOOK", "environment variable containing the Feishu custom bot webhook URL; empty value disables Feishu alerts")
 	feishuSecretEnv := fs.String("feishu-secret-env", "SQLSERVER2TIDB_FEISHU_SECRET", "environment variable containing the optional Feishu custom bot signing secret")
 	feishuAlertMinSeverity := fs.String("feishu-alert-min-severity", "critical", "minimum CDC health status that sends Feishu alerts: ok, warning, critical, or none")
+	slackWebhookEnv := fs.String("slack-webhook-env", "SQLSERVER2TIDB_SLACK_WEBHOOK", "environment variable containing the Slack incoming webhook URL; empty value disables Slack alerts")
+	slackAlertMinSeverity := fs.String("slack-alert-min-severity", "critical", "minimum CDC health status that sends Slack alerts: ok, warning, critical, or none")
 	var minLSNs cdcHealthMinLSNFlags
 	fs.Var(&minLSNs, "min-lsn", "per-table SQL Server CDC min LSN as source.object=0x...")
 	if err := fs.Parse(args); err != nil {
@@ -865,7 +867,12 @@ func runCDCHealth(args []string, stdout, stderr io.Writer) int {
 		}
 		now = parsedNow.UTC()
 	}
-	alertSeverity, err := parseCDCHealthAlertSeverity(*feishuAlertMinSeverity)
+	feishuAlertSeverity, err := parseCDCHealthAlertSeverity(*feishuAlertMinSeverity, "--feishu-alert-min-severity")
+	if err != nil {
+		fmt.Fprintf(stderr, "cdc-health: %v\n", err)
+		return 2
+	}
+	slackAlertSeverity, err := parseCDCHealthAlertSeverity(*slackAlertMinSeverity, "--slack-alert-min-severity")
 	if err != nil {
 		fmt.Fprintf(stderr, "cdc-health: %v\n", err)
 		return 2
@@ -922,13 +929,23 @@ func runCDCHealth(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	feishuWebhook := strings.TrimSpace(os.Getenv(strings.TrimSpace(*feishuWebhookEnv)))
-	if feishuWebhook != "" && shouldSendCDCHealthAlert(report.Status, alertSeverity) {
+	if feishuWebhook != "" && shouldSendCDCHealthAlert(report.Status, feishuAlertSeverity) {
 		if err := sendFeishuCDCHealthAlert(feishuWebhook, os.Getenv(strings.TrimSpace(*feishuSecretEnv)), now, report); err != nil {
 			fmt.Fprintf(stderr, "cdc-health: send Feishu alert: %v\n", err)
 			return 1
 		}
 		if !*jsonOutput {
 			fmt.Fprintln(stdout, "Feishu CDC health alert sent")
+		}
+	}
+	slackWebhook := strings.TrimSpace(os.Getenv(strings.TrimSpace(*slackWebhookEnv)))
+	if slackWebhook != "" && shouldSendCDCHealthAlert(report.Status, slackAlertSeverity) {
+		if err := sendSlackCDCHealthAlert(slackWebhook, report); err != nil {
+			fmt.Fprintf(stderr, "cdc-health: send Slack alert: %v\n", err)
+			return 1
+		}
+		if !*jsonOutput {
+			fmt.Fprintln(stdout, "Slack CDC health alert sent")
 		}
 	}
 	if *jsonOutput {
@@ -977,7 +994,7 @@ const (
 	cdcHealthAlertCritical
 )
 
-func parseCDCHealthAlertSeverity(value string) (cdcHealthAlertSeverity, error) {
+func parseCDCHealthAlertSeverity(value, flagName string) (cdcHealthAlertSeverity, error) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "", "critical":
 		return cdcHealthAlertCritical, nil
@@ -988,7 +1005,7 @@ func parseCDCHealthAlertSeverity(value string) (cdcHealthAlertSeverity, error) {
 	case "none", "disabled":
 		return cdcHealthAlertNone, nil
 	default:
-		return cdcHealthAlertNone, fmt.Errorf("invalid --feishu-alert-min-severity %q", value)
+		return cdcHealthAlertNone, fmt.Errorf("invalid %s %q", flagName, value)
 	}
 }
 
@@ -1016,7 +1033,7 @@ func sendFeishuCDCHealthAlert(webhookURL, secret string, now time.Time, report g
 	payload := map[string]any{
 		"msg_type": "text",
 		"content": map[string]string{
-			"text": renderFeishuCDCHealthAlertText(report),
+			"text": renderCDCHealthAlertText(report),
 		},
 	}
 	if strings.TrimSpace(secret) != "" {
@@ -1049,6 +1066,32 @@ func sendFeishuCDCHealthAlert(webhookURL, secret string, now time.Time, report g
 	return nil
 }
 
+func sendSlackCDCHealthAlert(webhookURL string, report gitops.CDCHealthReport) error {
+	payload := map[string]string{
+		"text": renderCDCHealthAlertText(report),
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal payload: %w", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, strings.TrimSpace(webhookURL), bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	client := http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("webhook returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+	return nil
+}
+
 func signFeishuCustomBotRequest(timestamp, secret string) string {
 	stringToSign := timestamp + "\n" + secret
 	mac := hmac.New(sha256.New, []byte(stringToSign))
@@ -1077,7 +1120,7 @@ func checkFeishuWebhookResponse(body []byte) error {
 	return nil
 }
 
-func renderFeishuCDCHealthAlertText(report gitops.CDCHealthReport) string {
+func renderCDCHealthAlertText(report gitops.CDCHealthReport) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "sqlserver2tidb CDC health %s\n", report.Status)
 	fmt.Fprintf(&b, "source_cluster_id: %s\n", report.SourceClusterID)

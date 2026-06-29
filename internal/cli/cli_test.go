@@ -2974,6 +2974,83 @@ func TestRunCDCHealthFailsWhenFeishuAlertDeliveryFails(t *testing.T) {
 	assertCLIOutputContains(t, stderr.String(), "502")
 }
 
+func TestRunCDCHealthSendsSlackAlert(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	createCLIProjectWithCDCPlanAndCheckpoint(t, root, &stdout, &stderr, "0x00000000000000000001", "0x00000000000000000002")
+	var alertBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("Slack method = %s, want POST", r.Method)
+		}
+		if got := r.Header.Get("Content-Type"); !strings.Contains(got, "application/json") {
+			t.Fatalf("Slack content type = %q, want application/json", got)
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read Slack alert body: %v", err)
+		}
+		alertBody = string(body)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer server.Close()
+	t.Setenv("SQLSERVER2TIDB_SLACK_WEBHOOK", server.URL)
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"cdc-health",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--max-lsn", "0x00000000000000000003",
+		"--min-lsn", "sales.dbo.orders=0x00000000000000000001",
+		"--max-checkpoint-age", "1h",
+		"--now", "2026-01-02T04:34:07Z",
+		"--slack-webhook-env", "SQLSERVER2TIDB_SLACK_WEBHOOK",
+		"--slack-alert-min-severity", "warning",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("cdc-health code = 0, want critical status failure; stdout = %s", stdout.String())
+	}
+	assertCLIOutputContains(t, stdout.String(), "Slack CDC health alert sent")
+	assertCLIOutputContains(t, alertBody, `"text":"sqlserver2tidb CDC health critical`)
+	assertCLIOutputContains(t, alertBody, "checkpoint_stale")
+	assertCLIOutputContains(t, alertBody, "cdc_lag")
+}
+
+func TestRunCDCHealthFailsWhenSlackAlertDeliveryFails(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	createCLIProjectWithCDCPlanAndCheckpoint(t, root, &stdout, &stderr, "0x00000000000000000001", "0x00000000000000000002")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte("action_prohibited"))
+	}))
+	defer server.Close()
+	t.Setenv("SQLSERVER2TIDB_SLACK_WEBHOOK", server.URL)
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"cdc-health",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--max-lsn", "0x00000000000000000003",
+		"--now", "2026-01-02T03:04:08Z",
+		"--slack-webhook-env", "SQLSERVER2TIDB_SLACK_WEBHOOK",
+		"--slack-alert-min-severity", "warning",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("cdc-health code = 0, want Slack alert delivery failure")
+	}
+	assertCLIOutputContains(t, stderr.String(), "send Slack alert")
+	assertCLIOutputContains(t, stderr.String(), "403")
+	assertCLIOutputContains(t, stderr.String(), "action_prohibited")
+}
+
 func TestRunGenerateValidationPlanCommand(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer
