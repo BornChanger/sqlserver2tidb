@@ -1734,6 +1734,7 @@ func openParsedCSVImportSource(ctx context.Context, source importSourceURI) (io.
 		if err != nil {
 			return nil, fmt.Errorf("create CSV source request: %w", err)
 		}
+		request.Header.Set("Accept-Encoding", "identity")
 		response, err := csvHTTPClient.Do(request)
 		if err != nil {
 			return nil, fmt.Errorf("download CSV source: %w", err)

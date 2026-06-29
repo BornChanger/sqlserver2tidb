@@ -1232,10 +1232,12 @@ func TestReadCSVImportGzipFile(t *testing.T) {
 }
 
 func TestReadCSVImportHTTPSource(t *testing.T) {
+	var acceptEncoding string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			t.Fatalf("HTTP method = %s, want GET", r.Method)
 		}
+		acceptEncoding = r.Header.Get("Accept-Encoding")
 		w.Header().Set("Content-Type", "text/csv")
 		_, _ = io.WriteString(w, "id,name\n1,Ada\n2,Lin\n")
 	}))
@@ -1259,6 +1261,9 @@ func TestReadCSVImportHTTPSource(t *testing.T) {
 	}
 	if records[1][0] != "2" || records[1][1] != "Lin" {
 		t.Fatalf("records[1] = %v, want [2 Lin]", records[1])
+	}
+	if acceptEncoding != "identity" {
+		t.Fatalf("Accept-Encoding = %q, want identity", acceptEncoding)
 	}
 }
 
