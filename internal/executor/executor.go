@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/csv"
 	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
+	"hash"
 	"io"
 	"net/http"
 	"net/url"
@@ -524,6 +526,7 @@ func runExport(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "executor export completed: %s -> %s\n", *sourceObject, *outputURI)
 		fmt.Fprintf(stdout, "exported rows: %d\n", result.ExportedRows)
 		fmt.Fprintf(stdout, "output bytes: %d\n", result.OutputBytes)
+		fmt.Fprintf(stdout, "output sha256: %s\n", result.OutputSHA256)
 		return 0
 	}
 
@@ -557,6 +560,7 @@ type exportExecuteSpec struct {
 type exportExecuteResult struct {
 	ExportedRows int64
 	OutputBytes  int64
+	OutputSHA256 string
 }
 
 func executeSQLServerExport(ctx context.Context, spec exportExecuteSpec) (exportExecuteResult, error) {
@@ -617,6 +621,7 @@ func executeSQLServerExport(ctx context.Context, spec exportExecuteSpec) (export
 	return exportExecuteResult{
 		ExportedRows: exportedRows,
 		OutputBytes:  outputWriter.BytesWritten(),
+		OutputSHA256: outputWriter.SHA256(),
 	}, nil
 }
 
@@ -690,14 +695,25 @@ func (output *csvExportOutput) BytesWritten() int64 {
 	return output.counter.BytesWritten()
 }
 
+func (output *csvExportOutput) SHA256() string {
+	if output == nil || output.counter == nil {
+		return formatSHA256(nil)
+	}
+	return output.counter.SHA256()
+}
+
 type countingWriteCloser struct {
 	writer io.WriteCloser
+	digest hash.Hash
 	bytes  int64
 }
 
 func (w *countingWriteCloser) Write(p []byte) (int, error) {
 	n, err := w.writer.Write(p)
 	w.bytes += int64(n)
+	if n > 0 {
+		_, _ = w.digest.Write(p[:n])
+	}
 	return n, err
 }
 
@@ -710,6 +726,13 @@ func (w *countingWriteCloser) BytesWritten() int64 {
 		return 0
 	}
 	return w.bytes
+}
+
+func (w *countingWriteCloser) SHA256() string {
+	if w == nil || w.digest == nil {
+		return formatSHA256(nil)
+	}
+	return formatSHA256(w.digest.Sum(nil))
 }
 
 func openCSVExportOutput(ctx context.Context, output exportOutputURI, compression string) (*csvExportOutput, error) {
@@ -730,7 +753,7 @@ func openCSVExportOutput(ctx context.Context, output exportOutputURI, compressio
 	default:
 		return nil, fmt.Errorf("unsupported output URI scheme %q", output.scheme)
 	}
-	counter := &countingWriteCloser{writer: base}
+	counter := &countingWriteCloser{writer: base, digest: sha256.New()}
 	writer, err := wrapCSVExportWriter(counter, compression)
 	if err != nil {
 		return nil, err
@@ -1016,6 +1039,7 @@ func runImport(args []string, stdout, stderr io.Writer) int {
 		if normalizedEngine == importEngineSQLInsert {
 			fmt.Fprintf(stdout, "imported rows: %d\n", result.ImportedRows)
 			fmt.Fprintf(stdout, "input bytes: %d\n", result.InputBytes)
+			fmt.Fprintf(stdout, "input sha256: %s\n", result.InputSHA256)
 		}
 		return 0
 	}
@@ -1401,6 +1425,7 @@ type importExecuteSpec struct {
 type importExecuteResult struct {
 	ImportedRows int64
 	InputBytes   int64
+	InputSHA256  string
 }
 
 func executeTiDBImport(ctx context.Context, spec importExecuteSpec) (importExecuteResult, error) {
@@ -1452,7 +1477,7 @@ func executeTiDBImport(ctx context.Context, spec importExecuteSpec) (importExecu
 	if err != nil {
 		return importExecuteResult{}, fmt.Errorf("executor import: %w", err)
 	}
-	countingSourceReader := &countingReadCloser{reader: sourceReader}
+	countingSourceReader := &countingReadCloser{reader: sourceReader, digest: sha256.New()}
 	sourceReader, err = wrapCSVImportReader(countingSourceReader, compression)
 	if err != nil {
 		countingSourceReader.Close()
@@ -1476,6 +1501,7 @@ func executeTiDBImport(ctx context.Context, spec importExecuteSpec) (importExecu
 	return importExecuteResult{
 		ImportedRows: importedRows,
 		InputBytes:   countingSourceReader.BytesRead(),
+		InputSHA256:  countingSourceReader.SHA256(),
 	}, nil
 }
 
@@ -1632,12 +1658,16 @@ type compressedReadCloser struct {
 
 type countingReadCloser struct {
 	reader io.ReadCloser
+	digest hash.Hash
 	bytes  int64
 }
 
 func (r *countingReadCloser) Read(p []byte) (int, error) {
 	n, err := r.reader.Read(p)
 	r.bytes += int64(n)
+	if n > 0 {
+		_, _ = r.digest.Write(p[:n])
+	}
 	return n, err
 }
 
@@ -1650,6 +1680,21 @@ func (r *countingReadCloser) BytesRead() int64 {
 		return 0
 	}
 	return r.bytes
+}
+
+func (r *countingReadCloser) SHA256() string {
+	if r == nil || r.digest == nil {
+		return formatSHA256(nil)
+	}
+	return formatSHA256(r.digest.Sum(nil))
+}
+
+func formatSHA256(sum []byte) string {
+	if len(sum) == 0 {
+		empty := sha256.Sum256(nil)
+		sum = empty[:]
+	}
+	return "sha256:" + hex.EncodeToString(sum)
 }
 
 func (r compressedReadCloser) Read(p []byte) (int, error) {

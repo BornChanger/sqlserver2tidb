@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"database/sql/driver"
+	"encoding/hex"
 	"errors"
 	"io"
 	"net/http"
@@ -2123,6 +2125,40 @@ func TestWriteCSVExportRows(t *testing.T) {
 	}
 	if !rows.closed {
 		t.Fatalf("rows closed = false, want true")
+	}
+}
+
+func TestCSVExportOutputRecordsSHA256(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dbo.orders.000001.csv")
+	output, err := openCSVExportOutput(context.Background(), exportOutputURI{
+		scheme: "file",
+		path:   path,
+	}, compressionNone)
+	if err != nil {
+		t.Fatalf("openCSVExportOutput() error = %v", err)
+	}
+	rows := &fakeExportRows{
+		columns: []string{"id", "name"},
+		values: [][]any{
+			{int64(1), "Ada"},
+			{int64(2), nil},
+		},
+	}
+
+	if _, err := writeCSVExportRows(output, rows); err != nil {
+		t.Fatalf("writeCSVExportRows() error = %v", err)
+	}
+	if err := output.Close(); err != nil {
+		t.Fatalf("output.Close() error = %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read output file: %v", err)
+	}
+	sum := sha256.Sum256(data)
+	want := "sha256:" + hex.EncodeToString(sum[:])
+	if output.SHA256() != want {
+		t.Fatalf("output SHA256 = %q, want %q", output.SHA256(), want)
 	}
 }
 

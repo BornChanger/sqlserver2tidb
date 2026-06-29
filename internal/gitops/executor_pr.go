@@ -57,6 +57,7 @@ type executorEvidenceCommandSummary struct {
 	CDCAppliedChanges *int                                    `json:"cdc_applied_changes"`
 	DataRows          *int64                                  `json:"data_rows"`
 	DataBytes         *int64                                  `json:"data_bytes"`
+	DataSHA256        string                                  `json:"data_sha256"`
 }
 
 type executorEvidenceCommandAttemptSummary struct {
@@ -325,6 +326,9 @@ func validateExecutorEvidenceCommands(status string, commands []executorEvidence
 		if command.DataBytes != nil && *command.DataBytes < 0 {
 			return fmt.Errorf("executor evidence command %s data_bytes must be non-negative", commandID)
 		}
+		if strings.TrimSpace(command.DataSHA256) != "" && !isValidPayloadHash(command.DataSHA256) {
+			return fmt.Errorf("executor evidence command %s data_sha256 %q must use sha256:<64 hex chars>", commandID, command.DataSHA256)
+		}
 		if err := validateExecutorEvidenceCommandAttempts(commandID, command.AttemptCount, command.Attempts); err != nil {
 			return err
 		}
@@ -518,8 +522,8 @@ func writeExecutorEvidenceCommandTable(b *strings.Builder, commands []executorEv
 	headers = append(headers, "Started at", "Completed at", "Duration ms")
 	alignments = append(alignments, "---", "---", "---:")
 	if includeDataMetrics {
-		headers = append(headers, "Data rows", "Data bytes")
-		alignments = append(alignments, "---:", "---:")
+		headers = append(headers, "Data rows", "Data bytes", "Data SHA256")
+		alignments = append(alignments, "---:", "---:", "---")
 	}
 	headers = append(headers, "Output summary")
 	alignments = append(alignments, "---")
@@ -563,7 +567,7 @@ func writeExecutorEvidenceCommandTable(b *strings.Builder, commands []executorEv
 			if command.DataBytes != nil {
 				dataBytes = fmt.Sprintf("%d", *command.DataBytes)
 			}
-			cells = append(cells, dataRows, dataBytes)
+			cells = append(cells, dataRows, dataBytes, strings.TrimSpace(command.DataSHA256))
 		}
 		cells = append(cells, executorEvidenceOutputSummary(command.Output))
 		if includeError {
@@ -639,7 +643,7 @@ func executorEvidenceTableIncludesCDCAppliedChanges(commands []executorEvidenceC
 
 func executorEvidenceTableIncludesDataMetrics(commands []executorEvidenceCommandSummary) bool {
 	for _, command := range commands {
-		if command.DataRows != nil || command.DataBytes != nil {
+		if command.DataRows != nil || command.DataBytes != nil || strings.TrimSpace(command.DataSHA256) != "" {
 			return true
 		}
 	}

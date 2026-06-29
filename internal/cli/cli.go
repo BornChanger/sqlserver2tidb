@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -928,6 +929,10 @@ func runWorkerExecutor(args []string, stdout, stderr io.Writer) int {
 			if errParse == nil {
 				errParse = errDataMetrics
 			}
+			dataSHA256, errDataSHA256 := workerExecutorDataSHA256(spec.Stage, string(output))
+			if errParse == nil {
+				errParse = errDataSHA256
+			}
 			commandEvidence = workerExecutorRunCommandEvidence{
 				ID:                command.ID,
 				Args:              args,
@@ -942,6 +947,7 @@ func runWorkerExecutor(args []string, stdout, stderr io.Writer) int {
 				CDCAppliedChanges: cdcAppliedChanges,
 				DataRows:          dataRows,
 				DataBytes:         dataBytes,
+				DataSHA256:        dataSHA256,
 			}
 			if len(attempts) > 1 {
 				commandEvidence.Attempts = attempts
@@ -1091,6 +1097,7 @@ type workerExecutorRunCommandEvidence struct {
 	CDCAppliedChanges *int                                      `json:"cdc_applied_changes,omitempty"`
 	DataRows          *int64                                    `json:"data_rows,omitempty"`
 	DataBytes         *int64                                    `json:"data_bytes,omitempty"`
+	DataSHA256        string                                    `json:"data_sha256,omitempty"`
 }
 
 type workerExecutorRunCommandAttemptEvidence struct {
@@ -1239,6 +1246,45 @@ func parseWorkerExecutorNonNegativeInt64Metric(line, prefix string) (int64, erro
 		return 0, fmt.Errorf("invalid non-negative integer")
 	}
 	return parsed, nil
+}
+
+func workerExecutorDataSHA256(stage, output string) (string, error) {
+	switch stage {
+	case "export":
+		return parseWorkerExecutorDataSHA256(stage, output, "output sha256:")
+	case "import":
+		return parseWorkerExecutorDataSHA256(stage, output, "input sha256:")
+	default:
+		return "", nil
+	}
+}
+
+func parseWorkerExecutorDataSHA256(stage, output, prefix string) (string, error) {
+	for _, rawLine := range strings.Split(output, "\n") {
+		line := strings.TrimSpace(rawLine)
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		value := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		if !isWorkerExecutorSHA256(value) {
+			return "", fmt.Errorf("%s executor output metric %q must contain sha256:<64 hex chars>", stage, prefix)
+		}
+		return value, nil
+	}
+	return "", nil
+}
+
+func isWorkerExecutorSHA256(value string) bool {
+	const prefix = "sha256:"
+	if !strings.HasPrefix(value, prefix) {
+		return false
+	}
+	digest := strings.TrimPrefix(value, prefix)
+	if len(digest) != 64 {
+		return false
+	}
+	_, err := hex.DecodeString(digest)
+	return err == nil
 }
 
 func withExternalExecutorExecuteFlag(args []string) []string {

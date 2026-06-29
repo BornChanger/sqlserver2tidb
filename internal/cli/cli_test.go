@@ -1175,7 +1175,7 @@ func TestRunWorkerExecutorExecuteRecordsDataMetricsInEvidence(t *testing.T) {
 	writeCLIStageApproval(t, root, "export", parsePayloadHash(t, stdout.String()))
 
 	fakeExecutor := filepath.Join(root, "fake-executor-metrics")
-	if err := os.WriteFile(fakeExecutor, []byte("#!/bin/sh\nprintf 'executor export completed: sales.dbo.orders -> file:///tmp/orders.csv\\n'\nprintf 'exported rows: 2\\n'\nprintf 'output bytes: 128\\n'\n"), 0o755); err != nil {
+	if err := os.WriteFile(fakeExecutor, []byte("#!/bin/sh\nprintf 'executor export completed: sales.dbo.orders -> file:///tmp/orders.csv\\n'\nprintf 'exported rows: 2\\n'\nprintf 'output bytes: 128\\n'\nprintf 'output sha256: sha256:1111111111111111111111111111111111111111111111111111111111111111\\n'\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1200,6 +1200,9 @@ func TestRunWorkerExecutorExecuteRecordsDataMetricsInEvidence(t *testing.T) {
 	}
 	if !strings.Contains(evidence, `"data_bytes": 128`) {
 		t.Fatalf("executor evidence = %q, want structured data bytes", evidence)
+	}
+	if !strings.Contains(evidence, `"data_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111"`) {
+		t.Fatalf("executor evidence = %q, want structured data sha256", evidence)
 	}
 }
 
