@@ -37,7 +37,7 @@ func PrepareWorkerExecutor(root, sourceClusterID, projectID, stage string, spec 
 		return WorkerExecutorSpec{}, err
 	}
 	stage = strings.ToLower(strings.TrimSpace(stage))
-	if stage != "ddl" && stage != "export" && stage != "import" && stage != "cdc" && stage != "validation" {
+	if stage != "ddl" && stage != "export" && stage != "import" && stage != "cdc" && stage != "cdc-enable" && stage != "validation" {
 		return WorkerExecutorSpec{}, fmt.Errorf("worker executor is not supported for stage %q", stage)
 	}
 	if spec.ImportBatchSize < 0 {
@@ -48,7 +48,11 @@ func PrepareWorkerExecutor(root, sourceClusterID, projectID, stage string, spec 
 		binary = "sqlserver2tidb-executor"
 	}
 
-	payloadHash, err := requireApprovedStage(root, sourceClusterID, projectID, stage)
+	approvalStage := stage
+	if stage == "cdc-enable" {
+		approvalStage = "cdc"
+	}
+	payloadHash, err := requireApprovedStage(root, sourceClusterID, projectID, approvalStage)
 	if err != nil {
 		return WorkerExecutorSpec{}, err
 	}
@@ -57,6 +61,11 @@ func PrepareWorkerExecutor(root, sourceClusterID, projectID, stage string, spec 
 	switch stage {
 	case "ddl":
 		if err := requireReviewedSchemaDiff(filepath.Join(projectDir, "schema", "schema-diff.json")); err != nil {
+			return WorkerExecutorSpec{}, err
+		}
+	case "cdc-enable":
+		planPath := filepath.Join(projectDir, "plan", "cdc-plan.yaml")
+		if err := requireExecutablePlanStatus(planPath, "cdc plan"); err != nil {
 			return WorkerExecutorSpec{}, err
 		}
 	case "export", "import", "cdc", "validation":
@@ -93,6 +102,12 @@ func PrepareWorkerExecutor(root, sourceClusterID, projectID, stage string, spec 
 		result.Commands = commands
 	case "cdc":
 		commands, err := prepareCDCExecutorCommands(root, projectDir, binary, sourceClusterID, projectID, spec)
+		if err != nil {
+			return WorkerExecutorSpec{}, err
+		}
+		result.Commands = commands
+	case "cdc-enable":
+		commands, err := prepareCDCEnableExecutorCommands(root, projectDir, binary, sourceClusterID, projectID, spec)
 		if err != nil {
 			return WorkerExecutorSpec{}, err
 		}
@@ -345,6 +360,53 @@ func prepareCDCExecutorCommands(root, projectDir, binary, sourceClusterID, proje
 		commands = append(commands, newWorkerExecutorCommand(binary, table.SourceObject, args))
 	}
 	return commands, nil
+}
+
+func prepareCDCEnableExecutorCommands(root, projectDir, binary, sourceClusterID, projectID string, spec WorkerExecutorPrepareSpec) ([]WorkerExecutorCommand, error) {
+	plan, err := readCDCPlanSummary(filepath.Join(projectDir, "plan", "cdc-plan.yaml"))
+	if err != nil {
+		return nil, err
+	}
+	if err := validateCDCPlanSummary(plan); err != nil {
+		return nil, err
+	}
+	if err := requireCDCPlanMatchesInventory(root, sourceClusterID, plan); err != nil {
+		return nil, err
+	}
+	sourceConnectionStringEnv := strings.TrimSpace(spec.SourceConnectionStringEnv)
+	commands := make([]WorkerExecutorCommand, 0, len(plan.Tables))
+	for _, table := range plan.Tables {
+		captureInstance, err := cdcCaptureInstanceForSourceObject(table.SourceObject)
+		if err != nil {
+			return nil, err
+		}
+		args := []string{
+			"cdc-enable",
+			"--root", ".",
+			"--source-cluster-id", sourceClusterID,
+			"--project-id", projectID,
+			"--source-object", table.SourceObject,
+			"--capture-instance", captureInstance,
+		}
+		if sourceConnectionStringEnv != "" {
+			args = append(args, "--source-connection-string-env", sourceConnectionStringEnv)
+		}
+		commands = append(commands, newWorkerExecutorCommand(binary, "cdc-enable:"+table.SourceObject, args))
+	}
+	return commands, nil
+}
+
+func cdcCaptureInstanceForSourceObject(sourceObject string) (string, error) {
+	parts := strings.Split(strings.TrimSpace(sourceObject), ".")
+	if len(parts) != 2 && len(parts) != 3 {
+		return "", fmt.Errorf("source object must be schema.table or database.schema.table")
+	}
+	for _, part := range parts {
+		if strings.TrimSpace(part) == "" {
+			return "", fmt.Errorf("source object contains an empty identifier")
+		}
+	}
+	return strings.TrimSpace(parts[len(parts)-2]) + "_" + strings.TrimSpace(parts[len(parts)-1]), nil
 }
 
 func prepareValidationExecutorCommands(root, projectDir, binary, sourceClusterID, projectID string, spec WorkerExecutorPrepareSpec) ([]WorkerExecutorCommand, error) {

@@ -3637,7 +3637,7 @@ func TestRunWorkerReconcileDryRunCommand(t *testing.T) {
 	if !strings.Contains(stdout.String(), "projects: 1") {
 		t.Fatalf("worker-reconcile stdout = %q, want project count", stdout.String())
 	}
-	if !strings.Contains(stdout.String(), "ready actions: 2") {
+	if !strings.Contains(stdout.String(), "ready actions: 3") {
 		t.Fatalf("worker-reconcile stdout = %q, want ready count", stdout.String())
 	}
 	if !strings.Contains(stdout.String(), "[ready] prod-sqlserver-a/sales-db-to-tidb-prod-a export") {
@@ -3648,6 +3648,12 @@ func TestRunWorkerReconcileDryRunCommand(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "[ready] prod-sqlserver-a/sales-db-to-tidb-prod-a cdc") {
 		t.Fatalf("worker-reconcile stdout = %q, want ready cdc action", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "[ready] prod-sqlserver-a/sales-db-to-tidb-prod-a cdc-enable") {
+		t.Fatalf("worker-reconcile stdout = %q, want ready cdc-enable action", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "command: sqlserver2tidb worker-executor --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage cdc-enable") {
+		t.Fatalf("worker-reconcile stdout = %q, want cdc-enable worker-executor command", stdout.String())
 	}
 	if !strings.Contains(stdout.String(), "[blocked] prod-sqlserver-a/sales-db-to-tidb-prod-a import") {
 		t.Fatalf("worker-reconcile stdout = %q, want blocked import action", stdout.String())
@@ -3683,7 +3689,7 @@ func TestRunWorkerReconcileDryRunCommand(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
 		t.Fatalf("worker-reconcile json stdout = %q, unmarshal error = %v", stdout.String(), err)
 	}
-	if report.Projects != 1 || report.ReadyActions != 2 || report.BlockedActions == 0 {
+	if report.Projects != 1 || report.ReadyActions != 3 || report.BlockedActions != 4 {
 		t.Fatalf("worker-reconcile json report = %+v, want project/ready/blocked counts", report)
 	}
 	if len(report.Actions) == 0 || report.Actions[0].SourceClusterID != "prod-sqlserver-a" {

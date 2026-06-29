@@ -58,7 +58,7 @@ type workerLeaseMetadata struct {
 	RenewedAt       string
 }
 
-var workerReconcileStages = []string{"ddl", "export", "import", "cdc", "validation", "cutover"}
+var workerReconcileStages = []string{"ddl", "export", "import", "cdc-enable", "cdc", "validation", "cutover"}
 var workerReconcileExecutableStages = map[string]bool{
 	"export":     true,
 	"import":     true,
@@ -181,7 +181,11 @@ func planWorkerReconcileAction(root, sourceClusterID, projectID, stage string) W
 		Status:          "blocked",
 		Command:         workerCommandForStage(stage, sourceClusterID, projectID),
 	}
-	payloadHash, err := requireApprovedStage(root, sourceClusterID, projectID, stage)
+	approvalStage := stage
+	if stage == "cdc-enable" {
+		approvalStage = "cdc"
+	}
+	payloadHash, err := requireApprovedStage(root, sourceClusterID, projectID, approvalStage)
 	if err != nil {
 		action.Reason = err.Error()
 		return action
@@ -190,6 +194,12 @@ func planWorkerReconcileAction(root, sourceClusterID, projectID, stage string) W
 	case "ddl":
 		schemaDiffPath := filepath.Join(root, "clusters", sourceClusterID, "projects", projectID, "schema", "schema-diff.json")
 		if err := requireReviewedSchemaDiff(schemaDiffPath); err != nil {
+			action.Reason = err.Error()
+			return action
+		}
+	case "cdc-enable":
+		planPath := filepath.Join(root, "clusters", sourceClusterID, "projects", projectID, "plan", "cdc-plan.yaml")
+		if err := requireExecutablePlanStatus(planPath, "cdc plan"); err != nil {
 			action.Reason = err.Error()
 			return action
 		}
@@ -421,8 +431,8 @@ func writeWorkerLeaseMetadata(path string, lease workerLeaseMetadata) error {
 }
 
 func workerCommandForStage(stage, sourceClusterID, projectID string) string {
-	if stage == "ddl" {
-		return fmt.Sprintf("sqlserver2tidb worker-executor --root . --source-cluster-id %s --project-id %s --stage ddl", sourceClusterID, projectID)
+	if stage == "ddl" || stage == "cdc-enable" {
+		return fmt.Sprintf("sqlserver2tidb worker-executor --root . --source-cluster-id %s --project-id %s --stage %s", sourceClusterID, projectID, stage)
 	}
 	command := "worker-" + stage
 	if stage == "validation" {

@@ -3849,6 +3849,51 @@ func TestGenerateExecutorEvidencePRDraftIncludesCDCAppliedChanges(t *testing.T) 
 	assertContains(t, body, "| sales.dbo.orders | 0 | 2026-01-02T03:04:05Z | 2026-01-02T03:04:06Z | 1000 | applied changes: 2 | 2 |")
 }
 
+func TestGenerateExecutorEvidencePRDraftSupportsCDCEnableWithCDCApproval(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateCDCPlanOnly(root))
+	setReviewPlanStatus(t, root, "cdc", "reviewed")
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "cdc")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(cdc) error = %v", err)
+	}
+	writeStageApproval(t, root, "cdc", hash)
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-cdc-enable-run.json", `{
+  "stage": "cdc-enable",
+  "status": "succeeded",
+  "project_id": "sales-db-to-tidb-prod-a",
+  "source_cluster_id": "prod-sqlserver-a",
+  "payload_hash": "`+hash+`",
+  "commands": [
+    {
+      "id": "cdc-enable:sales.dbo.orders",
+      "args": ["sqlserver2tidb-executor", "cdc-enable", "--execute"],
+      "shell_command": "sqlserver2tidb-executor cdc-enable --execute",
+      "exit_code": 0,
+      "output": "executor cdc-enable completed: sales.dbo.orders\n",
+      "started_at": "2026-01-02T03:04:05Z",
+      "completed_at": "2026-01-02T03:04:06Z",
+      "duration_ms": 1000
+    }
+  ]
+}
+`)
+
+	draft, err := GenerateExecutorEvidencePRDraft(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "cdc-enable")
+	if err != nil {
+		t.Fatalf("GenerateExecutorEvidencePRDraft(cdc-enable) error = %v", err)
+	}
+	if draft.Title != "[executor-evidence:cdc-enable] sales-db-to-tidb-prod-a" {
+		t.Fatalf("Title = %q, want cdc-enable executor evidence title", draft.Title)
+	}
+	assertStringSliceContains(t, draft.Files, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-cdc-enable-run.json")
+	assertStringSliceContains(t, draft.Files, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/approvals/cdc-approval.yaml")
+	body := readFile(t, root, draft.BodyFile)
+	assertContains(t, body, "Stage: `cdc-enable`")
+	assertContains(t, body, "executor cdc-enable completed")
+}
+
 func TestGenerateExecutorEvidencePRDraftIncludesDataMetrics(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
@@ -6790,6 +6835,39 @@ func TestPrepareWorkerExecutorBuildsCDCCommandsWhenApprovedHashMatches(t *testin
 	assertArgValue(t, first.Args, "--to-lsn", "0x00000027000001f40002")
 }
 
+func TestPrepareWorkerExecutorBuildsCDCEnableCommandsFromApprovedCDCPlan(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateCDCPlanOnly(root))
+	setReviewPlanStatus(t, root, "cdc", "reviewed")
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "cdc")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(cdc) error = %v", err)
+	}
+	writeStageApproval(t, root, "cdc", hash)
+
+	spec, err := PrepareWorkerExecutor(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "cdc-enable", WorkerExecutorPrepareSpec{
+		SourceConnectionStringEnv: "SQLSERVER_CDC_ADMIN_DSN",
+	})
+	if err != nil {
+		t.Fatalf("PrepareWorkerExecutor(cdc-enable) error = %v", err)
+	}
+	if spec.Stage != "cdc-enable" || spec.PayloadHash != hash || len(spec.Commands) != 1 {
+		t.Fatalf("executor spec = %+v, want cdc-enable with 1 command and CDC hash %s", spec, hash)
+	}
+	first := spec.Commands[0]
+	if first.ID != "cdc-enable:sales.dbo.orders" {
+		t.Fatalf("first command ID = %q, want CDC enable source object", first.ID)
+	}
+	assertContains(t, first.ShellCommand, "sqlserver2tidb-executor cdc-enable")
+	assertContains(t, first.ShellCommand, "--source-object sales.dbo.orders")
+	assertContains(t, first.ShellCommand, "--capture-instance dbo_orders")
+	assertContains(t, first.ShellCommand, "--source-connection-string-env SQLSERVER_CDC_ADMIN_DSN")
+	assertArgValue(t, first.Args, "--source-object", "sales.dbo.orders")
+	assertArgValue(t, first.Args, "--capture-instance", "dbo_orders")
+	assertArgValue(t, first.Args, "--source-connection-string-env", "SQLSERVER_CDC_ADMIN_DSN")
+}
+
 func TestPrepareWorkerExecutorRejectsCDCSourceSchemaDrift(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
@@ -7691,8 +7769,8 @@ func TestPlanWorkerReconcileReportsReadyAndBlockedProjectStages(t *testing.T) {
 	if report.Projects != 1 {
 		t.Fatalf("Projects = %d, want 1", report.Projects)
 	}
-	if report.ReadyActions != 3 || report.BlockedActions != 3 {
-		t.Fatalf("ready/blocked = %d/%d, want 3/3\nreport: %+v", report.ReadyActions, report.BlockedActions, report)
+	if report.ReadyActions != 4 || report.BlockedActions != 3 {
+		t.Fatalf("ready/blocked = %d/%d, want 4/3\nreport: %+v", report.ReadyActions, report.BlockedActions, report)
 	}
 	ddl := findReconcileAction(t, report.Actions, "ddl")
 	if ddl.Status != "ready" || ddl.PayloadHash != ddlHash {
@@ -7710,6 +7788,12 @@ func TestPlanWorkerReconcileReportsReadyAndBlockedProjectStages(t *testing.T) {
 		t.Fatalf("cdc action = %+v, want ready with hash %s", cdc, cdcHash)
 	}
 	assertContains(t, cdc.Command, "worker-cdc")
+	cdcEnable := findReconcileAction(t, report.Actions, "cdc-enable")
+	if cdcEnable.Status != "ready" || cdcEnable.PayloadHash != cdcHash {
+		t.Fatalf("cdc-enable action = %+v, want ready with CDC hash %s", cdcEnable, cdcHash)
+	}
+	assertContains(t, cdcEnable.Command, "worker-executor")
+	assertContains(t, cdcEnable.Command, "--stage cdc-enable")
 	importAction := findReconcileAction(t, report.Actions, "import")
 	if importAction.Status != "blocked" {
 		t.Fatalf("import action = %+v, want blocked", importAction)

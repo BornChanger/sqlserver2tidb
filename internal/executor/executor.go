@@ -131,6 +131,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runValidateQuery(args[1:], stdout, stderr)
 	case "cdc-lsn":
 		return runCDCLSN(args[1:], stdout, stderr)
+	case "cdc-enable":
+		return runCDCEnable(args[1:], stdout, stderr)
 	case "cdc":
 		return runCDC(args[1:], stdout, stderr)
 	case "version", "-v", "--version":
@@ -222,6 +224,216 @@ func runCDCLSN(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintln(stdout, "No SQL Server CDC LSN query will be executed.")
 	return 0
+}
+
+func runCDCEnable(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("cdc-enable", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	root := fs.String("root", ".", "repository root")
+	sourceClusterID := fs.String("source-cluster-id", "", "upstream SQL Server cluster id")
+	projectID := fs.String("project-id", "", "migration project id")
+	sourceObject := fs.String("source-object", "", "source object to enable for SQL Server CDC")
+	captureInstance := fs.String("capture-instance", "", "SQL Server CDC capture instance; derived from source object when empty")
+	roleName := fs.String("role-name", "", "optional SQL Server CDC gating role name")
+	supportsNetChanges := fs.Bool("supports-net-changes", false, "enable SQL Server CDC net changes support for the table")
+	sourceConnectionStringEnv := fs.String("source-connection-string-env", defaultSourceConnectionStringEnv, "environment variable containing the SQL Server CDC admin connection string")
+	execute := fs.Bool("execute", false, "enable SQL Server CDC for the database and table")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if err := requireFields("executor cdc-enable",
+		field{"source cluster id", *sourceClusterID},
+		field{"project id", *projectID},
+		field{"source object", *sourceObject},
+	); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	normalizedCaptureInstance, err := normalizeSQLServerCDCCaptureInstance(*sourceObject, *captureInstance)
+	if err != nil {
+		fmt.Fprintf(stderr, "executor cdc-enable: %v\n", err)
+		return 1
+	}
+	if _, err := buildSQLServerCDCEnableDBStatement(*sourceObject); err != nil {
+		fmt.Fprintf(stderr, "executor cdc-enable: %v\n", err)
+		return 1
+	}
+	if _, err := buildSQLServerCDCEnableTableStatement(*sourceObject); err != nil {
+		fmt.Fprintf(stderr, "executor cdc-enable: %v\n", err)
+		return 1
+	}
+	if _, err := buildSQLServerCDCTableStatusQuery(*sourceObject); err != nil {
+		fmt.Fprintf(stderr, "executor cdc-enable: %v\n", err)
+		return 1
+	}
+
+	if *execute {
+		result, err := executeCDCEnableFunc(context.Background(), cdcEnableSpec{
+			SourceObject:              *sourceObject,
+			CaptureInstance:           normalizedCaptureInstance,
+			RoleName:                  *roleName,
+			SupportsNetChanges:        *supportsNetChanges,
+			SourceConnectionStringEnv: *sourceConnectionStringEnv,
+		})
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "executor cdc-enable completed: %s\n", strings.TrimSpace(*sourceObject))
+		fmt.Fprintf(stdout, "capture instance: %s\n", normalizedCaptureInstance)
+		fmt.Fprintf(stdout, "database cdc already enabled: %t\n", result.DatabaseCDCAlreadyEnabled)
+		fmt.Fprintf(stdout, "table cdc already enabled: %t\n", result.TableCDCAlreadyEnabled)
+		return 0
+	}
+
+	fmt.Fprintln(stdout, "executor cdc-enable dry run")
+	fmt.Fprintf(stdout, "root: %s\n", *root)
+	fmt.Fprintf(stdout, "source cluster: %s\n", *sourceClusterID)
+	fmt.Fprintf(stdout, "project: %s\n", *projectID)
+	fmt.Fprintf(stdout, "source object: %s\n", strings.TrimSpace(*sourceObject))
+	fmt.Fprintf(stdout, "capture instance: %s\n", normalizedCaptureInstance)
+	if strings.TrimSpace(*roleName) != "" {
+		fmt.Fprintf(stdout, "role name: %s\n", strings.TrimSpace(*roleName))
+	}
+	fmt.Fprintf(stdout, "supports net changes: %t\n", *supportsNetChanges)
+	fmt.Fprintln(stdout, "No SQL Server CDC enablement will be executed.")
+	return 0
+}
+
+type cdcEnableSpec struct {
+	SourceObject              string
+	CaptureInstance           string
+	RoleName                  string
+	SupportsNetChanges        bool
+	SourceConnectionStringEnv string
+}
+
+type cdcEnableResult struct {
+	DatabaseCDCAlreadyEnabled bool
+	TableCDCAlreadyEnabled    bool
+}
+
+var executeCDCEnableFunc = executeSQLServerCDCEnable
+
+func executeSQLServerCDCEnable(ctx context.Context, spec cdcEnableSpec) (cdcEnableResult, error) {
+	captureInstance, err := normalizeSQLServerCDCCaptureInstance(spec.SourceObject, spec.CaptureInstance)
+	if err != nil {
+		return cdcEnableResult{}, fmt.Errorf("executor cdc-enable: %w", err)
+	}
+	envName := strings.TrimSpace(spec.SourceConnectionStringEnv)
+	if envName == "" {
+		envName = defaultSourceConnectionStringEnv
+	}
+	connectionString := strings.TrimSpace(os.Getenv(envName))
+	if connectionString == "" {
+		return cdcEnableResult{}, fmt.Errorf("executor cdc-enable: source connection string env %s is not set", envName)
+	}
+
+	db, err := sql.Open("sqlserver", connectionString)
+	if err != nil {
+		return cdcEnableResult{}, fmt.Errorf("executor cdc-enable: open SQL Server connection: %w", err)
+	}
+	defer db.Close()
+
+	result := cdcEnableResult{}
+	databaseEnabled, err := querySQLServerCDCDatabaseEnabled(ctx, db, spec.SourceObject)
+	if err != nil {
+		return cdcEnableResult{}, fmt.Errorf("executor cdc-enable: query database CDC status: %w", err)
+	}
+	result.DatabaseCDCAlreadyEnabled = databaseEnabled
+	if !databaseEnabled {
+		statement, err := buildSQLServerCDCEnableDBStatement(spec.SourceObject)
+		if err != nil {
+			return cdcEnableResult{}, fmt.Errorf("executor cdc-enable: %w", err)
+		}
+		if _, err := db.ExecContext(ctx, statement); err != nil {
+			return cdcEnableResult{}, fmt.Errorf("executor cdc-enable: enable database CDC: %w", err)
+		}
+	}
+
+	tableEnabled, err := querySQLServerCDCTableEnabled(ctx, db, spec.SourceObject, captureInstance)
+	if err != nil {
+		return cdcEnableResult{}, fmt.Errorf("executor cdc-enable: query table CDC status: %w", err)
+	}
+	result.TableCDCAlreadyEnabled = tableEnabled
+	if !tableEnabled {
+		statement, err := buildSQLServerCDCEnableTableStatement(spec.SourceObject)
+		if err != nil {
+			return cdcEnableResult{}, fmt.Errorf("executor cdc-enable: %w", err)
+		}
+		roleName := any(nil)
+		if strings.TrimSpace(spec.RoleName) != "" {
+			roleName = strings.TrimSpace(spec.RoleName)
+		}
+		supportsNetChanges := 0
+		if spec.SupportsNetChanges {
+			supportsNetChanges = 1
+		}
+		parts, _ := sqlServerCDCObjectParts(spec.SourceObject)
+		if _, err := db.ExecContext(ctx, statement,
+			sql.Named("source_schema", strings.TrimSpace(parts[len(parts)-2])),
+			sql.Named("source_name", strings.TrimSpace(parts[len(parts)-1])),
+			sql.Named("role_name", roleName),
+			sql.Named("capture_instance", captureInstance),
+			sql.Named("supports_net_changes", supportsNetChanges),
+		); err != nil {
+			return cdcEnableResult{}, fmt.Errorf("executor cdc-enable: enable table CDC: %w", err)
+		}
+	}
+	return result, nil
+}
+
+func querySQLServerCDCDatabaseEnabled(ctx context.Context, db *sql.DB, sourceObject string) (bool, error) {
+	parts, err := sqlServerCDCObjectParts(sourceObject)
+	if err != nil {
+		return false, err
+	}
+	query := "SELECT CONVERT(bit, is_cdc_enabled) FROM sys.databases WHERE name = DB_NAME()"
+	args := []any(nil)
+	if len(parts) == 3 {
+		query = "SELECT CONVERT(bit, is_cdc_enabled) FROM sys.databases WHERE name = @database_name"
+		args = append(args, sql.Named("database_name", strings.TrimSpace(parts[0])))
+	}
+	var enabled bool
+	if err := db.QueryRowContext(ctx, query, args...).Scan(&enabled); err != nil {
+		return false, err
+	}
+	return enabled, nil
+}
+
+func querySQLServerCDCTableEnabled(ctx context.Context, db *sql.DB, sourceObject, captureInstance string) (bool, error) {
+	query, err := buildSQLServerCDCTableStatusQuery(sourceObject)
+	if err != nil {
+		return false, err
+	}
+	parts, _ := sqlServerCDCObjectParts(sourceObject)
+	var count int64
+	if err := db.QueryRowContext(ctx, query,
+		sql.Named("source_schema", strings.TrimSpace(parts[len(parts)-2])),
+		sql.Named("source_name", strings.TrimSpace(parts[len(parts)-1])),
+		sql.Named("capture_instance", captureInstance),
+	).Scan(&count); err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+func normalizeSQLServerCDCCaptureInstance(sourceObject, captureInstance string) (string, error) {
+	captureInstance = strings.TrimSpace(captureInstance)
+	if captureInstance == "" {
+		var err error
+		captureInstance, err = sqlServerCDCCaptureInstance(sourceObject)
+		if err != nil {
+			return "", err
+		}
+	}
+	if captureInstance == "" {
+		return "", fmt.Errorf("capture instance is required")
+	}
+	if len(captureInstance) > 100 {
+		return "", fmt.Errorf("capture instance must be 100 characters or fewer")
+	}
+	return captureInstance, nil
 }
 
 type cdcLSNQuerySpec struct {
@@ -4698,6 +4910,62 @@ func buildSQLServerCDCMinLSNQuery(sourceObject string) (string, string, error) {
 	return "SELECT sys.fn_cdc_get_min_lsn(@capture_instance)", captureInstance, nil
 }
 
+func buildSQLServerCDCEnableDBStatement(sourceObject string) (string, error) {
+	parts, err := sqlServerCDCObjectParts(sourceObject)
+	if err != nil {
+		return "", err
+	}
+	if len(parts) == 3 {
+		return fmt.Sprintf("EXEC %s.%s.%s",
+			quoteSQLServerIdentifier(strings.TrimSpace(parts[0])),
+			quoteSQLServerIdentifier("sys"),
+			quoteSQLServerIdentifier("sp_cdc_enable_db"),
+		), nil
+	}
+	return "EXEC sys.sp_cdc_enable_db", nil
+}
+
+func buildSQLServerCDCEnableTableStatement(sourceObject string) (string, error) {
+	parts, err := sqlServerCDCObjectParts(sourceObject)
+	if err != nil {
+		return "", err
+	}
+	prefix := "sys"
+	if len(parts) == 3 {
+		prefix = fmt.Sprintf("%s.%s",
+			quoteSQLServerIdentifier(strings.TrimSpace(parts[0])),
+			quoteSQLServerIdentifier("sys"),
+		)
+	}
+	return fmt.Sprintf("EXEC %s.%s @source_schema = @source_schema, @source_name = @source_name, @role_name = @role_name, @capture_instance = @capture_instance, @supports_net_changes = @supports_net_changes",
+		prefix,
+		quoteSQLServerIdentifier("sp_cdc_enable_table"),
+	), nil
+}
+
+func buildSQLServerCDCTableStatusQuery(sourceObject string) (string, error) {
+	parts, err := sqlServerCDCObjectParts(sourceObject)
+	if err != nil {
+		return "", err
+	}
+	tablePrefix := ""
+	if len(parts) == 3 {
+		database := quoteSQLServerIdentifier(strings.TrimSpace(parts[0]))
+		tablePrefix = database + "."
+	}
+	return fmt.Sprintf("SELECT COUNT_BIG(1) FROM %s%s.%s AS ct JOIN %s%s.%s AS t ON t.object_id = ct.source_object_id JOIN %s%s.%s AS s ON s.schema_id = t.schema_id WHERE s.name = @source_schema AND t.name = @source_name AND ct.capture_instance = @capture_instance",
+		tablePrefix,
+		quoteSQLServerIdentifier("cdc"),
+		quoteSQLServerIdentifier("change_tables"),
+		tablePrefix,
+		quoteSQLServerIdentifier("sys"),
+		quoteSQLServerIdentifier("tables"),
+		tablePrefix,
+		quoteSQLServerIdentifier("sys"),
+		quoteSQLServerIdentifier("schemas"),
+	), nil
+}
+
 func sqlServerCDCCaptureInstance(sourceObject string) (string, error) {
 	parts, err := sqlServerCDCObjectParts(sourceObject)
 	if err != nil {
@@ -4902,6 +5170,7 @@ Usage:
   sqlserver2tidb-executor validate-query --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --check-id orders-total --source-sql "SELECT SUM(total) FROM sales.dbo.orders" --target-sql "SELECT SUM(total) FROM app.orders"
   sqlserver2tidb-executor validate-query --execute --source-connection-string-env SQLSERVER2TIDB_SOURCE_CONNECTION_STRING --target-connection-string-env SQLSERVER2TIDB_TARGET_CONNECTION_STRING --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --check-id orders-total --source-sql "SELECT SUM(total) FROM sales.dbo.orders" --target-sql "SELECT SUM(total) FROM app.orders"
   sqlserver2tidb-executor cdc-lsn --execute --source-connection-string-env SQLSERVER2TIDB_SOURCE_CONNECTION_STRING --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --source-object sales.dbo.orders
+  sqlserver2tidb-executor cdc-enable --execute --source-connection-string-env SQLSERVER2TIDB_SOURCE_CONNECTION_STRING --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --source-object sales.dbo.orders
   sqlserver2tidb-executor cdc --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --source-object sales.dbo.orders --target-object app.orders --columns id,customer_name --key-columns id --from-lsn 0x00000027000001f40001 --to-lsn 0x00000027000001f40002 --apply-batch-size 1000
 `)
 }

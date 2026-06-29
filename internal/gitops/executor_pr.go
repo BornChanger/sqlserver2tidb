@@ -188,7 +188,8 @@ func loadExecutorEvidencePRContext(root, sourceClusterID, projectID, stage strin
 		return executorEvidencePRContext{}, fmt.Errorf("unsupported executor evidence PR stage %q", stage)
 	}
 
-	payloadHash, err := requireApprovedStage(root, sourceClusterID, projectID, stage)
+	approvalStage := executorEvidenceApprovalStage(stage)
+	payloadHash, err := requireApprovedStage(root, sourceClusterID, projectID, approvalStage)
 	if err != nil {
 		return executorEvidencePRContext{}, err
 	}
@@ -236,7 +237,7 @@ func loadExecutorEvidencePRContext(root, sourceClusterID, projectID, stage strin
 		stage:           stage,
 		payloadHash:     payloadHash,
 		evidenceFile:    evidenceFile,
-		approvalFile:    executorEvidenceApprovalFile(sourceClusterID, projectID, stage),
+		approvalFile:    executorEvidenceApprovalFile(sourceClusterID, projectID, approvalStage),
 		evidence:        evidence,
 	}, nil
 }
@@ -248,6 +249,8 @@ func requireExecutorInstructionReviewed(root, sourceClusterID, projectID, stage 
 		return requireReviewedSchemaDiff(filepath.Join(projectDir, "schema", "schema-diff.json"))
 	case "export", "import", "cdc", "validation":
 		return requireExecutablePlanStatus(filepath.Join(projectDir, "plan", stage+"-plan.yaml"), stage+" plan")
+	case "cdc-enable":
+		return requireExecutablePlanStatus(filepath.Join(projectDir, "plan", "cdc-plan.yaml"), "cdc plan")
 	default:
 		return nil
 	}
@@ -487,11 +490,18 @@ func isExecutorEvidenceRunStatus(status string) bool {
 
 func isExecutorEvidenceStage(stage string) bool {
 	switch stage {
-	case "ddl", "export", "import", "cdc", "validation":
+	case "ddl", "export", "import", "cdc", "cdc-enable", "validation":
 		return true
 	default:
 		return false
 	}
+}
+
+func executorEvidenceApprovalStage(stage string) string {
+	if stage == "cdc-enable" {
+		return "cdc"
+	}
+	return stage
 }
 
 func executorEvidencePRTitle(stage, projectID string) string {

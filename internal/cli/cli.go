@@ -1598,7 +1598,7 @@ func runGenerateExecutorEvidencePRDraft(args []string, stdout, stderr io.Writer)
 	root := fs.String("root", ".", "repository root")
 	sourceClusterID := fs.String("source-cluster-id", "", "upstream SQL Server cluster id")
 	projectID := fs.String("project-id", "", "migration project id")
-	stage := fs.String("stage", "", "executor evidence PR stage: ddl, export, import, cdc, validation")
+	stage := fs.String("stage", "", "executor evidence PR stage: ddl, export, import, cdc-enable, cdc, validation")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -1621,7 +1621,7 @@ func runCreateExecutorEvidencePR(args []string, stdout, stderr io.Writer) int {
 	root := fs.String("root", ".", "repository root")
 	sourceClusterID := fs.String("source-cluster-id", "", "upstream SQL Server cluster id")
 	projectID := fs.String("project-id", "", "migration project id")
-	stage := fs.String("stage", "", "executor evidence PR stage: ddl, export, import, cdc, validation")
+	stage := fs.String("stage", "", "executor evidence PR stage: ddl, export, import, cdc-enable, cdc, validation")
 	execute := fs.Bool("execute", false, "create git branch, commit executor evidence, and call gh pr create; default is dry-run")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -1819,7 +1819,7 @@ func runWorkerExecutor(args []string, stdout, stderr io.Writer) int {
 	root := fs.String("root", ".", "repository root")
 	sourceClusterID := fs.String("source-cluster-id", "", "upstream SQL Server cluster id")
 	projectID := fs.String("project-id", "", "migration project id")
-	stage := fs.String("stage", "", "executor stage: ddl, export, import, cdc, or validation")
+	stage := fs.String("stage", "", "executor stage: ddl, export, import, cdc-enable, cdc, or validation")
 	executorBinary := fs.String("executor-binary", "", "external executor binary; default is sqlserver2tidb-executor")
 	sourceConnectionStringEnv := fs.String("source-connection-string-env", "", "environment variable containing the SQL Server connection string for export execution")
 	targetConnectionStringEnv := fs.String("target-connection-string-env", "", "environment variable containing the TiDB/MySQL connection string for import execution")
@@ -2777,6 +2777,7 @@ Usage:
   sqlserver2tidb worker-cutover --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
   sqlserver2tidb worker-executor --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage export
   sqlserver2tidb worker-executor --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage import --target-connection-string-env SQLSERVER2TIDB_TARGET_CONNECTION_STRING --import-batch-size 1000
+  sqlserver2tidb worker-executor --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage cdc-enable --source-connection-string-env SQLSERVER2TIDB_SOURCE_CONNECTION_STRING
   sqlserver2tidb worker-executor --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage validation --source-connection-string-env SQLSERVER2TIDB_SOURCE_CONNECTION_STRING --target-connection-string-env SQLSERVER2TIDB_TARGET_CONNECTION_STRING
   sqlserver2tidb advance-cdc-checkpoint --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --status running
   sqlserver2tidb worker-reconcile --root . --source-cluster-id prod-sqlserver-a --dry-run

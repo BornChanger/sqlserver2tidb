@@ -2051,6 +2051,97 @@ func TestRunCDCDryRunCommand(t *testing.T) {
 	assertOutputContains(t, output, "No CDC reader or TiDB apply worker will be started.")
 }
 
+func TestRunCDCEnableDryRunCommand(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"cdc-enable",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--source-object", "sales.dbo.orders",
+		"--capture-instance", "dbo_orders_custom",
+		"--role-name", "cdc_reader",
+		"--supports-net-changes",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("cdc-enable code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	assertOutputContains(t, output, "executor cdc-enable dry run")
+	assertOutputContains(t, output, "source cluster: prod-sqlserver-a")
+	assertOutputContains(t, output, "project: sales-db-to-tidb-prod-a")
+	assertOutputContains(t, output, "source object: sales.dbo.orders")
+	assertOutputContains(t, output, "capture instance: dbo_orders_custom")
+	assertOutputContains(t, output, "role name: cdc_reader")
+	assertOutputContains(t, output, "supports net changes: true")
+	assertOutputContains(t, output, "No SQL Server CDC enablement will be executed.")
+}
+
+func TestRunCDCEnableDryRunDerivesCaptureInstance(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"cdc-enable",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--source-object", "sales.dbo.orders",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("cdc-enable code = %d, stderr = %s", code, stderr.String())
+	}
+	assertOutputContains(t, stdout.String(), "capture instance: dbo_orders")
+	assertOutputContains(t, stdout.String(), "supports net changes: false")
+}
+
+func TestRunCDCEnableExecutePrintsStatus(t *testing.T) {
+	oldExecute := executeCDCEnableFunc
+	t.Cleanup(func() {
+		executeCDCEnableFunc = oldExecute
+	})
+	executeCDCEnableFunc = func(_ context.Context, spec cdcEnableSpec) (cdcEnableResult, error) {
+		if spec.SourceObject != "sales.dbo.orders" {
+			t.Fatalf("source object = %s, want sales.dbo.orders", spec.SourceObject)
+		}
+		if spec.CaptureInstance != "dbo_orders" {
+			t.Fatalf("capture instance = %s, want dbo_orders", spec.CaptureInstance)
+		}
+		if spec.SourceConnectionStringEnv != "SQLSERVER_CDC_ADMIN_DSN" {
+			t.Fatalf("source env = %s, want SQLSERVER_CDC_ADMIN_DSN", spec.SourceConnectionStringEnv)
+		}
+		if spec.RoleName != "" {
+			t.Fatalf("role name = %q, want empty", spec.RoleName)
+		}
+		if spec.SupportsNetChanges {
+			t.Fatalf("supports net changes = true, want false")
+		}
+		return cdcEnableResult{
+			DatabaseCDCAlreadyEnabled: false,
+			TableCDCAlreadyEnabled:    true,
+		}, nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{
+		"cdc-enable",
+		"--execute",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--source-object", "sales.dbo.orders",
+		"--source-connection-string-env", "SQLSERVER_CDC_ADMIN_DSN",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("cdc-enable execute code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	assertOutputContains(t, output, "executor cdc-enable completed: sales.dbo.orders")
+	assertOutputContains(t, output, "capture instance: dbo_orders")
+	assertOutputContains(t, output, "database cdc already enabled: false")
+	assertOutputContains(t, output, "table cdc already enabled: true")
+}
+
 func TestRunCDCDryRunRequiresLSNRange(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 
@@ -2495,6 +2586,44 @@ func TestBuildSQLServerCDCLSNQueries(t *testing.T) {
 	}
 	if captureInstance != "dbo_orders" {
 		t.Fatalf("capture instance = %q, want dbo_orders", captureInstance)
+	}
+}
+
+func TestBuildSQLServerCDCEnableStatements(t *testing.T) {
+	enableDB, err := buildSQLServerCDCEnableDBStatement("sales.dbo.orders")
+	if err != nil {
+		t.Fatalf("buildSQLServerCDCEnableDBStatement() error = %v", err)
+	}
+	if enableDB != "EXEC [sales].[sys].[sp_cdc_enable_db]" {
+		t.Fatalf("enable DB statement = %q", enableDB)
+	}
+
+	enableTable, err := buildSQLServerCDCEnableTableStatement("sales.dbo.orders")
+	if err != nil {
+		t.Fatalf("buildSQLServerCDCEnableTableStatement() error = %v", err)
+	}
+	wantTable := "EXEC [sales].[sys].[sp_cdc_enable_table] @source_schema = @source_schema, @source_name = @source_name, @role_name = @role_name, @capture_instance = @capture_instance, @supports_net_changes = @supports_net_changes"
+	if enableTable != wantTable {
+		t.Fatalf("enable table statement = %q, want %q", enableTable, wantTable)
+	}
+
+	currentDBEnable, err := buildSQLServerCDCEnableDBStatement("dbo.orders")
+	if err != nil {
+		t.Fatalf("buildSQLServerCDCEnableDBStatement(current db) error = %v", err)
+	}
+	if currentDBEnable != "EXEC sys.sp_cdc_enable_db" {
+		t.Fatalf("current DB enable statement = %q", currentDBEnable)
+	}
+}
+
+func TestBuildSQLServerCDCTableStatusQuery(t *testing.T) {
+	query, err := buildSQLServerCDCTableStatusQuery("sales.dbo.orders")
+	if err != nil {
+		t.Fatalf("buildSQLServerCDCTableStatusQuery() error = %v", err)
+	}
+	want := "SELECT COUNT_BIG(1) FROM [sales].[cdc].[change_tables] AS ct JOIN [sales].[sys].[tables] AS t ON t.object_id = ct.source_object_id JOIN [sales].[sys].[schemas] AS s ON s.schema_id = t.schema_id WHERE s.name = @source_schema AND t.name = @source_name AND ct.capture_instance = @capture_instance"
+	if query != want {
+		t.Fatalf("table status query = %q, want %q", query, want)
 	}
 }
 
