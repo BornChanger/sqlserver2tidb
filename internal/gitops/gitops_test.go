@@ -3664,6 +3664,89 @@ func TestPrepareGitHubPRCreateRequiresGeneratedDraft(t *testing.T) {
 	assertContains(t, err.Error(), "run generate-pr-draft first")
 }
 
+func TestSyncGitHubPRApprovalWritesApprovalWhenMergedApprovedAndChecksPassed(t *testing.T) {
+	root := t.TempDir()
+	createReadyExportProjectForCluster(t, root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a")
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/approvals/export-approval.yaml", `approval_id: export-test
+project_id: sales-db-to-tidb-prod-a
+source_cluster_id: prod-sqlserver-a
+action: export
+payload_hash: ""
+required_reviewers:
+  - dba-team
+approved_by: []
+status: pending
+approved_at: ""
+`)
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := SyncGitHubPRApproval(root, GitHubPRApprovalSyncSpec{
+		SourceClusterID: "prod-sqlserver-a",
+		ProjectID:       "sales-db-to-tidb-prod-a",
+		Stage:           "export",
+		PRNumber:        42,
+		PRState:         "MERGED",
+		ReviewDecision:  "APPROVED",
+		ChecksStatus:    "PASSED",
+		MergedAt:        "2026-01-02T03:04:05Z",
+		ApprovedBy:      []string{"alice", "bob"},
+		ChangedFiles: []string{
+			"clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/export-plan.yaml",
+			"clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/approvals/export-approval.yaml",
+		},
+	})
+	if err != nil {
+		t.Fatalf("SyncGitHubPRApproval() error = %v", err)
+	}
+	if result.ApprovalFile != "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/approvals/export-approval.yaml" {
+		t.Fatalf("ApprovalFile = %q", result.ApprovalFile)
+	}
+	if result.PayloadHash != hash {
+		t.Fatalf("PayloadHash = %q, want %q", result.PayloadHash, hash)
+	}
+	approval := readFile(t, root, result.ApprovalFile)
+	assertContains(t, approval, "status: approved")
+	assertContains(t, approval, "payload_hash: "+hash)
+	assertContains(t, approval, "approved_at: \"2026-01-02T03:04:05Z\"")
+	assertContains(t, approval, "  - alice")
+	assertContains(t, approval, "  - bob")
+	assertContains(t, approval, "github_pr:")
+	assertContains(t, approval, "  number: 42")
+}
+
+func TestSyncGitHubPRApprovalRejectsFailedChecksWithoutMutatingApproval(t *testing.T) {
+	root := t.TempDir()
+	createReadyExportProjectForCluster(t, root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a")
+	approvalRel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/approvals/export-approval.yaml"
+	before := readFile(t, root, approvalRel)
+
+	_, err := SyncGitHubPRApproval(root, GitHubPRApprovalSyncSpec{
+		SourceClusterID: "prod-sqlserver-a",
+		ProjectID:       "sales-db-to-tidb-prod-a",
+		Stage:           "export",
+		PRNumber:        42,
+		PRState:         "MERGED",
+		ReviewDecision:  "APPROVED",
+		ChecksStatus:    "FAILED",
+		MergedAt:        "2026-01-02T03:04:05Z",
+		ApprovedBy:      []string{"alice"},
+		ChangedFiles: []string{
+			"clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/export-plan.yaml",
+		},
+	})
+	if err == nil {
+		t.Fatal("SyncGitHubPRApproval() error = nil, want failed check rejection")
+	}
+	assertContains(t, err.Error(), "PR checks status is FAILED, want PASSED")
+	after := readFile(t, root, approvalRel)
+	if after != before {
+		t.Fatalf("approval mutated after failed checks\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
 func TestGenerateExecutorEvidencePRDraftWritesDDLBody(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())

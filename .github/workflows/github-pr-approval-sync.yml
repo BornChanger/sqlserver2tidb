@@ -1,0 +1,74 @@
+name: github-pr-approval-sync
+
+on:
+  pull_request_target:
+    types:
+      - closed
+
+permissions:
+  contents: write
+  pull-requests: read
+  checks: read
+
+jobs:
+  sync-approval:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      PR_TITLE: ${{ github.event.pull_request.title }}
+      GH_TOKEN: ${{ secrets.SQLSERVER2TIDB_GITHUB_APP_TOKEN || github.token }}
+
+    steps:
+      - name: Classify migration approval PR
+        id: classify
+        run: |
+          case "${PR_TITLE}" in
+            "[schema]"*|"[export]"*|"[import]"*|"[cdc]"*|"[validation]"*|"[cutover]"*)
+              echo "sync=true" >> "${GITHUB_OUTPUT}"
+              ;;
+            *)
+              echo "::notice::PR title is not a sqlserver2tidb approval stage; skipping approval sync"
+              echo "sync=false" >> "${GITHUB_OUTPUT}"
+              ;;
+          esac
+
+      - name: Check out main
+        if: steps.classify.outputs.sync == 'true'
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          token: ${{ secrets.SQLSERVER2TIDB_GITHUB_APP_TOKEN || github.token }}
+
+      - name: Set up Go
+        if: steps.classify.outputs.sync == 'true'
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.22.x"
+          cache: true
+
+      - name: Build CLI
+        if: steps.classify.outputs.sync == 'true'
+        run: make build
+
+      - name: Sync approval file from GitHub PR status
+        if: steps.classify.outputs.sync == 'true'
+        run: |
+          bin/sqlserver2tidb sync-github-pr-approval \
+            --root . \
+            --pr "${PR_NUMBER}" \
+            --repo "${GITHUB_REPOSITORY}"
+
+      - name: Commit approval sync
+        if: steps.classify.outputs.sync == 'true'
+        run: |
+          if git diff --quiet -- clusters; then
+            echo "::notice::No approval file changes to commit"
+            exit 0
+          fi
+          git config user.name "sqlserver2tidb[bot]"
+          git config user.email "sqlserver2tidb[bot]@users.noreply.github.com"
+          git add clusters
+          git commit -m "Sync migration approval from PR #${PR_NUMBER}"
+          git push

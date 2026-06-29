@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -701,6 +704,105 @@ func TestRunCreatePRDryRunCommand(t *testing.T) {
 	if !strings.Contains(output, "--title '[schema] sales-db-to-tidb-prod-a'") {
 		t.Fatalf("create-pr stdout = %q, want quoted title", output)
 	}
+}
+
+func TestRunSyncGitHubPRApprovalUsesPRStatusAndWritesApproval(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	createCLIProjectWithOneExportChunk(t, root, &stdout, &stderr)
+	reviewCLIExportPlanPredicates(t, root)
+	setCLIReviewPlanStatus(t, root, "export", "reviewed")
+	fakeGH := filepath.Join(root, "fake-gh")
+	ghOutput := `{
+  "state": "MERGED",
+  "reviewDecision": "APPROVED",
+  "mergedAt": "2026-01-02T03:04:05Z",
+  "latestReviews": [
+    {"state": "APPROVED", "author": {"login": "alice"}},
+    {"state": "COMMENTED", "author": {"login": "bob"}}
+  ],
+  "statusCheckRollup": [
+    {"__typename": "CheckRun", "conclusion": "SUCCESS"},
+    {"__typename": "StatusContext", "state": "SUCCESS"}
+  ],
+  "files": [
+    {"path": "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/export-plan.yaml"},
+    {"path": "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/approvals/export-approval.yaml"}
+  ]
+}
+`
+	if err := os.WriteFile(fakeGH, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" > gh-args.log\ncat <<'JSON'\n"+ghOutput+"JSON\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"sync-github-pr-approval",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "export",
+		"--pr", "42",
+		"--repo", "BornChanger/sqlserver2tidb",
+		"--gh-binary", "./fake-gh",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("sync-github-pr-approval code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	assertCLIOutputContains(t, output, "GitHub PR approval synced for export")
+	assertCLIOutputContains(t, output, "approval file: clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/approvals/export-approval.yaml")
+	approval := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/approvals/export-approval.yaml")
+	assertCLIOutputContains(t, approval, "status: approved")
+	assertCLIOutputContains(t, approval, "approved_by:\n  - alice")
+	assertCLIOutputContains(t, approval, "github_pr:\n  number: 42")
+	argsLog := readCLIRelFile(t, root, "gh-args.log")
+	assertCLIOutputContains(t, argsLog, "pr view 42 --json title,body,state,reviewDecision,mergedAt,latestReviews,statusCheckRollup,files --repo BornChanger/sqlserver2tidb")
+}
+
+func TestRunSyncGitHubPRApprovalInfersProjectFromGeneratedPRBody(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	createCLIProjectWithOneExportChunk(t, root, &stdout, &stderr)
+	reviewCLIExportPlanPredicates(t, root)
+	setCLIReviewPlanStatus(t, root, "export", "reviewed")
+	fakeGH := filepath.Join(root, "fake-gh-infer")
+	ghOutput := `{
+  "title": "[export] sales-db-to-tidb-prod-a",
+  "body": "# PR Draft: [export] sales-db-to-tidb-prod-a\n\n## Summary\n\n- Stage: ` + "`export`" + `\n- Source cluster: ` + "`prod-sqlserver-a`" + `\n- Project: ` + "`sales-db-to-tidb-prod-a`" + `\n",
+  "state": "MERGED",
+  "reviewDecision": "APPROVED",
+  "mergedAt": "2026-01-02T03:04:05Z",
+  "latestReviews": [
+    {"state": "APPROVED", "author": {"login": "alice"}}
+  ],
+  "statusCheckRollup": [],
+  "files": [
+    {"path": "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/export-plan.yaml"}
+  ]
+}
+`
+	if err := os.WriteFile(fakeGH, []byte("#!/bin/sh\ncat <<'JSON'\n"+ghOutput+"JSON\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"sync-github-pr-approval",
+		"--root", root,
+		"--pr", "42",
+		"--repo", "BornChanger/sqlserver2tidb",
+		"--gh-binary", "./fake-gh-infer",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("sync-github-pr-approval infer code = %d, stderr = %s", code, stderr.String())
+	}
+	assertCLIOutputContains(t, stdout.String(), "GitHub PR approval synced for export")
+	approval := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/approvals/export-approval.yaml")
+	assertCLIOutputContains(t, approval, "status: approved")
+	assertCLIOutputContains(t, approval, "approved_by:\n  - alice")
 }
 
 func TestRunWorkerValidateCommand(t *testing.T) {
@@ -2781,6 +2883,95 @@ func TestRunCDCHealthProbeLSNUsesExecutorBounds(t *testing.T) {
 	argsLog := readCLIRelFile(t, root, "cdc-health-probe-args.log")
 	assertCLIOutputContains(t, argsLog, "cdc-lsn --execute --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --source-connection-string-env SQLSERVER_CDC_TEST_DSN")
 	assertCLIOutputContains(t, argsLog, "cdc-lsn --execute --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --source-object sales.dbo.orders --source-connection-string-env SQLSERVER_CDC_TEST_DSN")
+}
+
+func TestRunCDCHealthStoresHistoryAndSendsFeishuAlert(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	createCLIProjectWithCDCPlanAndCheckpoint(t, root, &stdout, &stderr, "0x00000000000000000001", "0x00000000000000000002")
+	historyFile := filepath.Join(root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/cdc-health-history.jsonl")
+	var alertBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("Feishu method = %s, want POST", r.Method)
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read alert body: %v", err)
+		}
+		alertBody = string(body)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"code":0,"msg":"success"}`))
+	}))
+	defer server.Close()
+	t.Setenv("SQLSERVER2TIDB_FEISHU_WEBHOOK", server.URL)
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"cdc-health",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--max-lsn", "0x00000000000000000003",
+		"--min-lsn", "sales.dbo.orders=0x00000000000000000001",
+		"--max-checkpoint-age", "1h",
+		"--now", "2026-01-02T04:34:07Z",
+		"--history-file", historyFile,
+		"--feishu-webhook-env", "SQLSERVER2TIDB_FEISHU_WEBHOOK",
+		"--feishu-alert-min-severity", "warning",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("cdc-health code = 0, want critical status failure; stdout = %s", stdout.String())
+	}
+	historyBytes, err := os.ReadFile(historyFile)
+	if err != nil {
+		t.Fatalf("read history file: %v", err)
+	}
+	history := string(historyBytes)
+	assertCLIOutputContains(t, history, `"source_cluster_id":"prod-sqlserver-a"`)
+	assertCLIOutputContains(t, history, `"project_id":"sales-db-to-tidb-prod-a"`)
+	assertCLIOutputContains(t, history, `"status":"critical"`)
+	assertCLIOutputContains(t, history, `"code":"checkpoint_stale"`)
+	if strings.Count(strings.TrimSpace(history), "\n") != 0 {
+		t.Fatalf("history should contain one JSONL line, got %q", history)
+	}
+	assertCLIOutputContains(t, stdout.String(), "cdc health history appended:")
+	assertCLIOutputContains(t, stdout.String(), "Feishu CDC health alert sent")
+	assertCLIOutputContains(t, alertBody, `"msg_type":"text"`)
+	assertCLIOutputContains(t, alertBody, "sqlserver2tidb CDC health critical")
+	assertCLIOutputContains(t, alertBody, "checkpoint_stale")
+	assertCLIOutputContains(t, alertBody, "cdc_lag")
+}
+
+func TestRunCDCHealthFailsWhenFeishuAlertDeliveryFails(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	createCLIProjectWithCDCPlanAndCheckpoint(t, root, &stdout, &stderr, "0x00000000000000000001", "0x00000000000000000002")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte("bad gateway"))
+	}))
+	defer server.Close()
+	t.Setenv("SQLSERVER2TIDB_FEISHU_WEBHOOK", server.URL)
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"cdc-health",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--max-lsn", "0x00000000000000000003",
+		"--now", "2026-01-02T03:04:08Z",
+		"--feishu-webhook-env", "SQLSERVER2TIDB_FEISHU_WEBHOOK",
+		"--feishu-alert-min-severity", "warning",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("cdc-health code = 0, want alert delivery failure")
+	}
+	assertCLIOutputContains(t, stderr.String(), "send Feishu alert")
+	assertCLIOutputContains(t, stderr.String(), "502")
 }
 
 func TestRunGenerateValidationPlanCommand(t *testing.T) {

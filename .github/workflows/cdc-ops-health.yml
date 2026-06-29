@@ -23,7 +23,7 @@ on:
         default: "false"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   cdc-health:
@@ -34,11 +34,17 @@ jobs:
       CDC_PROJECT_ID: ${{ github.event.inputs.project_id || vars.SQLSERVER2TIDB_CDC_PROJECT_ID || 'sales-db-to-tidb-prod-a' }}
       CDC_MAX_CHECKPOINT_AGE: ${{ github.event.inputs.max_checkpoint_age || vars.SQLSERVER2TIDB_CDC_MAX_CHECKPOINT_AGE || '15m' }}
       CDC_FAIL_ON_WARNING: ${{ github.event.inputs.fail_on_warning || vars.SQLSERVER2TIDB_CDC_FAIL_ON_WARNING || 'false' }}
+      CDC_FEISHU_ALERT_MIN_SEVERITY: ${{ vars.SQLSERVER2TIDB_CDC_FEISHU_ALERT_MIN_SEVERITY || 'critical' }}
+      CDC_HEALTH_HISTORY_FILE: ${{ vars.SQLSERVER2TIDB_CDC_HEALTH_HISTORY_FILE }}
       SQLSERVER2TIDB_SOURCE_CONNECTION_STRING: ${{ secrets.SQLSERVER2TIDB_INTEGRATION_SOURCE_DSN }}
+      SQLSERVER2TIDB_FEISHU_WEBHOOK: ${{ secrets.SQLSERVER2TIDB_FEISHU_WEBHOOK }}
+      SQLSERVER2TIDB_FEISHU_SECRET: ${{ secrets.SQLSERVER2TIDB_FEISHU_SECRET }}
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+        with:
+          token: ${{ secrets.SQLSERVER2TIDB_GITHUB_APP_TOKEN || github.token }}
 
       - name: Set up Go
         uses: actions/setup-go@v6
@@ -60,6 +66,10 @@ jobs:
       - name: Run CDC health probe
         if: env.SQLSERVER2TIDB_SOURCE_CONNECTION_STRING != ''
         run: |
+          history_file="${CDC_HEALTH_HISTORY_FILE}"
+          if [ -z "${history_file}" ]; then
+            history_file="clusters/${CDC_SOURCE_CLUSTER_ID}/projects/${CDC_PROJECT_ID}/state/cdc-health-history.jsonl"
+          fi
           args=(
             bin/sqlserver2tidb
             cdc-health
@@ -70,11 +80,30 @@ jobs:
             --max-checkpoint-age "${CDC_MAX_CHECKPOINT_AGE}"
             --json
             --metrics-file artifacts/cdc-health.json
+            --history-file "${history_file}"
+            --feishu-alert-min-severity "${CDC_FEISHU_ALERT_MIN_SEVERITY}"
           )
           if [ "${CDC_FAIL_ON_WARNING}" = "true" ]; then
             args+=(--fail-on-warning)
           fi
+          set +e
           "${args[@]}"
+          code=$?
+          set -e
+          echo "CDC_HEALTH_EXIT_CODE=${code}" >> "${GITHUB_ENV}"
+
+      - name: Commit CDC health history
+        if: always() && env.SQLSERVER2TIDB_SOURCE_CONNECTION_STRING != ''
+        run: |
+          if git diff --quiet -- clusters; then
+            echo "::notice::No CDC health history changes to commit"
+            exit 0
+          fi
+          git config user.name "sqlserver2tidb[bot]"
+          git config user.email "sqlserver2tidb[bot]@users.noreply.github.com"
+          git add clusters
+          git commit -m "Record CDC health check"
+          git push
 
       - name: Upload CDC health report
         if: always()
@@ -83,3 +112,7 @@ jobs:
           name: cdc-health-report
           path: artifacts/cdc-health.json
           if-no-files-found: ignore
+
+      - name: Preserve CDC health status
+        if: always() && env.SQLSERVER2TIDB_SOURCE_CONNECTION_STRING != ''
+        run: exit "${CDC_HEALTH_EXIT_CODE:-0}"

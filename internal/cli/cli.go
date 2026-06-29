@@ -1,12 +1,17 @@
 package cli
 
 import (
+	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -59,6 +64,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runGeneratePRDraft(args[1:], stdout, stderr)
 	case "create-pr":
 		return runCreatePR(args[1:], stdout, stderr)
+	case "sync-github-pr-approval":
+		return runSyncGitHubPRApproval(args[1:], stdout, stderr)
 	case "create-worker-state-pr":
 		return runCreateWorkerStatePR(args[1:], stdout, stderr)
 	case "generate-executor-evidence-pr-draft":
@@ -832,10 +839,14 @@ func runCDCHealth(args []string, stdout, stderr io.Writer) int {
 	nowRaw := fs.String("now", "", "current time override as RFC3339, for deterministic checks")
 	jsonOutput := fs.Bool("json", false, "emit JSON health report")
 	metricsFile := fs.String("metrics-file", "", "optional path to write JSON health metrics")
+	historyFile := fs.String("history-file", "", "optional JSONL file to append CDC health reports")
 	failOnWarning := fs.Bool("fail-on-warning", false, "return non-zero when health status is warning")
 	probeLSN := fs.Bool("probe-lsn", false, "probe SQL Server CDC max/min LSNs through the executor before evaluating health")
 	executorBinary := fs.String("executor-binary", "sqlserver2tidb-executor", "executor binary used when --probe-lsn is set")
 	sourceConnectionStringEnv := fs.String("source-connection-string-env", "SQLSERVER2TIDB_SOURCE_CONNECTION_STRING", "environment variable containing the SQL Server CDC connection string")
+	feishuWebhookEnv := fs.String("feishu-webhook-env", "SQLSERVER2TIDB_FEISHU_WEBHOOK", "environment variable containing the Feishu custom bot webhook URL; empty value disables Feishu alerts")
+	feishuSecretEnv := fs.String("feishu-secret-env", "SQLSERVER2TIDB_FEISHU_SECRET", "environment variable containing the optional Feishu custom bot signing secret")
+	feishuAlertMinSeverity := fs.String("feishu-alert-min-severity", "critical", "minimum CDC health status that sends Feishu alerts: ok, warning, critical, or none")
 	var minLSNs cdcHealthMinLSNFlags
 	fs.Var(&minLSNs, "min-lsn", "per-table SQL Server CDC min LSN as source.object=0x...")
 	if err := fs.Parse(args); err != nil {
@@ -853,6 +864,11 @@ func runCDCHealth(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 		now = parsedNow.UTC()
+	}
+	alertSeverity, err := parseCDCHealthAlertSeverity(*feishuAlertMinSeverity)
+	if err != nil {
+		fmt.Fprintf(stderr, "cdc-health: %v\n", err)
+		return 2
 	}
 	minLSNMap := minLSNs.Map()
 	if *probeLSN {
@@ -895,6 +911,26 @@ func runCDCHealth(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 	}
+	if strings.TrimSpace(*historyFile) != "" {
+		historyPath, err := appendCDCHealthHistory(*root, *historyFile, report)
+		if err != nil {
+			fmt.Fprintf(stderr, "cdc-health: append history: %v\n", err)
+			return 1
+		}
+		if !*jsonOutput {
+			fmt.Fprintf(stdout, "cdc health history appended: %s\n", historyPath)
+		}
+	}
+	feishuWebhook := strings.TrimSpace(os.Getenv(strings.TrimSpace(*feishuWebhookEnv)))
+	if feishuWebhook != "" && shouldSendCDCHealthAlert(report.Status, alertSeverity) {
+		if err := sendFeishuCDCHealthAlert(feishuWebhook, os.Getenv(strings.TrimSpace(*feishuSecretEnv)), now, report); err != nil {
+			fmt.Fprintf(stderr, "cdc-health: send Feishu alert: %v\n", err)
+			return 1
+		}
+		if !*jsonOutput {
+			fmt.Fprintln(stdout, "Feishu CDC health alert sent")
+		}
+	}
 	if *jsonOutput {
 		fmt.Fprintln(stdout, string(reportJSON))
 	} else {
@@ -904,6 +940,166 @@ func runCDCHealth(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+func appendCDCHealthHistory(root, path string, report gitops.CDCHealthReport) (string, error) {
+	historyPath := strings.TrimSpace(path)
+	if historyPath == "" {
+		return "", fmt.Errorf("history file is required")
+	}
+	if !filepath.IsAbs(historyPath) {
+		historyPath = filepath.Join(root, filepath.FromSlash(historyPath))
+	}
+	reportJSON, err := json.Marshal(report)
+	if err != nil {
+		return "", fmt.Errorf("marshal history report: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(historyPath), 0o755); err != nil {
+		return "", fmt.Errorf("create history directory: %w", err)
+	}
+	file, err := os.OpenFile(historyPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return "", fmt.Errorf("open history file: %w", err)
+	}
+	defer file.Close()
+	if _, err := file.Write(append(reportJSON, '\n')); err != nil {
+		return "", fmt.Errorf("write history entry: %w", err)
+	}
+	return filepath.ToSlash(historyPath), nil
+}
+
+type cdcHealthAlertSeverity int
+
+const (
+	cdcHealthAlertNone cdcHealthAlertSeverity = iota
+	cdcHealthAlertOK
+	cdcHealthAlertWarning
+	cdcHealthAlertCritical
+)
+
+func parseCDCHealthAlertSeverity(value string) (cdcHealthAlertSeverity, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "critical":
+		return cdcHealthAlertCritical, nil
+	case "warning":
+		return cdcHealthAlertWarning, nil
+	case "ok", "always":
+		return cdcHealthAlertOK, nil
+	case "none", "disabled":
+		return cdcHealthAlertNone, nil
+	default:
+		return cdcHealthAlertNone, fmt.Errorf("invalid --feishu-alert-min-severity %q", value)
+	}
+}
+
+func shouldSendCDCHealthAlert(status string, min cdcHealthAlertSeverity) bool {
+	if min == cdcHealthAlertNone {
+		return false
+	}
+	return cdcHealthStatusRank(status) >= int(min)
+}
+
+func cdcHealthStatusRank(status string) int {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "critical":
+		return int(cdcHealthAlertCritical)
+	case "warning":
+		return int(cdcHealthAlertWarning)
+	case "ok":
+		return int(cdcHealthAlertOK)
+	default:
+		return 0
+	}
+}
+
+func sendFeishuCDCHealthAlert(webhookURL, secret string, now time.Time, report gitops.CDCHealthReport) error {
+	payload := map[string]any{
+		"msg_type": "text",
+		"content": map[string]string{
+			"text": renderFeishuCDCHealthAlertText(report),
+		},
+	}
+	if strings.TrimSpace(secret) != "" {
+		timestamp := strconv.FormatInt(now.Unix(), 10)
+		payload["timestamp"] = timestamp
+		payload["sign"] = signFeishuCustomBotRequest(timestamp, strings.TrimSpace(secret))
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal payload: %w", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, strings.TrimSpace(webhookURL), bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	client := http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("webhook returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+	if err := checkFeishuWebhookResponse(respBody); err != nil {
+		return err
+	}
+	return nil
+}
+
+func signFeishuCustomBotRequest(timestamp, secret string) string {
+	stringToSign := timestamp + "\n" + secret
+	mac := hmac.New(sha256.New, []byte(stringToSign))
+	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
+}
+
+func checkFeishuWebhookResponse(body []byte) error {
+	if len(bytes.TrimSpace(body)) == 0 {
+		return nil
+	}
+	var response struct {
+		Code          *int   `json:"code"`
+		Msg           string `json:"msg"`
+		StatusCode    *int   `json:"StatusCode"`
+		StatusMessage string `json:"StatusMessage"`
+	}
+	if err := json.Unmarshal(body, &response); err != nil {
+		return nil
+	}
+	if response.Code != nil && *response.Code != 0 {
+		return fmt.Errorf("webhook returned code %d: %s", *response.Code, response.Msg)
+	}
+	if response.StatusCode != nil && *response.StatusCode != 0 {
+		return fmt.Errorf("webhook returned StatusCode %d: %s", *response.StatusCode, response.StatusMessage)
+	}
+	return nil
+}
+
+func renderFeishuCDCHealthAlertText(report gitops.CDCHealthReport) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "sqlserver2tidb CDC health %s\n", report.Status)
+	fmt.Fprintf(&b, "source_cluster_id: %s\n", report.SourceClusterID)
+	fmt.Fprintf(&b, "project_id: %s\n", report.ProjectID)
+	fmt.Fprintf(&b, "generated_at: %s\n", report.GeneratedAt)
+	if report.MaxLSN != "" {
+		fmt.Fprintf(&b, "max_lsn: %s\n", report.MaxLSN)
+	}
+	fmt.Fprintf(&b, "tracked_tables: %d, lagging_tables: %d, expired_tables: %d\n", report.TrackedTables, report.LaggingTables, report.ExpiredTables)
+	if len(report.Alerts) == 0 {
+		b.WriteString("alerts: none")
+		return b.String()
+	}
+	b.WriteString("alerts:\n")
+	for _, alert := range report.Alerts {
+		if alert.SourceObject != "" {
+			fmt.Fprintf(&b, "- %s %s %s: %s\n", alert.Severity, alert.Code, alert.SourceObject, alert.Message)
+		} else {
+			fmt.Fprintf(&b, "- %s %s: %s\n", alert.Severity, alert.Code, alert.Message)
+		}
+	}
+	return strings.TrimSpace(b.String())
 }
 
 type cdcHealthMinLSNFlags map[string]string
@@ -1066,6 +1262,225 @@ func runCreatePR(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+func runSyncGitHubPRApproval(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("sync-github-pr-approval", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	root := fs.String("root", ".", "repository root")
+	sourceClusterID := fs.String("source-cluster-id", "", "upstream SQL Server cluster id")
+	projectID := fs.String("project-id", "", "migration project id")
+	stage := fs.String("stage", "", "PR stage with an approval file: schema, export, import, cdc, validation, or cutover")
+	prNumber := fs.Int("pr", 0, "GitHub pull request number")
+	repo := fs.String("repo", "", "optional GitHub repository in owner/name form")
+	ghBinary := fs.String("gh-binary", "gh", "GitHub CLI binary used to read PR status")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if *prNumber <= 0 {
+		fmt.Fprintln(stderr, "sync-github-pr-approval --pr must be positive")
+		return 2
+	}
+	prStatus, err := readGitHubPRStatus(*root, *ghBinary, *repo, *prNumber)
+	if err != nil {
+		fmt.Fprintf(stderr, "sync GitHub PR approval: %v\n", err)
+		return 1
+	}
+	inferred := inferGitHubPRMetadata(prStatus)
+	effectiveSourceClusterID := firstNonEmpty(*sourceClusterID, inferred.SourceClusterID)
+	effectiveProjectID := firstNonEmpty(*projectID, inferred.ProjectID)
+	effectiveStage := firstNonEmpty(*stage, inferred.Stage)
+	result, err := gitops.SyncGitHubPRApproval(*root, gitops.GitHubPRApprovalSyncSpec{
+		SourceClusterID: effectiveSourceClusterID,
+		ProjectID:       effectiveProjectID,
+		Stage:           effectiveStage,
+		PRNumber:        *prNumber,
+		PRState:         prStatus.State,
+		ReviewDecision:  prStatus.ReviewDecision,
+		ChecksStatus:    deriveGitHubPRChecksStatus(prStatus.StatusCheckRollup),
+		MergedAt:        prStatus.MergedAt,
+		ApprovedBy:      githubPRApprovers(prStatus.LatestReviews),
+		ChangedFiles:    githubPRChangedFiles(prStatus.Files),
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "sync GitHub PR approval: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "GitHub PR approval synced for %s\n", result.ApprovalStage)
+	fmt.Fprintf(stdout, "PR: #%d\n", result.PRNumber)
+	fmt.Fprintf(stdout, "approval file: %s\n", result.ApprovalFile)
+	fmt.Fprintf(stdout, "payload hash: %s\n", result.PayloadHash)
+	fmt.Fprintf(stdout, "approved by: %s\n", strings.Join(result.ApprovedBy, ", "))
+	return 0
+}
+
+type githubPRViewStatus struct {
+	Title             string                `json:"title"`
+	Body              string                `json:"body"`
+	State             string                `json:"state"`
+	ReviewDecision    string                `json:"reviewDecision"`
+	MergedAt          string                `json:"mergedAt"`
+	LatestReviews     []githubPRReview      `json:"latestReviews"`
+	StatusCheckRollup []githubPRStatusCheck `json:"statusCheckRollup"`
+	Files             []githubPRFile        `json:"files"`
+}
+
+type githubPRReview struct {
+	State  string `json:"state"`
+	Author struct {
+		Login string `json:"login"`
+	} `json:"author"`
+}
+
+type githubPRStatusCheck struct {
+	State      string `json:"state"`
+	Conclusion string `json:"conclusion"`
+}
+
+type githubPRFile struct {
+	Path string `json:"path"`
+}
+
+func readGitHubPRStatus(root, ghBinary, repo string, prNumber int) (githubPRViewStatus, error) {
+	binary := strings.TrimSpace(ghBinary)
+	if binary == "" {
+		binary = "gh"
+	}
+	args := []string{
+		"pr", "view", strconv.Itoa(prNumber),
+		"--json", "title,body,state,reviewDecision,mergedAt,latestReviews,statusCheckRollup,files",
+	}
+	if strings.TrimSpace(repo) != "" {
+		args = append(args, "--repo", strings.TrimSpace(repo))
+	}
+	cmd := exec.Command(binary, args...)
+	cmd.Dir = root
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return githubPRViewStatus{}, fmt.Errorf("gh pr view failed: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	var status githubPRViewStatus
+	if err := json.Unmarshal(output, &status); err != nil {
+		return githubPRViewStatus{}, fmt.Errorf("parse gh pr view JSON: %w", err)
+	}
+	return status, nil
+}
+
+type inferredGitHubPRMetadata struct {
+	SourceClusterID string
+	ProjectID       string
+	Stage           string
+}
+
+func inferGitHubPRMetadata(status githubPRViewStatus) inferredGitHubPRMetadata {
+	inferred := inferredGitHubPRMetadata{}
+	if stage, projectID, ok := parseGitHubPRTitle(status.Title); ok {
+		inferred.Stage = stage
+		inferred.ProjectID = projectID
+	}
+	for _, line := range strings.Split(status.Body, "\n") {
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(trimmed, "- Stage:"):
+			inferred.Stage = firstNonEmpty(extractBacktickValue(trimmed), inferred.Stage)
+		case strings.HasPrefix(trimmed, "- Source cluster:"):
+			inferred.SourceClusterID = firstNonEmpty(extractBacktickValue(trimmed), inferred.SourceClusterID)
+		case strings.HasPrefix(trimmed, "- Project:"):
+			value := extractBacktickValue(trimmed)
+			if value != "" && value != "cluster-level" {
+				inferred.ProjectID = firstNonEmpty(value, inferred.ProjectID)
+			}
+		}
+	}
+	return inferred
+}
+
+func parseGitHubPRTitle(title string) (string, string, bool) {
+	trimmed := strings.TrimSpace(title)
+	if !strings.HasPrefix(trimmed, "[") {
+		return "", "", false
+	}
+	end := strings.Index(trimmed, "]")
+	if end <= 1 || end+1 >= len(trimmed) {
+		return "", "", false
+	}
+	stage := strings.TrimSpace(trimmed[1:end])
+	projectID := strings.TrimSpace(trimmed[end+1:])
+	if stage == "" || projectID == "" {
+		return "", "", false
+	}
+	return stage, projectID, true
+}
+
+func extractBacktickValue(line string) string {
+	start := strings.Index(line, "`")
+	if start < 0 {
+		return ""
+	}
+	end := strings.Index(line[start+1:], "`")
+	if end < 0 {
+		return ""
+	}
+	return strings.TrimSpace(line[start+1 : start+1+end])
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func deriveGitHubPRChecksStatus(checks []githubPRStatusCheck) string {
+	for _, check := range checks {
+		conclusion := strings.ToUpper(strings.TrimSpace(check.Conclusion))
+		switch conclusion {
+		case "SUCCESS", "SKIPPED", "NEUTRAL":
+			continue
+		case "FAILURE", "FAILED", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED":
+			return "FAILED"
+		}
+		state := strings.ToUpper(strings.TrimSpace(check.State))
+		switch state {
+		case "", "SUCCESS":
+			continue
+		case "FAILURE", "FAILED", "ERROR":
+			return "FAILED"
+		default:
+			return "PENDING"
+		}
+	}
+	return "PASSED"
+}
+
+func githubPRApprovers(reviews []githubPRReview) []string {
+	seen := map[string]bool{}
+	approvers := make([]string, 0, len(reviews))
+	for _, review := range reviews {
+		if strings.ToUpper(strings.TrimSpace(review.State)) != "APPROVED" {
+			continue
+		}
+		login := strings.TrimSpace(review.Author.Login)
+		if login == "" || seen[login] {
+			continue
+		}
+		seen[login] = true
+		approvers = append(approvers, login)
+	}
+	return approvers
+}
+
+func githubPRChangedFiles(files []githubPRFile) []string {
+	out := make([]string, 0, len(files))
+	for _, file := range files {
+		path := strings.TrimSpace(file.Path)
+		if path != "" {
+			out = append(out, path)
+		}
+	}
+	return out
 }
 
 func runCreateWorkerStatePR(args []string, stdout, stderr io.Writer) int {
@@ -2303,10 +2718,11 @@ Usage:
   sqlserver2tidb prepare-cdc-range --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --to-lsn 0x00000027000001f40003
   sqlserver2tidb prepare-cdc-iteration --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --max-lsn 0x00000027000001f40004 --pr-draft
   sqlserver2tidb cdc-orchestrator --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --apply-approved --poll --pr-draft
-  sqlserver2tidb cdc-health --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --probe-lsn --max-checkpoint-age 15m --metrics-file artifacts/cdc-health.json
+  sqlserver2tidb cdc-health --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --probe-lsn --max-checkpoint-age 15m --metrics-file artifacts/cdc-health.json --history-file clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/cdc-health-history.jsonl
   sqlserver2tidb generate-validation-plan --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
   sqlserver2tidb generate-pr-draft --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage schema
   sqlserver2tidb create-pr --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage schema
+  sqlserver2tidb sync-github-pr-approval --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage export --pr 42 --repo BornChanger/sqlserver2tidb
   sqlserver2tidb create-worker-state-pr --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage export
   sqlserver2tidb generate-executor-evidence-pr-draft --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage ddl
   sqlserver2tidb create-executor-evidence-pr --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage ddl
