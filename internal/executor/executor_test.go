@@ -2120,6 +2120,31 @@ func TestRunExportExecuteAcceptsHTTPOutputURIBeforeConnectionStringEnv(t *testin
 	assertOutputContains(t, stderr.String(), "executor export: source connection string env MISSING_SQLSERVER_DSN is not set")
 }
 
+func TestRunExportExecutePreflightsS3CredentialsBeforeConnectionStringEnv(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	t.Setenv("AWS_ACCESS_KEY_ID", "")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "")
+	t.Setenv("AWS_REGION", "")
+	t.Setenv("AWS_DEFAULT_REGION", "")
+
+	code := Run([]string{
+		"export",
+		"--execute",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--chunk-id", "dbo.orders.000001",
+		"--source-object", "sales.dbo.orders",
+		"--target-object", "app.orders",
+		"--output-uri", "s3://migration-bucket/full/dbo.orders.000001.csv",
+		"--source-connection-string-env", "MISSING_SQLSERVER_DSN",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("export execute code = 0, want non-zero")
+	}
+	assertOutputContains(t, stderr.String(), "executor export: prepare output URI: AWS_ACCESS_KEY_ID is required for s3 export output")
+}
+
 func TestRunExportExecuteRequiresConnectionStringEnv(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 

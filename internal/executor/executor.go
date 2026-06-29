@@ -579,7 +579,7 @@ func executeSQLServerExport(ctx context.Context, spec exportExecuteSpec) (export
 		return exportExecuteResult{}, fmt.Errorf("executor export: %w", err)
 	}
 	if err := prepareExportOutputURI(output); err != nil {
-		return exportExecuteResult{}, fmt.Errorf("executor export: create output directory: %w", err)
+		return exportExecuteResult{}, fmt.Errorf("executor export: prepare output URI: %w", err)
 	}
 
 	envName := strings.TrimSpace(spec.SourceConnectionStringEnv)
@@ -687,13 +687,28 @@ func parseExportOutputURI(outputURI string) (exportOutputURI, error) {
 }
 
 func prepareExportOutputURI(output exportOutputURI) error {
-	if output.scheme != "file" {
+	switch output.scheme {
+	case "file":
+		if err := os.MkdirAll(filepath.Dir(output.path), 0o755); err != nil {
+			return err
+		}
+		return nil
+	case "s3":
+		target, err := parseS3ObjectTarget(output.uri)
+		if err != nil {
+			return err
+		}
+		config, err := loadS3ExportConfig()
+		if err != nil {
+			return err
+		}
+		if _, err := buildS3PutObjectURL(config, target); err != nil {
+			return err
+		}
+		return nil
+	default:
 		return nil
 	}
-	if err := os.MkdirAll(filepath.Dir(output.path), 0o755); err != nil {
-		return err
-	}
-	return nil
 }
 
 type csvExportOutput struct {
