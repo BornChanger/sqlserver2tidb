@@ -612,7 +612,7 @@ func executeSQLServerExport(ctx context.Context, spec exportExecuteSpec) (export
 	}
 	exportedRows, err := writeCSVExportRows(outputWriter, rows)
 	if err != nil {
-		outputWriter.Close()
+		outputWriter.Abort()
 		return exportExecuteResult{}, fmt.Errorf("executor export: write CSV output: %w", err)
 	}
 	if err := outputWriter.Close(); err != nil {
@@ -702,6 +702,24 @@ func (output *csvExportOutput) SHA256() string {
 	return output.counter.SHA256()
 }
 
+func (output *csvExportOutput) Abort() error {
+	if output == nil || output.WriteCloser == nil {
+		return nil
+	}
+	return abortWriteCloser(output.WriteCloser)
+}
+
+type abortableWriteCloser interface {
+	Abort() error
+}
+
+func abortWriteCloser(w io.WriteCloser) error {
+	if abortable, ok := w.(abortableWriteCloser); ok {
+		return abortable.Abort()
+	}
+	return w.Close()
+}
+
 type countingWriteCloser struct {
 	writer io.WriteCloser
 	digest hash.Hash
@@ -719,6 +737,10 @@ func (w *countingWriteCloser) Write(p []byte) (int, error) {
 
 func (w *countingWriteCloser) Close() error {
 	return w.writer.Close()
+}
+
+func (w *countingWriteCloser) Abort() error {
+	return abortWriteCloser(w.writer)
 }
 
 func (w *countingWriteCloser) BytesWritten() int64 {
@@ -739,7 +761,7 @@ func openCSVExportOutput(ctx context.Context, output exportOutputURI, compressio
 	var base io.WriteCloser
 	switch output.scheme {
 	case "file":
-		file, err := os.Create(output.path)
+		file, err := newLocalAtomicExportWriter(output.path)
 		if err != nil {
 			return nil, fmt.Errorf("create output file: %w", err)
 		}
@@ -761,6 +783,75 @@ func openCSVExportOutput(ctx context.Context, output exportOutputURI, compressio
 	return &csvExportOutput{WriteCloser: writer, counter: counter}, nil
 }
 
+type localAtomicExportWriter struct {
+	file       *os.File
+	targetPath string
+	tempPath   string
+	closed     bool
+}
+
+func newLocalAtomicExportWriter(targetPath string) (*localAtomicExportWriter, error) {
+	dir := filepath.Dir(targetPath)
+	pattern := "." + filepath.Base(targetPath) + ".*.tmp"
+	file, err := os.CreateTemp(dir, pattern)
+	if err != nil {
+		return nil, err
+	}
+	if err := file.Chmod(0o644); err != nil {
+		name := file.Name()
+		file.Close()
+		os.Remove(name)
+		return nil, err
+	}
+	return &localAtomicExportWriter{
+		file:       file,
+		targetPath: targetPath,
+		tempPath:   file.Name(),
+	}, nil
+}
+
+func (w *localAtomicExportWriter) Write(p []byte) (int, error) {
+	if w == nil || w.file == nil {
+		return 0, fmt.Errorf("local export writer is closed")
+	}
+	return w.file.Write(p)
+}
+
+func (w *localAtomicExportWriter) Close() error {
+	if w == nil || w.closed {
+		return nil
+	}
+	w.closed = true
+	closeErr := w.file.Close()
+	w.file = nil
+	if closeErr != nil {
+		os.Remove(w.tempPath)
+		return closeErr
+	}
+	if err := os.Rename(w.tempPath, w.targetPath); err != nil {
+		os.Remove(w.tempPath)
+		return err
+	}
+	return nil
+}
+
+func (w *localAtomicExportWriter) Abort() error {
+	if w == nil || w.closed {
+		return nil
+	}
+	w.closed = true
+	var closeErr error
+	if w.file != nil {
+		closeErr = w.file.Close()
+		w.file = nil
+	}
+	removeErr := os.Remove(w.tempPath)
+	if errors.Is(removeErr, os.ErrNotExist) {
+		removeErr = nil
+	}
+	return errors.Join(closeErr, removeErr)
+}
+
 type compressedWriteCloser struct {
 	writer io.WriteCloser
 	base   io.Closer
@@ -776,10 +867,17 @@ func (w compressedWriteCloser) Close() error {
 	return errors.Join(writerErr, baseErr)
 }
 
+func (w compressedWriteCloser) Abort() error {
+	if abortable, ok := w.base.(abortableWriteCloser); ok {
+		return abortable.Abort()
+	}
+	return w.base.Close()
+}
+
 func wrapCSVExportWriter(base io.WriteCloser, compression string) (io.WriteCloser, error) {
 	compression, err := normalizeCompression(compression)
 	if err != nil {
-		base.Close()
+		abortWriteCloser(base)
 		return nil, err
 	}
 	switch compression {
@@ -791,7 +889,7 @@ func wrapCSVExportWriter(base io.WriteCloser, compression string) (io.WriteClose
 			base:   base,
 		}, nil
 	default:
-		base.Close()
+		abortWriteCloser(base)
 		return nil, fmt.Errorf("unsupported compression %q", compression)
 	}
 }

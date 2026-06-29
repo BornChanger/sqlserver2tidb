@@ -2162,6 +2162,93 @@ func TestCSVExportOutputRecordsSHA256(t *testing.T) {
 	}
 }
 
+func TestCSVExportOutputPublishesLocalFileOnlyAfterClose(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dbo.orders.000001.csv")
+	output, err := openCSVExportOutput(context.Background(), exportOutputURI{
+		scheme: "file",
+		path:   path,
+	}, compressionNone)
+	if err != nil {
+		t.Fatalf("openCSVExportOutput() error = %v", err)
+	}
+	rows := &fakeExportRows{
+		columns: []string{"id", "name"},
+		values: [][]any{
+			{int64(1), "Ada"},
+			{int64(2), nil},
+		},
+	}
+
+	if _, err := writeCSVExportRows(output, rows); err != nil {
+		t.Fatalf("writeCSVExportRows() error = %v", err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("target file stat before close error = %v, want not exist", err)
+	}
+	if err := output.Close(); err != nil {
+		t.Fatalf("output.Close() error = %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read target file after close: %v", err)
+	}
+	want := "id,name,__sqlserver2tidb_null_bitmap\n1,Ada,00\n2,,01\n"
+	if string(data) != want {
+		t.Fatalf("target file = %q, want %q", string(data), want)
+	}
+}
+
+func TestCSVExportOutputAbortRemovesLocalTempFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "dbo.orders.000001.csv")
+	output, err := openCSVExportOutput(context.Background(), exportOutputURI{
+		scheme: "file",
+		path:   path,
+	}, compressionNone)
+	if err != nil {
+		t.Fatalf("openCSVExportOutput() error = %v", err)
+	}
+	if _, err := output.Write([]byte("partial csv")); err != nil {
+		t.Fatalf("output.Write() error = %v", err)
+	}
+	if err := output.Abort(); err != nil {
+		t.Fatalf("output.Abort() error = %v", err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("target file stat after abort error = %v, want not exist", err)
+	}
+	matches, err := filepath.Glob(filepath.Join(dir, ".dbo.orders.000001.csv.*.tmp"))
+	if err != nil {
+		t.Fatalf("glob temp files: %v", err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("temp files after abort = %v, want none", matches)
+	}
+}
+
+func TestOpenCSVExportOutputInvalidCompressionDoesNotPublishLocalFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "dbo.orders.000001.csv")
+	_, err := openCSVExportOutput(context.Background(), exportOutputURI{
+		scheme: "file",
+		path:   path,
+	}, "brotli")
+	if err == nil {
+		t.Fatal("openCSVExportOutput() error = nil, want unsupported compression error")
+	}
+	if _, statErr := os.Stat(path); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("target file stat after open error = %v, want not exist", statErr)
+	}
+	matches, err := filepath.Glob(filepath.Join(dir, ".dbo.orders.000001.csv.*.tmp"))
+	if err != nil {
+		t.Fatalf("glob temp files: %v", err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("temp files after open error = %v, want none", matches)
+	}
+}
+
 func TestWriteCSVExportRowsHTTPOutput(t *testing.T) {
 	var method string
 	var contentType string

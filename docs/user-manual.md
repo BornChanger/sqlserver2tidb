@@ -2002,6 +2002,8 @@ bin/sqlserver2tidb worker-executor \
 
 export/import executor 的数据量指标有固定输出约定：export 成功时输出 `exported rows: N`、`output bytes: N` 和 `output sha256: sha256:<digest>`，`sql-insert` import 成功时输出 `imported rows: N`、`input bytes: N` 和 `input sha256: sha256:<digest>`。`worker-executor --execute` 会把完整且非负的指标对写入 command 级 `data_rows` 和 `data_bytes`，并把合法 SHA256 写入 `data_sha256`；如果只出现其中一个行数/字节数指标、值不是非负整数，或 SHA256 格式不合法，会先写 failed evidence 再返回非零退出码。
 
+本地 `file://` export 不会直接写最终文件名；executor 会在同目录写隐藏临时文件，只有 CSV/gzip 输出流成功关闭后才 rename 到目标路径。导出失败路径会 abort 并删除临时文件，避免下游 import 读到半截 CSV。
+
 `worker-executor --resume` 复用 export 和 `sql-insert` import 成功 evidence 时，也要求该 command 已有完整 `data_rows`、`data_bytes` 和合法 `data_sha256`。因此从旧版本升级后，如果旧 evidence 没有这些审计字段，resume 会重新执行对应 export/import command 来补齐数据通道审计信息；`tidb-import-into` 当前不输出这些数据通道指标，不受该复用条件影响。
 
 ### 16.18 advance-cdc-checkpoint
