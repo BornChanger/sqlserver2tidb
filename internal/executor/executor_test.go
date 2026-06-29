@@ -325,6 +325,24 @@ func TestRunImportDryRunAcceptsGzipCompression(t *testing.T) {
 	assertOutputContains(t, stdout.String(), "compression: gzip")
 }
 
+func TestRunImportDryRunAcceptsSQLInsertS3SourceURI(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"import",
+		"--root", ".",
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--job-id", "import-dbo.orders.000001",
+		"--target-object", "app.orders",
+		"--source-uri", "s3://migration/prod/full/dbo.orders.000001.csv",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("import dry-run code = %d, stderr = %s", code, stderr.String())
+	}
+	assertOutputContains(t, stdout.String(), "source uri: s3://migration/prod/full/dbo.orders.000001.csv")
+}
+
 func TestRunImportDryRunRejectsTiDBImportIntoGzipCompression(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 
@@ -356,12 +374,12 @@ func TestRunImportDryRunRejectsUnsupportedSQLInsertSourceURI(t *testing.T) {
 		"--project-id", "sales-db-to-tidb-prod-a",
 		"--job-id", "import-dbo.orders.000001",
 		"--target-object", "app.orders",
-		"--source-uri", "s3://migration/prod/full/dbo.orders.000001.csv",
+		"--source-uri", "ftp://migration/prod/full/dbo.orders.000001.csv",
 	}, &stdout, &stderr)
 	if code == 0 {
 		t.Fatalf("import dry-run code = 0, want non-zero; stdout = %s", stdout.String())
 	}
-	assertOutputContains(t, stderr.String(), "executor import: only file://, http://, and https:// source URIs are supported for sql-insert import")
+	assertOutputContains(t, stderr.String(), "executor import: only file://, http://, https://, and s3:// source URIs are supported for sql-insert import")
 }
 
 func TestRunImportDryRunRejectsUnsupportedTiDBImportIntoSourceURI(t *testing.T) {
@@ -513,7 +531,7 @@ CREATE TABLE three (note VARCHAR(32) DEFAULT 'it''s; ok');
 	assertOutputContains(t, statements[2], "'it''s; ok'")
 }
 
-func TestRunImportExecuteRejectsNonFileSourceURI(t *testing.T) {
+func TestRunImportExecuteRejectsUnsupportedSQLInsertSourceURI(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 
 	code := Run([]string{
@@ -524,13 +542,13 @@ func TestRunImportExecuteRejectsNonFileSourceURI(t *testing.T) {
 		"--project-id", "sales-db-to-tidb-prod-a",
 		"--job-id", "import-dbo.orders.000001",
 		"--target-object", "app.orders",
-		"--source-uri", "s3://migration/prod/full/dbo.orders.000001.csv",
+		"--source-uri", "ftp://migration/prod/full/dbo.orders.000001.csv",
 		"--target-connection-string-env", "MISSING_TIDB_DSN",
 	}, &stdout, &stderr)
 	if code == 0 {
 		t.Fatalf("import execute code = 0, want non-zero")
 	}
-	assertOutputContains(t, stderr.String(), "executor import: only file://, http://, and https:// source URIs are supported for sql-insert import")
+	assertOutputContains(t, stderr.String(), "executor import: only file://, http://, https://, and s3:// source URIs are supported for sql-insert import")
 }
 
 func TestRunImportExecuteRequiresConnectionStringEnv(t *testing.T) {
@@ -1311,6 +1329,62 @@ func TestReadCSVImportHTTPSource(t *testing.T) {
 	}
 	if acceptEncoding != "identity" {
 		t.Fatalf("Accept-Encoding = %q, want identity", acceptEncoding)
+	}
+}
+
+func TestReadCSVImportS3Source(t *testing.T) {
+	var method string
+	var requestPath string
+	var acceptEncoding string
+	var authorization string
+	var contentSHA string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method = r.Method
+		requestPath = r.URL.EscapedPath()
+		acceptEncoding = r.Header.Get("Accept-Encoding")
+		authorization = r.Header.Get("Authorization")
+		contentSHA = r.Header.Get("X-Amz-Content-Sha256")
+		w.Header().Set("Content-Type", "text/csv")
+		_, _ = io.WriteString(w, "id,name\n1,Ada\n2,Lin\n")
+	}))
+	defer server.Close()
+	t.Setenv("AWS_ACCESS_KEY_ID", "AKIDEXAMPLE")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "SECRETEXAMPLE")
+	t.Setenv("AWS_REGION", "us-east-1")
+	t.Setenv("AWS_ENDPOINT_URL", server.URL)
+	t.Setenv("AWS_S3_FORCE_PATH_STYLE", "true")
+
+	source, err := openCSVImportFile("s3://migration-bucket/full/orders.csv")
+	if err != nil {
+		t.Fatalf("openCSVImportFile() error = %v", err)
+	}
+	defer source.Close()
+
+	columns, records, err := readCSVImportRecords(source)
+	if err != nil {
+		t.Fatalf("readCSVImportRecords() error = %v", err)
+	}
+	if method != http.MethodGet {
+		t.Fatalf("method = %q, want GET", method)
+	}
+	if requestPath != "/migration-bucket/full/orders.csv" {
+		t.Fatalf("request path = %q, want path-style bucket/object path", requestPath)
+	}
+	if acceptEncoding != "identity" {
+		t.Fatalf("Accept-Encoding = %q, want identity", acceptEncoding)
+	}
+	if contentSHA != "UNSIGNED-PAYLOAD" {
+		t.Fatalf("X-Amz-Content-Sha256 = %q, want UNSIGNED-PAYLOAD", contentSHA)
+	}
+	assertOutputContains(t, authorization, "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/")
+	if strings.Join(columns, ",") != "id,name" {
+		t.Fatalf("columns = %v, want [id name]", columns)
+	}
+	if len(records) != 2 {
+		t.Fatalf("records len = %d, want 2", len(records))
+	}
+	if records[1][0] != "2" || records[1][1] != "Lin" {
+		t.Fatalf("records[1] = %v, want [2 Lin]", records[1])
 	}
 }
 

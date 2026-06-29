@@ -702,7 +702,7 @@ func prepareExportOutputURI(output exportOutputURI) error {
 		if err != nil {
 			return err
 		}
-		if _, err := buildS3PutObjectURL(config, target); err != nil {
+		if _, err := buildS3ObjectURL(config, target); err != nil {
 			return err
 		}
 		return nil
@@ -1028,19 +1028,27 @@ func newS3ExportWriter(ctx context.Context, outputURI, compression string) (*s3E
 }
 
 func parseS3ObjectTarget(outputURI string) (s3ObjectTarget, error) {
-	parsed, err := url.Parse(strings.TrimSpace(outputURI))
+	return parseS3ObjectURI(outputURI, "output URI")
+}
+
+func parseS3ObjectSource(sourceURI string) (s3ObjectTarget, error) {
+	return parseS3ObjectURI(sourceURI, "source URI")
+}
+
+func parseS3ObjectURI(objectURI, kind string) (s3ObjectTarget, error) {
+	parsed, err := url.Parse(strings.TrimSpace(objectURI))
 	if err != nil {
-		return s3ObjectTarget{}, fmt.Errorf("parse S3 output URI: %w", err)
+		return s3ObjectTarget{}, fmt.Errorf("parse S3 %s: %w", kind, err)
 	}
 	if parsed.Scheme != "s3" {
-		return s3ObjectTarget{}, fmt.Errorf("S3 output URI must use s3://")
+		return s3ObjectTarget{}, fmt.Errorf("S3 %s must use s3://", kind)
 	}
 	if strings.TrimSpace(parsed.Host) == "" {
-		return s3ObjectTarget{}, fmt.Errorf("s3 output URI bucket is required")
+		return s3ObjectTarget{}, fmt.Errorf("s3 %s bucket is required", kind)
 	}
 	key := strings.TrimPrefix(parsed.Path, "/")
 	if strings.TrimSpace(key) == "" {
-		return s3ObjectTarget{}, fmt.Errorf("s3 output URI object path is required")
+		return s3ObjectTarget{}, fmt.Errorf("s3 %s object path is required", kind)
 	}
 	return s3ObjectTarget{Bucket: parsed.Host, Key: key}, nil
 }
@@ -1105,7 +1113,7 @@ func uploadS3ExportTempFile(ctx context.Context, tempPath string, target s3Objec
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		return fmt.Errorf("rewind S3 export payload: %w", err)
 	}
-	requestURL, err := buildS3PutObjectURL(config, target)
+	requestURL, err := buildS3ObjectURL(config, target)
 	if err != nil {
 		return err
 	}
@@ -1118,7 +1126,7 @@ func uploadS3ExportTempFile(ctx context.Context, tempPath string, target s3Objec
 	if compression == compressionGzip {
 		request.Header.Set("Content-Encoding", "gzip")
 	}
-	signS3PutObjectRequest(request, config, payloadHash, time.Now().UTC())
+	signS3Request(request, config, payloadHash, time.Now().UTC())
 
 	response, err := csvHTTPClient.Do(request)
 	if err != nil {
@@ -1133,6 +1141,14 @@ func uploadS3ExportTempFile(ctx context.Context, tempPath string, target s3Objec
 }
 
 func loadS3ExportConfig() (s3ExportConfig, error) {
+	return loadS3Config("s3 export output")
+}
+
+func loadS3ImportConfig() (s3ExportConfig, error) {
+	return loadS3Config("s3 import source")
+}
+
+func loadS3Config(purpose string) (s3ExportConfig, error) {
 	config := s3ExportConfig{
 		AccessKey:      strings.TrimSpace(os.Getenv("AWS_ACCESS_KEY_ID")),
 		SecretKey:      strings.TrimSpace(os.Getenv("AWS_SECRET_ACCESS_KEY")),
@@ -1142,13 +1158,13 @@ func loadS3ExportConfig() (s3ExportConfig, error) {
 		ForcePathStyle: parseBoolEnv("AWS_S3_FORCE_PATH_STYLE"),
 	}
 	if config.AccessKey == "" {
-		return s3ExportConfig{}, fmt.Errorf("AWS_ACCESS_KEY_ID is required for s3 export output")
+		return s3ExportConfig{}, fmt.Errorf("AWS_ACCESS_KEY_ID is required for %s", purpose)
 	}
 	if config.SecretKey == "" {
-		return s3ExportConfig{}, fmt.Errorf("AWS_SECRET_ACCESS_KEY is required for s3 export output")
+		return s3ExportConfig{}, fmt.Errorf("AWS_SECRET_ACCESS_KEY is required for %s", purpose)
 	}
 	if config.Region == "" {
-		return s3ExportConfig{}, fmt.Errorf("AWS_REGION or AWS_DEFAULT_REGION is required for s3 export output")
+		return s3ExportConfig{}, fmt.Errorf("AWS_REGION or AWS_DEFAULT_REGION is required for %s", purpose)
 	}
 	return config, nil
 }
@@ -1171,7 +1187,7 @@ func parseBoolEnv(name string) bool {
 	}
 }
 
-func buildS3PutObjectURL(config s3ExportConfig, target s3ObjectTarget) (*url.URL, error) {
+func buildS3ObjectURL(config s3ExportConfig, target s3ObjectTarget) (*url.URL, error) {
 	if config.Endpoint == "" {
 		if config.ForcePathStyle {
 			return &url.URL{
@@ -1225,7 +1241,7 @@ func sha256HexReader(reader io.Reader) (string, error) {
 	return hex.EncodeToString(digest.Sum(nil)), nil
 }
 
-func signS3PutObjectRequest(request *http.Request, config s3ExportConfig, payloadHash string, now time.Time) {
+func signS3Request(request *http.Request, config s3ExportConfig, payloadHash string, now time.Time) {
 	amzDate := now.Format("20060102T150405Z")
 	dateStamp := now.Format("20060102")
 	request.Header.Set("X-Amz-Date", amzDate)
@@ -2104,8 +2120,19 @@ func parseImportSourceURI(sourceURI string) (importSourceURI, error) {
 			scheme: parsed.Scheme,
 			uri:    parsed.String(),
 		}, nil
+	case "s3":
+		if strings.TrimSpace(parsed.Host) == "" {
+			return importSourceURI{}, fmt.Errorf("s3 source URI bucket is required")
+		}
+		if strings.Trim(strings.TrimSpace(parsed.Path), "/") == "" {
+			return importSourceURI{}, fmt.Errorf("s3 source URI object path is required")
+		}
+		return importSourceURI{
+			scheme: parsed.Scheme,
+			uri:    parsed.String(),
+		}, nil
 	default:
-		return importSourceURI{}, fmt.Errorf("only file://, http://, and https:// source URIs are supported for sql-insert import")
+		return importSourceURI{}, fmt.Errorf("only file://, http://, https://, and s3:// source URIs are supported for sql-insert import")
 	}
 }
 
@@ -2143,9 +2170,46 @@ func openParsedCSVImportSource(ctx context.Context, source importSourceURI) (io.
 			return nil, fmt.Errorf("download CSV source: unexpected HTTP status %s", response.Status)
 		}
 		return response.Body, nil
+	case "s3":
+		reader, err := openS3ImportSource(ctx, source.uri)
+		if err != nil {
+			return nil, err
+		}
+		return reader, nil
 	default:
 		return nil, fmt.Errorf("unsupported source URI scheme %q", source.scheme)
 	}
+}
+
+func openS3ImportSource(ctx context.Context, sourceURI string) (io.ReadCloser, error) {
+	target, err := parseS3ObjectSource(sourceURI)
+	if err != nil {
+		return nil, err
+	}
+	config, err := loadS3ImportConfig()
+	if err != nil {
+		return nil, err
+	}
+	requestURL, err := buildS3ObjectURL(config, target)
+	if err != nil {
+		return nil, err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("create S3 CSV source request: %w", err)
+	}
+	request.Header.Set("Accept-Encoding", "identity")
+	signS3Request(request, config, "UNSIGNED-PAYLOAD", time.Now().UTC())
+
+	response, err := csvHTTPClient.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("download S3 CSV source: %w", err)
+	}
+	if response.StatusCode < 200 || response.StatusCode > 299 {
+		response.Body.Close()
+		return nil, fmt.Errorf("download S3 CSV source: unexpected HTTP status %s", response.Status)
+	}
+	return response.Body, nil
 }
 
 type compressedReadCloser struct {

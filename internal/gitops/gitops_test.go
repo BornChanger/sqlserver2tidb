@@ -5064,9 +5064,9 @@ func TestGenerateDataMovementPlansRejectsMissingBucketForTiDBImportIntoEngine(t 
 	assertContains(t, err.Error(), "s3 object URI prefix bucket is required")
 }
 
-func TestGenerateDataMovementPlansRejectsUnsupportedObjectURIScheme(t *testing.T) {
+func TestGenerateDataMovementPlansSupportsS3PrefixForSQLInsertEngine(t *testing.T) {
 	root := t.TempDir()
-	createValidationWorkerProject(t, root, `{"status":"discovered","databases":[]}`)
+	createValidationWorkerProject(t, root, dataWorkerInventory())
 
 	_, err := GenerateDataMovementPlans(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", DataMovementPlanSpec{
 		ObjectURIPrefix: "s3://migration/prod/full",
@@ -5074,10 +5074,29 @@ func TestGenerateDataMovementPlansRejectsUnsupportedObjectURIScheme(t *testing.T
 		ExportFormat:    "csv",
 		ImportEngine:    "sql-insert",
 	})
+	if err != nil {
+		t.Fatalf("GenerateDataMovementPlans() error = %v", err)
+	}
+	exportPlan := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/export-plan.yaml")
+	importPlan := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/import-plan.yaml")
+	assertContains(t, exportPlan, "output_uri: s3://migration/prod/full/dbo.orders.000001.csv")
+	assertContains(t, importPlan, "source_uri: s3://migration/prod/full/dbo.orders.000001.csv")
+}
+
+func TestGenerateDataMovementPlansRejectsUnsupportedObjectURIScheme(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, `{"status":"discovered","databases":[]}`)
+
+	_, err := GenerateDataMovementPlans(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", DataMovementPlanSpec{
+		ObjectURIPrefix: "ftp://migration/prod/full",
+		ChunkSizeRows:   1000000,
+		ExportFormat:    "csv",
+		ImportEngine:    "sql-insert",
+	})
 	if err == nil {
 		t.Fatal("GenerateDataMovementPlans() expected unsupported object URI scheme error")
 	}
-	assertContains(t, err.Error(), "object URI prefix scheme s3 is not supported by sqlserver2tidb-executor")
+	assertContains(t, err.Error(), "object URI prefix scheme ftp is not supported by sqlserver2tidb-executor")
 }
 
 func TestGenerateDataMovementPlansRejectsRemoteFilePrefixForSQLInsertEngine(t *testing.T) {
