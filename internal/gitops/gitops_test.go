@@ -4160,6 +4160,8 @@ func TestValidateRepoReportsInvalidExecutorDataSHA256(t *testing.T) {
       "started_at": "2026-01-02T03:04:05Z",
       "completed_at": "2026-01-02T03:04:06Z",
       "duration_ms": 1000,
+      "data_rows": 2,
+      "data_bytes": 128,
       "data_sha256": "not-a-sha"
     }
   ]
@@ -4174,6 +4176,43 @@ func TestValidateRepoReportsInvalidExecutorDataSHA256(t *testing.T) {
 		t.Fatalf("ValidateRepo() valid = true, want invalid executor data sha256 error")
 	}
 	assertContains(t, strings.Join(report.Errors, "\n"), `invalid executor evidence `+evidenceRel+`: executor evidence command dbo.orders.000001 data_sha256 "not-a-sha" must use sha256:<64 hex chars>`)
+}
+
+func TestValidateRepoReportsExecutorDataSHA256WithoutDataMetrics(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	evidenceRel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-export-run.json"
+	writeFileForTest(t, root, evidenceRel, `{
+  "stage": "export",
+  "status": "succeeded",
+  "project_id": "sales-db-to-tidb-prod-a",
+  "source_cluster_id": "prod-sqlserver-a",
+  "payload_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "generated_at": "2026-01-02T03:04:07Z",
+  "commands": [
+    {
+      "id": "dbo.orders.000001",
+      "args": ["sqlserver2tidb-executor", "export", "--execute"],
+      "shell_command": "sqlserver2tidb-executor export --execute",
+      "exit_code": 0,
+      "output": "output sha256: sha256:1111111111111111111111111111111111111111111111111111111111111111\n",
+      "started_at": "2026-01-02T03:04:05Z",
+      "completed_at": "2026-01-02T03:04:06Z",
+      "duration_ms": 1000,
+      "data_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    }
+  ]
+}
+`)
+
+	report, err := ValidateRepo(root)
+	if err != nil {
+		t.Fatalf("ValidateRepo() error = %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("ValidateRepo() valid = true, want incomplete executor data audit error")
+	}
+	assertContains(t, strings.Join(report.Errors, "\n"), `invalid executor evidence `+evidenceRel+`: executor evidence command dbo.orders.000001 data_sha256 requires data_rows and data_bytes`)
 }
 
 func TestGenerateExecutorEvidencePRDraftRejectsFailedStatusWithoutFailedCommand(t *testing.T) {

@@ -320,6 +320,9 @@ func validateExecutorEvidenceCommands(status string, commands []executorEvidence
 		if (command.DataRows == nil) != (command.DataBytes == nil) {
 			return fmt.Errorf("executor evidence command %s data_rows and data_bytes must be provided together", commandID)
 		}
+		if strings.TrimSpace(command.DataSHA256) != "" && (command.DataRows == nil || command.DataBytes == nil) {
+			return fmt.Errorf("executor evidence command %s data_sha256 requires data_rows and data_bytes", commandID)
+		}
 		if command.DataRows != nil && *command.DataRows < 0 {
 			return fmt.Errorf("executor evidence command %s data_rows must be non-negative", commandID)
 		}
