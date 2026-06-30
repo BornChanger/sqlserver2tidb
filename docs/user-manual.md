@@ -1610,6 +1610,23 @@ bin/sqlserver2tidb worker-agent \
 
 `worker-agent` 是同一 deterministic reconcile loop 的稳定进程入口，适合本地进程管理器或容器运行时使用。它要求 `--holder`，使用源集群级 lease，建议用 `--source-cluster-id` 限定单个上游 SQL Server 集群目录，遵守同一 approval/hash/plan/status/state-dedupe gate；`--poll` 会在没有 ready metadata-only action 时继续按 `--interval` 轮询，`--idle-iterations 0` 表示不限制空转次数。`--state-pr-draft` 会为每次 metadata-only state/evidence/lease 写回生成对应 PR body，但不会创建 branch、commit、push 或 GitHub PR。
 
+### 11.1 顶层 agent 编排入口
+
+`sqlserver2tidb agent` 是面向交付的统一入口，用来把现有确定性命令串成可控的操作模式。它不引入新的 source of truth；所有状态、计划、审批和证据仍然来自 GitHub metadata 文件。
+
+推荐把 `agent` 理解成以下几类能力：
+
+- `--mode status`：校验 metadata repo，读取 reconcile 结果，并展示当前第一个 ready action。
+- `--mode auto --dry-run`：只读分析下一步安全动作。加 `--json` 后输出机器可读结果。
+- `--mode auto`：执行有明确边界的安全规划动作，例如生成 schema draft、schema PR draft 或 plan PR draft。它默认最多执行 1 步，可通过 `--max-steps <n>` 放宽；遇到已存在 PR draft、需要人工 review 的状态，或 ready worker action 时会停止。
+- `--mode plan-and-pr`：为指定 stage 生成 PR draft，并默认 dry-run 展示 `gh pr create` 命令；加 `--execute-pr` 才会调用 GitHub CLI 创建 PR。
+- `--mode execute-approved`：只执行已经通过 approval/hash gate 的 ready action。默认 dry-run；加 `--execute` 才会写 state/evidence 或调用 executor。`ddl` 和 `cdc-enable` 会强制走 executor；`export`、`import`、`cdc` 和 `validation` 可以加 `--use-executor` 走真实数据面执行路径。
+- `--mode pr-close`：包装 `complete-github-pr`，用于在 PR review/checks 通过后完成 approve、merge 和 approval 文件写回。默认 dry-run；加 `--execute` 才会调用 `gh` 和 `git`。
+- `--mode cdc-ops`：组合 `cdc-health` 和 `cdc-orchestrator`，用于 CDC 长周期健康检查、历史记录、飞书/Slack 告警和 range 编排。
+- `--mode review-assist`：统一包装 LLM 辅助命令。默认 dry-run；加 `--execute-llm` 才会调用 provider，并且只写入 `ai/` 下的建议文件和 audit 文件。
+
+`agent auto` 的边界是刻意保守的：它可以补齐 deterministic planning 和 PR draft，但不会自动执行数据库、对象存储、GitHub merge 或业务 cutover。只要下一步需要真实执行，它会输出建议命令并要求 operator 切换到 `execute-approved`、`pr-close` 或对应的底层命令。
+
 ## 12. LLM 使用说明
 
 ### 12.1 LLM 可以做什么
@@ -2714,6 +2731,120 @@ bin/sqlserver2tidb create-executor-evidence-pr \
 `generate-executor-evidence-pr-draft` 要求 `evidence/executor-<stage>-run.json` 已存在，并要求对应 stage approval 已通过、payload hash 与当前 metadata 匹配，且 DDL 的 `schema/schema-diff.json` 或对应 stage plan 仍处于已 review 状态。它会校验 evidence 内的 `source_cluster_id`、`project_id`、`stage` 和 `payload_hash`；evidence status 只接受 `succeeded` 或 `failed`，顶层 `generated_at` 如果存在必须是 RFC3339，command id 不能重复。它会拒绝没有 executor command 记录的 evidence；每条 command 记录必须包含 `id`、非空 `args`、与 args 匹配的 shell-quoted `shell_command`、`exit_code`、`started_at`、`completed_at` 和 `duration_ms`。命令时间字段必须是 RFC3339Nano，`completed_at` 不能早于 `started_at`，`duration_ms` 必须非负；可选的 command `error` 会在 PR body 中展示。当 evidence status 是 `succeeded` 时，所有 command 的 `exit_code` 都必须是 `0` 且 `error` 必须为空；当 status 是 `failed` 时，至少一条 command 的 `exit_code` 必须非 0，或至少一条 command 带有非空 `error`。校验通过后，它会写入 `prs/executor-<stage>-evidence-pr.md`，并在 PR body 里渲染命令 ID、exit code、command error、时间戳、耗时和压缩后的输出摘要表；即使历史 executor evidence 的 output/error 中已经包含明文敏感值，PR body 渲染时也会重新脱敏。`create-executor-evidence-pr` 默认 dry-run，会拒绝内容已经不匹配当前 evidence 的陈旧 PR body，并只打印 `git switch`、`git add`、`git commit`、`git push` 和 `gh pr create` 命令；只有加 `--execute` 才会修改本地 git checkout、推送分支并调用 GitHub CLI。它不会 merge PR、approve PR、绕过 branch protection，也不会判断 executor 输出是否业务正确。
 
 executor evidence PR 校验会拒绝负数的 `cdc_applied_changes`、`data_rows` 和 `data_bytes`，拒绝不符合 `sha256:<64 hex chars>` 的 `data_sha256`，并要求 `data_sha256` 必须和 `data_rows` / `data_bytes` 一起出现。当 evidence 中存在 `data_rows` / `data_bytes` / `data_sha256` 时，PR body 的命令表会展示 `Data rows`、`Data bytes` 和 `Data SHA256` 列，便于 reviewer 对照 chunk/job 级别的数据量和内容摘要。
+
+### 16.26 agent
+
+查看当前状态：
+
+```bash
+bin/sqlserver2tidb agent \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --mode status
+```
+
+只读预演下一步：
+
+```bash
+bin/sqlserver2tidb agent \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --mode auto \
+  --dry-run
+```
+
+执行最多两个安全规划步骤，例如从 pending schema 生成 schema draft，再生成 schema PR draft：
+
+```bash
+bin/sqlserver2tidb agent \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --mode auto \
+  --max-steps 2
+```
+
+为指定 stage 生成 PR draft，并真实调用 `gh pr create`：
+
+```bash
+bin/sqlserver2tidb agent \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --mode plan-and-pr \
+  --stage schema \
+  --execute-pr
+```
+
+执行已经审批通过的真实数据面 action，并生成 executor evidence PR 草稿：
+
+```bash
+bin/sqlserver2tidb agent \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --mode execute-approved \
+  --stage import \
+  --use-executor \
+  --source-connection-string-env SQLSERVER_DSN \
+  --target-connection-string-env TIDB_DSN \
+  --command-timeout 30m \
+  --command-retries 2 \
+  --resume \
+  --execute \
+  --evidence-pr-draft
+```
+
+完成 PR 闭环：
+
+```bash
+bin/sqlserver2tidb agent \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --mode pr-close \
+  --stage import \
+  --repo BornChanger/sqlserver2tidb \
+  --pr 123 \
+  --execute
+```
+
+运行 CDC 长周期运维入口：
+
+```bash
+bin/sqlserver2tidb agent \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --mode cdc-ops \
+  --probe-lsn \
+  --source-connection-string-env SQLSERVER_DSN \
+  --target-connection-string-env TIDB_DSN \
+  --history-file clusters/prod-sqlserver-a/state/cdc-health-history.jsonl \
+  --feishu-webhook-env SQLSERVER2TIDB_FEISHU_WEBHOOK \
+  --slack-webhook-env SQLSERVER2TIDB_SLACK_WEBHOOK \
+  --apply-approved \
+  --pr-draft \
+  --poll \
+  --interval 30s
+```
+
+调用 LLM 辅助 review：
+
+```bash
+bin/sqlserver2tidb agent \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --mode review-assist \
+  --stage validation \
+  --provider-config global/llm-providers.yaml \
+  --execute-llm
+```
+
+`agent` 本身只做编排，不绕过任何 gate：planning 文件仍要通过 PR review；真实执行仍要满足 approval/hash/status gate；LLM 输出只落在 `ai/` 目录；PR 创建、approve、merge 和 approval 写回只有在显式传入执行类 flag 时才会调用 GitHub CLI。
 
 ## 17. 推荐落地顺序
 
