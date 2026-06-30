@@ -9,6 +9,7 @@ Supported delivery artifacts are:
 - Release archives from GitHub Releases, containing `sqlserver2tidb`, `sqlserver2tidb-executor`, docs, scripts, examples, and integration-test assets.
 - Container images published to `ghcr.io/bornchanger/sqlserver2tidb:<version>` and `ghcr.io/bornchanger/sqlserver2tidb:latest`.
 - A metadata repository initialized by `sqlserver2tidb init-repo`, where every source SQL Server cluster owns one directory under `clusters/<source_cluster_id>/`.
+- Production readiness and operations material under `docs/production-operations.md`.
 - Optional top-level migration agent runtime templates under `examples/agent-runtime/`.
 - Optional worker-agent deployment examples under `examples/worker-agent/`.
 - Optional LLM provider configuration examples under `examples/llm-providers.yaml`.
@@ -197,6 +198,8 @@ scripts/run-integration-tests.sh
 ```
 
 For CDC production validation, configure repository or environment secrets and run `.github/workflows/cdc-soak.yml` manually.
+
+Before production rollout, complete the checklist in `docs/production-operations.md`, including GitHub permission review, agent policy review, alert validation, CDC history configuration, rollback plan, and Go/No-Go sign-off.
 
 ## Upgrade And Rollback
 

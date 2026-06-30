@@ -63,6 +63,7 @@ dist-check:
 	tar -tzf "$$archive" "sqlserver2tidb_$(VERSION)_linux_amd64/README.md" >/dev/null; \
 	tar -tzf "$$archive" "sqlserver2tidb_$(VERSION)_linux_amd64/docs/user-manual.md" >/dev/null; \
 	tar -tzf "$$archive" "sqlserver2tidb_$(VERSION)_linux_amd64/docs/delivery.md" >/dev/null; \
+	tar -tzf "$$archive" "sqlserver2tidb_$(VERSION)_linux_amd64/docs/production-operations.md" >/dev/null; \
 	tar -tzf "$$archive" "sqlserver2tidb_$(VERSION)_linux_amd64/examples/quickstart/inventory.json" >/dev/null; \
 	tar -tzf "$$archive" "sqlserver2tidb_$(VERSION)_linux_amd64/examples/llm-providers.yaml" >/dev/null; \
 	tar -tzf "$$archive" "sqlserver2tidb_$(VERSION)_linux_amd64/examples/agent-runtime/README.md" >/dev/null; \

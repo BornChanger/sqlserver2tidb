@@ -99,7 +99,7 @@ Build local release archives under `dist/`:
 make dist VERSION=v0.1.0
 ```
 
-Each archive includes both binaries, `README.md`, `LICENSE`, core documents under `docs/`, quickstart examples, migration agent runtime templates, worker-agent examples, the LLM provider configuration template, helper scripts, and optional integration-test assets.
+Each archive includes both binaries, `README.md`, `LICENSE`, core documents under `docs/`, production operations material, quickstart examples, migration agent runtime templates, worker-agent examples, the LLM provider configuration template, helper scripts, and optional integration-test assets.
 
 Limit local release builds to selected `GOOS/GOARCH` targets:
 
@@ -877,6 +877,7 @@ This checks approved metadata, writes `state/validation-status.yaml`, and writes
 - [Design Notes](docs/design.md): control-plane, metadata, and LLM responsibility boundaries.
 - [Migration Agent Design](docs/migration-agent-design.md): top-level agent architecture, modes, state machine, LLM boundaries, and implementation phases.
 - [Delivery Guide](docs/delivery.md): release archive, container, metadata repository, migration agent runtime templates, worker-agent, GitHub, and LLM provider delivery instructions.
+- [Production Operations](docs/production-operations.md): production readiness checklist, rollout process, daily operations, alerting, incident runbooks, rollback, and handoff material.
 
 ## Design Principles
 

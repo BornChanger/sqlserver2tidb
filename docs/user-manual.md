@@ -226,7 +226,7 @@ $HOME/.local/bin/sqlserver2tidb-executor
 make dist VERSION=v0.1.0
 ```
 
-每个归档包含两个二进制、`README.md`、`LICENSE`，以及 `docs/` 下的核心文档。
+每个归档包含两个二进制、`README.md`、`LICENSE`，以及 `docs/` 下的核心文档和 `docs/production-operations.md` 生产上线运维手册。
 
 只构建指定平台归档：
 
