@@ -59,11 +59,73 @@ This release provides:
   ```
 
 - JSON Schema files for core metadata, including cluster, project, migration, export, import, CDC, and validation plan metadata.
-- Tests for repository initialization, validation, cluster/project metadata consistency, source profile/state/evidence/approval ownership checks, validation plan content and object-name checks, executor-supported data plan format checks, discovery planning and execution, compatibility analysis, schema draft generation, data movement, CDC, and validation plan generation, PR draft generation, GitHub PR create dry-runs, GitHub PR completion dry-runs/execute orchestration, DDL/export/import/CDC/validation/cutover worker gates, external executor command dry-runs, executor binary dry-runs, DDL apply checks, CSV export/import execution checks, executor evidence metrics, row-count and query-based validation command checks, worker reconcile dry-runs, execute-next state PR drafts, bounded loops, and worker-agent runs, worker state PR create dry-runs, executor evidence PR drafts and dry-runs, upstream SQL Server cluster creation, and migration project creation.
+- Tests for repository initialization, validation, cluster/project metadata consistency, source profile/state/evidence/approval ownership checks, validation plan checks, executor-supported data plan checks, discovery, compatibility analysis, schema draft generation, data movement, CDC, validation plan generation, PR draft generation, GitHub PR dry-runs, worker gates, executor command dry-runs, executor binary dry-runs, DDL apply checks, CSV export/import checks, executor evidence metrics, validation command checks, worker reconcile flows, worker-agent runs, upstream SQL Server cluster creation, and migration project creation.
 
-This release connects to SQL Server for read-only catalog discovery and, when `sqlserver2tidb-executor export --execute` is explicitly used, for a CSV export path to local `file://`, HTTP(S), native `s3://`, native `gs://`, or native `azblob://` output. Executor dry-runs validate object names through the same SQL builders used by execute mode. Executor export dry-runs validate output URI compatibility and reject `TODO` predicates without opening SQL Server or writing CSV output. It connects to TiDB when `sqlserver2tidb-executor apply-ddl --execute` is explicitly used with a reviewed DDL file, or when `sqlserver2tidb-executor import --execute` is explicitly used with a TiDB/MySQL connection string environment variable; apply-DDL dry-runs read the DDL file and reject unresolved `TODO` markers or empty SQL without opening TiDB. Import supports the default `sql-insert` engine for local `file://`, HTTP(S), S3, GCS, or Azure Blob CSV streaming with batched inserts, the explicit `tidb-import-into` engine for TiDB `IMPORT INTO ... FROM FILE` over an absolute local path, local `file://`, `s3://`, or `gs://` file location, and the explicit `tidb-lightning` engine that generates Lightning-friendly CSV plans and invokes an external `tidb-lightning -config <toml>` process over local `file://`, `s3://`, `gs://`, or `azblob://` data-source directories. Executor import dry-runs validate source URI compatibility for the selected engine without opening TiDB or the CSV source. HTTP(S) import URIs must include a host, S3/GCS URIs must include both a bucket and object path, and Azure Blob URIs use `azblob://<container>/<blob>`. Default CSV export writes a header plus an internal `__sqlserver2tidb_null_bitmap` column so `sql-insert` and `tidb-import-into` can restore SQL NULL values; `tidb-lightning` data plans instead write `null_encoding: backslash-n`, omit the internal bitmap column, encode SQL NULL as `\N`, and generate Lightning TOML with `null = '\N'`. `--compression gzip` writes/reads gzip-compressed CSV for the `sql-insert` and `tidb-lightning` paths and sets `Content-Encoding: gzip` for HTTP(S), S3, GCS, and Azure Blob export uploads. S3 export/import uses AWS Signature V4 with `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` or `AWS_DEFAULT_REGION`, optional `AWS_SESSION_TOKEN`, and optional `AWS_ENDPOINT_URL` / `AWS_S3_FORCE_PATH_STYLE`. GCS export/import uses HMAC credentials from `GCS_ACCESS_KEY_ID` / `GCS_SECRET_ACCESS_KEY` (or `GOOG_ACCESS_KEY_ID` / `GOOG_SECRET_ACCESS_KEY`) and optional `GCS_ENDPOINT_URL`. Azure Blob export/import uses Shared Key auth from `AZURE_STORAGE_ACCOUNT`, base64 `AZURE_STORAGE_KEY`, and optional `AZURE_BLOB_ENDPOINT_URL`. HTTP(S)/S3/GCS/Azure Blob CSV downloads and uploads retry transient request errors and 408/429/5xx responses up to three attempts; remote uploads are sent from local temporary files so retries replay the complete payload. `sql-insert` can optionally preflight the target table with `COUNT(*)` when `--require-empty-target` is set, but that check is disabled by default so multi-chunk import jobs can load the same target table. Import-plan `fields` are only valid with `tidb-import-into`; `sql-insert` and `tidb-lightning` plans rely on CSV headers and are rejected if reviewed jobs carry `fields`. `tidb-import-into` reads local/file/S3/GCS CSV headers or uses reviewed import-plan `fields`, maps that internal tail column to a TiDB user variable so it is skipped, and always preflights the target table with `COUNT(*)` before executing `IMPORT INTO`; reviewed fields must be non-empty, duplicate-free, and user variables must use simple `@name` syntax. Azure Blob is currently supported for the `sql-insert` and `tidb-lightning` CSV paths, not for TiDB `IMPORT INTO`. Gzip compression is not enabled for `tidb-import-into` in this agent yet. It can also connect to both SQL Server and TiDB for explicit `sqlserver2tidb-executor validate-count --execute` row-count comparison and `sqlserver2tidb-executor validate-query --execute` reviewed scalar-query comparison for `checksum`, `sampled_hash`, `bucketed_count`, and `business_sql` validation checks; validation dry-runs reject unresolved `TODO` predicates or scalar SQL before any database connection is opened. The included `sqlserver2tidb-executor cdc-lsn --execute` path can query SQL Server CDC max LSN and, when a source object is provided, the capture instance min LSN. The included `sqlserver2tidb-executor cdc-enable --execute` path can idempotently enable SQL Server database CDC and per-table CDC for a reviewed tracked table. The included `sqlserver2tidb-executor cdc --execute` path can apply one explicit SQL Server CDC LSN range to TiDB after validating source/target connection strings, captured columns, and key columns; CDC dry-runs validate captured columns, key-column membership, and LSN format/range without starting a CDC reader or TiDB apply worker. `worker-cutover` is a GitHub-file gate that records completed cutover state only after reviewed runbook, successful export/import/validation executor evidence, passed validation worker state, and for non-offline projects a caught-up CDC checkpoint. It does **not** switch application traffic or perform DNS/proxy changes. It does not bypass GitHub branch protection, perform cleanup, or provide native row-digest/bucketed sampled-hash strategies. PR approval metadata can be synchronized from already merged, approved, green GitHub PRs with `sync-github-pr-approval`, or closed end-to-end with `complete-github-pr --execute` when the local `gh` and `git` identities have the required repository permissions.
+This release opens database connections only for explicit execution paths.
 
-Successful CSV export execution prints `exported rows: N`, `output bytes: N`, and `output sha256: sha256:<digest>`. Local `file://` CSV export writes a same-directory temporary file and atomically publishes it to the target path only after the CSV writer closes successfully. HTTP(S), S3, GCS, and Azure Blob export spool to local temporary files and only start the upload after the CSV writer closes successfully; abort removes the temporary file without starting a remote upload. Successful `sql-insert` import execution prints `imported rows: N`, `input bytes: N`, and `input sha256: sha256:<digest>`; HTTP(S), S3, GCS, and Azure Blob imports explicitly request `Accept-Encoding: identity` so byte and digest metrics describe the stored object bytes. Local-path, `file://`, S3, and GCS `tidb-import-into` imports pre-audit the CSV and print the same row/byte/SHA tuple after successful `IMPORT INTO`. `tidb-lightning` imports pre-audit all import-plan CSV sources, reject files that still contain the internal null bitmap column, print aggregate row/byte/SHA metrics, write a temporary or requested Lightning TOML config, and then invoke the external Lightning binary. `worker-executor --execute` records those values as command-level `data_rows`, `data_bytes`, and `data_sha256` in `evidence/executor-<stage>-run.json`, and fails export / auditable import commands whose successful output omits the complete data audit tuple. Executor evidence PRs render these metrics for review. Operator-visible command logs, executor evidence output, redacted command args/shell commands, executor evidence PR summaries, validation worker summaries, and CDC LSN probe failure messages redact common password/token/secret keys, URL userinfo passwords, and signed URL query parameters as `<redacted>` while preserving audit SHA256 digests. Redaction is a defense-in-depth guard for evidence and logs; secrets should still be passed through environment variables or secret managers and never committed to repository files. `validate-repo` and executor evidence PR generation require complete data audit for successful export, `sql-insert` import, local/file/S3/GCS `tidb-import-into` evidence, and `tidb-lightning` evidence.
+SQL Server connections are used for:
+
+- read-only catalog discovery with `discover-sqlserver --connection-string-env`;
+- approved CSV export with `sqlserver2tidb-executor export --execute`;
+- CDC LSN probing with `sqlserver2tidb-executor cdc-lsn --execute`;
+- idempotent CDC enablement with `sqlserver2tidb-executor cdc-enable --execute`;
+- approved CDC range apply with `sqlserver2tidb-executor cdc --execute`.
+
+TiDB or MySQL-compatible connections are used for:
+
+- reviewed DDL apply with `sqlserver2tidb-executor apply-ddl --execute`;
+- CSV import with `sqlserver2tidb-executor import --execute`;
+- row-count validation with `sqlserver2tidb-executor validate-count --execute`;
+- reviewed scalar-query validation with `sqlserver2tidb-executor validate-query --execute`.
+
+Executor dry-runs validate object names, URI compatibility, `TODO` predicates, import engine/source URI compatibility, LSN ranges, captured columns, and key-column membership without opening database connections or writing data.
+
+Export supports local `file://`, HTTP(S), native `s3://`, native `gs://`, and native `azblob://` CSV output. Import supports three engines:
+
+- `sql-insert` streams local `file://`, HTTP(S), S3, GCS, or Azure Blob CSV into TiDB with batched inserts.
+- `tidb-import-into` executes TiDB `IMPORT INTO ... FROM FILE` for absolute local paths, local `file://`, `s3://`, and `gs://` file locations.
+- `tidb-lightning` generates Lightning-friendly CSV plans and invokes an external `tidb-lightning -config <toml>` process for local `file://`, `s3://`, `gs://`, or `azblob://` data-source directories.
+
+HTTP(S) import URIs must include a host. S3 and GCS URIs must include both bucket and object path. Azure Blob URIs use `azblob://<container>/<blob>`.
+
+Default CSV export writes a header plus an internal `__sqlserver2tidb_null_bitmap` column so `sql-insert` and `tidb-import-into` can restore SQL NULL values. `tidb-lightning` data plans instead write `null_encoding: backslash-n`, omit the internal bitmap column, encode SQL NULL as `\N`, and generate Lightning TOML with `null = '\N'`.
+
+`--compression gzip` writes and reads gzip-compressed CSV for the `sql-insert` and `tidb-lightning` paths. It also sets `Content-Encoding: gzip` for HTTP(S), S3, GCS, and Azure Blob export uploads. Gzip compression is not enabled for `tidb-import-into` in this agent yet.
+
+Cloud object storage authentication is handled by environment variables:
+
+- S3 export/import uses AWS Signature V4 with `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` or `AWS_DEFAULT_REGION`, optional `AWS_SESSION_TOKEN`, and optional `AWS_ENDPOINT_URL` / `AWS_S3_FORCE_PATH_STYLE`.
+- GCS export/import uses HMAC credentials from `GCS_ACCESS_KEY_ID` / `GCS_SECRET_ACCESS_KEY` or `GOOG_ACCESS_KEY_ID` / `GOOG_SECRET_ACCESS_KEY`, plus optional `GCS_ENDPOINT_URL`.
+- Azure Blob export/import uses Shared Key auth from `AZURE_STORAGE_ACCOUNT`, base64 `AZURE_STORAGE_KEY`, and optional `AZURE_BLOB_ENDPOINT_URL`.
+
+HTTP(S), S3, GCS, and Azure Blob CSV downloads and uploads retry transient request errors and 408/429/5xx responses up to three attempts. Remote uploads are sent from local temporary files, so retries replay the complete payload.
+
+`sql-insert` can optionally preflight the target table with `COUNT(*)` when `--require-empty-target` is set. That check is disabled by default so multi-chunk import jobs can load the same target table. Import-plan `fields` are only valid with `tidb-import-into`; `sql-insert` and `tidb-lightning` rely on CSV headers and reject reviewed jobs that carry `fields`.
+
+`tidb-import-into` reads local/file/S3/GCS CSV headers or uses reviewed import-plan `fields`. It maps the internal tail column to a TiDB user variable so the column is skipped, and it always preflights the target table with `COUNT(*)` before executing `IMPORT INTO`. Reviewed fields must be non-empty, duplicate-free, and use simple `@name` syntax for user variables. Azure Blob is currently supported for the `sql-insert` and `tidb-lightning` CSV paths, not for TiDB `IMPORT INTO`.
+
+Validation can explicitly connect to both SQL Server and TiDB for row-count comparison and reviewed scalar-query comparison. Scalar-query validation supports `checksum`, `sampled_hash`, `bucketed_count`, and `business_sql` checks. Validation dry-runs reject unresolved `TODO` predicates or scalar SQL before any database connection is opened.
+
+The included CDC executor commands can query SQL Server CDC LSN bounds, idempotently enable SQL Server database/table CDC for reviewed tracked tables, and apply one explicit SQL Server CDC LSN range to TiDB. CDC dry-runs validate captured columns, key-column membership, and LSN format/range without starting a CDC reader or TiDB apply worker.
+
+`worker-cutover` is a GitHub-file gate. It records completed cutover state only after reviewed runbook, successful export/import/validation executor evidence, passed validation worker state, and for non-offline projects a caught-up CDC checkpoint. It does **not** switch application traffic, update DNS/proxy settings, bypass GitHub branch protection, perform cleanup, or provide native row-digest/bucketed sampled-hash strategies.
+
+PR approval metadata can be synchronized from already merged, approved, green GitHub PRs with `sync-github-pr-approval`. It can also be closed end-to-end with `complete-github-pr --execute` when the local `gh` and `git` identities have the required repository permissions.
+
+Successful export and import commands emit audit metrics:
+
+- CSV export prints `exported rows: N`, `output bytes: N`, and `output sha256: sha256:<digest>`.
+- `sql-insert` import prints `imported rows: N`, `input bytes: N`, and `input sha256: sha256:<digest>`.
+- Local-path, `file://`, S3, and GCS `tidb-import-into` imports pre-audit the CSV and print the same row/byte/SHA tuple after successful `IMPORT INTO`.
+- `tidb-lightning` imports pre-audit all import-plan CSV sources, reject files that still contain the internal null bitmap column, print aggregate row/byte/SHA metrics, write a temporary or requested Lightning TOML config, and then invoke the external Lightning binary.
+
+Local `file://` CSV export writes a same-directory temporary file and atomically publishes it only after the CSV writer closes successfully. HTTP(S), S3, GCS, and Azure Blob export also spool to local temporary files, then upload only after the writer closes. Abort removes the temporary file without starting a remote upload.
+
+HTTP(S), S3, GCS, and Azure Blob imports explicitly request `Accept-Encoding: identity` so byte and digest metrics describe the stored object bytes. `worker-executor --execute` records the audit tuple as command-level `data_rows`, `data_bytes`, and `data_sha256` in `evidence/executor-<stage>-run.json`. It fails export and auditable import commands whose successful output omits the complete data audit tuple.
+
+Executor evidence PRs render these metrics for review. Operator-visible command logs, executor evidence output, redacted command args/shell commands, executor evidence PR summaries, validation worker summaries, and CDC LSN probe failure messages redact common password/token/secret keys, URL userinfo passwords, and signed URL query parameters as `<redacted>` while preserving audit SHA256 digests.
+
+Redaction is a defense-in-depth guard for evidence and logs. Secrets should still be passed through environment variables or secret managers and never committed to repository files. `validate-repo` and executor evidence PR generation require complete data audit for successful export, `sql-insert` import, local/file/S3/GCS `tidb-import-into` evidence, and `tidb-lightning` evidence.
 
 ## Build
 
@@ -289,7 +351,19 @@ go run ./cmd/sqlserver2tidb generate-data-plans \
   --compression gzip
 ```
 
-This writes `plan/export-plan.yaml` and `plan/import-plan.yaml` under the project. The command estimates chunks from inventory `row_count`; single-chunk tables get a reviewed-safe `1 = 1` predicate, while multi-chunk tables still get `TODO` split predicates that must be reviewed before export execution. It generates executor-supported CSV plans with `sql-insert` imports over local `file://`, `http://`, `https://`, `s3://`, `gs://`, or `azblob://` URI prefixes by default; HTTP(S) prefixes must include a host, S3/GCS prefixes must include a bucket, and Azure Blob prefixes use the container as the URI host. `--compression gzip` records `compression: gzip` in both plans and generates `.csv.gz` object names; the worker executor then passes `--compression gzip` to export and import commands. If `--import-engine tidb-import-into` is used, the executable URI prefix must be a local absolute `file://` path, `s3://`, or `gs://`; S3/GCS prefixes must include a bucket, and compression must stay `none`. If `--import-engine tidb-lightning` is used, the executable URI prefix must be local `file://`, `s3://`, `gs://`, or `azblob://`; generated export files are named from TiDB target objects, the export plan records `null_encoding: backslash-n`, and the import plan records a top-level `data_source_uri` so one Lightning command can load the whole data directory. Only `tidb-import-into` import jobs get a `fields` list derived from inventory columns plus `@sqlserver2tidb_null_bitmap` so object-storage imports can skip the internal CSV tail column; `sql-insert` and `tidb-lightning` jobs do not carry `fields`. It does not connect to SQL Server or TiDB and does not move data.
+This writes `plan/export-plan.yaml` and `plan/import-plan.yaml` under the project. The command estimates chunks from inventory `row_count`; single-chunk tables get a reviewed-safe `1 = 1` predicate, while multi-chunk tables still get `TODO` split predicates that must be reviewed before export execution.
+
+By default it generates executor-supported CSV plans with `sql-insert` imports over local `file://`, `http://`, `https://`, `s3://`, `gs://`, or `azblob://` URI prefixes. HTTP(S) prefixes must include a host, S3/GCS prefixes must include a bucket, and Azure Blob prefixes use the container as the URI host.
+
+`--compression gzip` records `compression: gzip` in both plans and generates `.csv.gz` object names. The worker executor then passes `--compression gzip` to export and import commands.
+
+If `--import-engine tidb-import-into` is used, the executable URI prefix must be a local absolute `file://` path, `s3://`, or `gs://`. S3/GCS prefixes must include a bucket, and compression must stay `none`.
+
+If `--import-engine tidb-lightning` is used, the executable URI prefix must be local `file://`, `s3://`, `gs://`, or `azblob://`. Generated export files are named from TiDB target objects, the export plan records `null_encoding: backslash-n`, and the import plan records a top-level `data_source_uri` so one Lightning command can load the whole data directory.
+
+Only `tidb-import-into` import jobs get a `fields` list derived from inventory columns plus `@sqlserver2tidb_null_bitmap`. That lets object-storage imports skip the internal CSV tail column. `sql-insert` and `tidb-lightning` jobs do not carry `fields`.
+
+This command does not connect to SQL Server or TiDB and does not move data.
 
 Detect reviewed source schema drift and prepare a repair PR:
 
@@ -320,7 +394,15 @@ go run ./cmd/sqlserver2tidb generate-cdc-plan \
   --supports-net-changes
 ```
 
-This writes `plan/cdc-plan.yaml` under the project. The command records tracked source/target table pairs, SQL Server CDC `capture_instance`, optional `role_name`, `supports_net_changes`, captured CDC columns, target apply key columns, and checkpoint policy. Captured columns come from discovered non-computed SQL Server table columns. It chooses key columns from the discovered SQL Server primary key first, then from a non-filtered unique index; tables without such an index produce an empty `key_columns` list that must be reviewed before execution. The draft-generation command itself does not mutate SQL Server, start Debezium, start Kafka, or apply changes to TiDB. After the CDC plan is reviewed and `approvals/cdc-approval.yaml` matches the current CDC payload hash, run `worker-executor --stage cdc-enable --execute` to enable SQL Server database/table CDC idempotently before running `worker-executor --stage cdc --execute` for LSN apply work. `cdc-enable` now treats the reviewed plan as the setup source of truth: it passes `capture_instance`, `role_name`, `supports_net_changes`, and `retention_hours_required` to the executor. Execute mode preflights SQL Server Agent status and CDC admin permissions, enables DB/table CDC only when needed, then verifies capture and cleanup jobs are present/enabled and that cleanup retention is at least the reviewed `retention_hours_required`.
+This writes `plan/cdc-plan.yaml` under the project. The command records tracked source/target table pairs, SQL Server CDC `capture_instance`, optional `role_name`, `supports_net_changes`, captured CDC columns, target apply key columns, and checkpoint policy.
+
+Captured columns come from discovered non-computed SQL Server table columns. Key columns are chosen from the discovered SQL Server primary key first, then from a non-filtered unique index. Tables without either index produce an empty `key_columns` list that must be reviewed before execution.
+
+The draft-generation command itself does not mutate SQL Server, start Debezium, start Kafka, or apply changes to TiDB.
+
+After the CDC plan is reviewed and `approvals/cdc-approval.yaml` matches the current CDC payload hash, run `worker-executor --stage cdc-enable --execute` first. That idempotently enables SQL Server database/table CDC before `worker-executor --stage cdc --execute` applies LSN ranges.
+
+`cdc-enable` treats the reviewed plan as the setup source of truth. It passes `capture_instance`, `role_name`, `supports_net_changes`, and `retention_hours_required` to the executor. Execute mode preflights SQL Server Agent status and CDC admin permissions, enables DB/table CDC only when needed, then verifies capture and cleanup jobs are present/enabled and cleanup retention is at least the reviewed `retention_hours_required`.
 
 Prepare an explicit CDC LSN range for review:
 
@@ -359,7 +441,17 @@ go run ./cmd/sqlserver2tidb cdc-orchestrator \
   --pr-draft
 ```
 
-The orchestrator invokes `sqlserver2tidb-executor cdc-lsn --execute`, parses `max_lsn`, probes each tracked table's SQL Server CDC `min_lsn`, and then calls the same deterministic `prepare-cdc-iteration` path. If a table's next `from_lsn` is older than its `min_lsn`, the orchestrator fails before mutating `plan/cdc-plan.yaml` because the CDC retention window no longer covers the requested range. Use `--skip-retention-check` only when another scheduler has already enforced the same min-LSN guard. When `--apply-approved` is set, each iteration first checks whether the current CDC plan and approval already pass the approval/hash gate; if apply is still needed, it probes per-table `min_lsn` before running `worker-executor --stage cdc --execute`, so an approved range that expired while waiting for execution fails before any CDC apply command starts. Successful apply records `evidence/executor-cdc-run.json`, advances `clusters/<source_cluster_id>/state/cdc-checkpoint.yaml` from that evidence, and skips reapplying a range that the checkpoint already covers. `--min-applied-changes <n>` makes the orchestrator exit non-zero unless the run applied at least `n` CDC changes, which is useful for production soak validation and scheduled CDC health checks. When the project is caught up it can keep polling; when a new range is prepared it writes `plan/cdc-plan.yaml` and optional `prs/cdc-range-pr.md`, then stops at the PR boundary. It does not approve or merge PRs.
+The orchestrator invokes `sqlserver2tidb-executor cdc-lsn --execute`, parses `max_lsn`, probes each tracked table's SQL Server CDC `min_lsn`, and then calls the same deterministic `prepare-cdc-iteration` path.
+
+If a table's next `from_lsn` is older than its `min_lsn`, the orchestrator fails before mutating `plan/cdc-plan.yaml`. That means the CDC retention window no longer covers the requested range. Use `--skip-retention-check` only when another scheduler has already enforced the same min-LSN guard.
+
+When `--apply-approved` is set, each iteration first checks whether the current CDC plan and approval already pass the approval/hash gate. If apply is still needed, it probes per-table `min_lsn` before running `worker-executor --stage cdc --execute`, so an approved range that expired while waiting for execution fails before any CDC apply command starts.
+
+Successful apply records `evidence/executor-cdc-run.json`, advances `clusters/<source_cluster_id>/state/cdc-checkpoint.yaml` from that evidence, and skips reapplying a range that the checkpoint already covers.
+
+`--min-applied-changes <n>` makes the orchestrator exit non-zero unless the run applied at least `n` CDC changes. This is useful for production soak validation and scheduled CDC health checks.
+
+When the project is caught up it can keep polling. When a new range is prepared, it writes `plan/cdc-plan.yaml` and optional `prs/cdc-range-pr.md`, then stops at the PR boundary. It does not approve or merge PRs.
 
 Run CDC operational health checks from the committed GitOps state:
 
@@ -377,7 +469,17 @@ go run ./cmd/sqlserver2tidb cdc-health \
   --slack-alert-min-severity critical
 ```
 
-`cdc-health` reads `plan/cdc-plan.yaml` and source-cluster `state/cdc-checkpoint.yaml`, optionally probes SQL Server through `sqlserver2tidb-executor cdc-lsn --execute`, and reports `ok`, `warning`, or `critical`. It raises critical alerts for failed, stale, missing, ahead-of-source, or retention-expired checkpoints, and warning alerts for tables whose checkpoint is behind the probed or supplied `max_lsn`. Operators can pass `--max-lsn` and repeated `--min-lsn source.object=0x...` values instead of `--probe-lsn`, use `--fail-on-warning` for strict scheduled runs, write the latest JSON report with `--metrics-file`, and append durable JSONL history with `--history-file`. Feishu alerts use a custom bot webhook URL from `SQLSERVER2TIDB_FEISHU_WEBHOOK` by default, optional signing secret from `SQLSERVER2TIDB_FEISHU_SECRET`, and `--feishu-alert-min-severity critical|warning|ok|none` to control when messages are sent. Slack alerts use an incoming webhook URL from `SQLSERVER2TIDB_SLACK_WEBHOOK` by default and `--slack-alert-min-severity critical|warning|ok|none` to control when messages are sent. The built-in `.github/workflows/cdc-ops-health.yml` uploads `artifacts/cdc-health.json`, appends and commits `state/cdc-health-history.jsonl` by default, and can use `SQLSERVER2TIDB_GITHUB_APP_TOKEN` when branch protection blocks `GITHUB_TOKEN` pushes.
+`cdc-health` reads `plan/cdc-plan.yaml` and source-cluster `state/cdc-checkpoint.yaml`, optionally probes SQL Server through `sqlserver2tidb-executor cdc-lsn --execute`, and reports `ok`, `warning`, or `critical`.
+
+It raises critical alerts for failed, stale, missing, ahead-of-source, or retention-expired checkpoints. It raises warning alerts for tables whose checkpoint is behind the probed or supplied `max_lsn`.
+
+Operators can pass `--max-lsn` and repeated `--min-lsn source.object=0x...` values instead of `--probe-lsn`. They can also use `--fail-on-warning` for strict scheduled runs, write the latest JSON report with `--metrics-file`, and append durable JSONL history with `--history-file`.
+
+Feishu alerts use a custom bot webhook URL from `SQLSERVER2TIDB_FEISHU_WEBHOOK` by default, optional signing secret from `SQLSERVER2TIDB_FEISHU_SECRET`, and `--feishu-alert-min-severity critical|warning|ok|none` to control when messages are sent.
+
+Slack alerts use an incoming webhook URL from `SQLSERVER2TIDB_SLACK_WEBHOOK` by default and `--slack-alert-min-severity critical|warning|ok|none` to control when messages are sent.
+
+The built-in `.github/workflows/cdc-ops-health.yml` uploads `artifacts/cdc-health.json`, appends and commits `state/cdc-health-history.jsonl` by default, and can use `SQLSERVER2TIDB_GITHUB_APP_TOKEN` when branch protection blocks `GITHUB_TOKEN` pushes.
 
 Inspect the top-level migration agent status without writing files or calling GitHub/database endpoints:
 
@@ -677,7 +779,60 @@ go run ./cmd/sqlserver2tidb worker-executor \
   --source-connection-string-env SQLSERVER_READONLY_DSN
 ```
 
-This command reuses the same approval/hash gate and is dry-run by default. It prints `sqlserver2tidb-executor` commands for reviewed DDL files, export chunks, import jobs, SQL Server CDC enablement, CDC table apply work, validation row-count checks, or validation scalar-query checks. Executor preparation fails when DDL schema diff is not `reviewed`, when an export/import/CDC/validation plan is still `draft`, when an approved export/import/CDC plan has no work items, when a reviewed export/import/validation/CDC source table is no longer present in current SQL Server inventory, when reviewed schema-diff baselines or `tidb-import-into` fields no longer match current inventory columns, when an approved CDC apply table has no `columns`, `key_columns`, `from_lsn`, or `to_lsn`, when CDC key columns are not present in `columns`, when reviewed CDC columns or key columns no longer match the current inventory, when an approved export plan still has `TODO` predicates, when export format is not `csv`, when export/import plan compression is not `none` or `gzip`, when gzip compression is combined with `tidb-import-into`, when an export plan `null_encoding` is not `bitmap` or `backslash-n`, when an export chunk `output_uri` is not supported by the included executor, when import engine is not `sql-insert`, `tidb-import-into`, or `tidb-lightning`, when an import job `source_uri` is not supported by the selected import engine, when import job `fields` are present for any engine other than `tidb-import-into`, when `tidb-import-into` fields are empty, duplicated, or contain unsafe user variables, when `tidb-lightning` import jobs do not resolve to one data source directory, or when the approved validation plan contains no supported `row_count`, `checksum`, `sampled_hash`, `bucketed_count`, or `business_sql` checks. The source schema drift checks read `clusters/<source_cluster_id>/inventory/inventory.json` and optional reviewed `schema/schema-diff.json`; they do not use a TiDB metadata table. `worker-executor --stage cdc-enable` reuses `approvals/cdc-approval.yaml`, reads `plan/cdc-plan.yaml`, and generates one idempotent `cdc-enable` executor command per tracked table; it does not require LSN range fields. Row-count validation checks can carry separate source `predicate` and target `target_predicate` filters. `checksum`, `sampled_hash`, `bucketed_count`, and `business_sql` validation checks carry reviewed `source_sql` and `target_sql` scalar queries. Use `--source-connection-string-env`, `--target-connection-string-env`, and `--import-batch-size` to pass execution settings into generated executor commands; use `--require-empty-target` only when `sql-insert` import commands should fail before opening the CSV source if the target table is already non-empty. Reviewed plan `compression: gzip` is passed as executor `--compression gzip` for export, `sql-insert`, and `tidb-lightning` commands. Reviewed `tidb-import-into` import job `fields` are passed as executor `--fields`; reviewed `tidb-lightning` import plans are rendered as one `--engine tidb-lightning` command with `--import-plan` and `--source-uri <data_source_uri>`; and reviewed CDC apply table `columns` / `key_columns` / `from_lsn` / `to_lsn` are passed as executor `--columns` / `--key-columns` / `--from-lsn` / `--to-lsn`. When `worker-executor --execute` is used, it invokes the external executor, passes the executor-level `--execute` flag, and writes `evidence/executor-<stage>-run.json` with command output, exit codes, per-command start/end timestamps, per-command duration, optional retry `attempt_count` / `attempts`, and for CDC apply commands the parsed `cdc_applied_changes` value from the required `applied changes: N` output line. Use `--command-timeout <duration>` to cap each external executor command; the default `0` disables the timeout. Use `--command-retries <n>` and `--retry-backoff <duration>` for bounded retries of failed executor commands; the command-level evidence records the final attempt, while `attempts` preserves every retry attempt for review. Use `--resume` after a partial run to skip commands that already have matching successful evidence for the same stage, payload hash, command ID, and exact executor args; non-matching, failed, or CDC apply commands without `cdc_applied_changes` are executed again. Timed-out commands are killed, recorded as failed evidence with a command `error`, and cause non-validation stages to fail fast after retries are exhausted while validation continues aggregating command results. If a CDC apply executor command omits the applied-changes line or prints a non-numeric value, execute mode records failed evidence before returning non-zero. For `validation`, execute mode runs all generated validation commands before writing failed evidence, so one mismatch does not hide later check results; non-validation stages remain fail-fast. The included executor binary can apply reviewed TiDB DDL, run SQL Server to local `file://`, HTTP(S), S3, GCS, or Azure Blob CSV/gzip CSV export, stream local `file://`, HTTP(S), S3, GCS, or Azure Blob CSV/gzip CSV sources to TiDB import with `sql-insert`, optionally preflight non-empty `sql-insert` targets with `--require-empty-target`, execute TiDB `IMPORT INTO` for `tidb-import-into` local/file/S3/GCS file locations, invoke an external TiDB Lightning binary for `tidb-lightning` local/file/S3/GCS/Azure Blob data-source directories, preserve SQL NULLs through an internal CSV null bitmap column for `sql-insert` imports or local/file/S3/GCS derived or reviewed `tidb-import-into` fields, use `\N` null encoding for Lightning CSV, run approval-gated SQL Server/TiDB row-count comparison, run approval-gated scalar-query validation, query SQL Server CDC LSN bounds with `cdc-lsn`, enable SQL Server database/table CDC with `cdc-enable`, and apply a reviewed SQL Server CDC LSN range to TiDB. GitHub PR approval sync is implemented for already merged, approved, green stage PRs, and `complete-github-pr --execute` can approve, merge, sync the approval file, commit it, and push it back to the base branch. Native generated row-digest/sample-hash strategies are still not implemented.
+This command reuses the same approval/hash gate and is dry-run by default. It prints `sqlserver2tidb-executor` commands for:
+
+- reviewed DDL files;
+- export chunks and import jobs;
+- SQL Server CDC enablement;
+- CDC table apply work;
+- validation row-count checks;
+- validation scalar-query checks.
+
+Executor preparation fails before command generation when approval state or review state is not ready. Examples include an unreviewed DDL schema diff, a draft export/import/CDC/validation plan, or an approved export/import/CDC plan with no work items.
+
+It also fails when the current GitHub inventory no longer matches the reviewed instruction. The source table must still exist, reviewed schema-diff baselines must still match inventory columns, reviewed `tidb-import-into` fields must still match, and reviewed CDC columns/key columns must still match the current inventory and key metadata.
+
+Plan-shape validation rejects unsupported or unsafe work. Examples include unresolved export `TODO` predicates, non-CSV export plans, unsupported compression values, gzip with `tidb-import-into`, unsupported export `null_encoding`, unsupported source/output URIs, unsupported import engines, unsafe `tidb-import-into` fields, Lightning plans that do not resolve to one data-source directory, and validation plans with no supported checks.
+
+CDC apply tables must provide `columns`, `key_columns`, `from_lsn`, and `to_lsn`; each key column must also be present in `columns`. `worker-executor --stage cdc-enable` is different: it reuses `approvals/cdc-approval.yaml`, reads `plan/cdc-plan.yaml`, and generates one idempotent `cdc-enable` command per tracked table without requiring LSN range fields.
+
+The source schema drift checks read `clusters/<source_cluster_id>/inventory/inventory.json` and optional reviewed `schema/schema-diff.json`. They do not use a TiDB metadata table.
+
+Validation plans can express separate source `predicate` and target `target_predicate` filters for row-count checks. `checksum`, `sampled_hash`, `bucketed_count`, and `business_sql` checks carry reviewed `source_sql` and `target_sql` scalar queries.
+
+Execution settings are passed into generated commands with `--source-connection-string-env`, `--target-connection-string-env`, and `--import-batch-size`. Use `--require-empty-target` only when `sql-insert` import commands should fail before opening the CSV source if the target table is already non-empty.
+
+Reviewed plan fields are passed through to the executor:
+
+- `compression: gzip` becomes `--compression gzip` for export, `sql-insert`, and `tidb-lightning`;
+- `tidb-import-into` import job `fields` become `--fields`;
+- `tidb-lightning` import plans become one `--engine tidb-lightning` command with `--import-plan` and `--source-uri <data_source_uri>`;
+- CDC apply table `columns`, `key_columns`, `from_lsn`, and `to_lsn` become the matching executor flags.
+
+When `worker-executor --execute` is used, it invokes the external executor and injects the executor-level `--execute` flag. It writes `evidence/executor-<stage>-run.json` with command output, exit codes, per-command timestamps, duration, optional retry fields, and for CDC apply commands the parsed `cdc_applied_changes` value from the required `applied changes: N` output line.
+
+Use `--command-timeout <duration>` to cap each external executor command. The default `0` disables the timeout. Use `--command-retries <n>` and `--retry-backoff <duration>` for bounded retries. Command-level evidence records the final attempt, while `attempts` preserves every retry attempt for review.
+
+Use `--resume` after a partial run to skip commands that already have matching successful evidence for the same stage, payload hash, command ID, and exact executor args. Non-matching commands, failed commands, and CDC apply commands without `cdc_applied_changes` are executed again.
+
+Timed-out commands are killed, recorded as failed evidence with a command `error`, and cause non-validation stages to fail fast after retries are exhausted. Validation continues aggregating command results. If a CDC apply command omits the applied-changes line or prints a non-numeric value, execute mode records failed evidence before returning non-zero.
+
+For `validation`, execute mode runs all generated validation commands before writing failed evidence, so one mismatch does not hide later check results. Non-validation stages remain fail-fast.
+
+The included executor binary can:
+
+- apply reviewed TiDB DDL;
+- export SQL Server data to local `file://`, HTTP(S), S3, GCS, or Azure Blob CSV/gzip CSV;
+- stream local `file://`, HTTP(S), S3, GCS, or Azure Blob CSV/gzip CSV sources to TiDB with `sql-insert`;
+- optionally preflight non-empty `sql-insert` targets with `--require-empty-target`;
+- execute TiDB `IMPORT INTO` for `tidb-import-into` local/file/S3/GCS file locations;
+- invoke an external TiDB Lightning binary for local/file/S3/GCS/Azure Blob data-source directories;
+- preserve SQL NULLs through an internal CSV null bitmap column for `sql-insert` and supported `tidb-import-into` imports;
+- use `\N` null encoding for Lightning CSV;
+- run approval-gated SQL Server/TiDB row-count comparison and scalar-query validation;
+- query SQL Server CDC LSN bounds, enable SQL Server database/table CDC, and apply a reviewed SQL Server CDC LSN range to TiDB.
+
+GitHub PR approval sync is implemented for already merged, approved, green stage PRs. `complete-github-pr --execute` can approve, merge, sync the approval file, commit it, and push it back to the base branch. Native generated row-digest/sample-hash strategies are still not implemented.
 
 Advance the source-cluster CDC checkpoint from successful CDC executor evidence:
 
@@ -700,7 +855,17 @@ go run ./cmd/sqlserver2tidb worker-reconcile \
   --dry-run
 ```
 
-This scans cluster/project metadata and reports which `worker-executor --stage ddl`, `worker-export`, `worker-import`, `worker-executor --stage cdc-enable`, `worker-cdc`, `worker-validate`, and `worker-cutover` actions are ready or blocked by approval/hash checks. Use `--source-cluster-id` to scope the scan to one upstream SQL Server cluster directory. DDL actions are blocked until `schema/schema-diff.json` is `reviewed`; export, import, CDC enablement, CDC apply, and validation actions are blocked while their plan files are still `draft`; cutover is blocked until the runbook is reviewed, cutover approval matches, export/import/validation executor evidence succeeded, validation worker state passed, and for non-offline projects a caught-up CDC checkpoint. A metadata-only stage is also blocked when the same approved payload hash already has non-empty state such as `planned`, `passed`, `completed`, or `failed`, preventing reconcile loops from repeatedly running the same action. It does not execute workers, acquire leases, or write state.
+This scans cluster/project metadata and reports which worker actions are ready or blocked by approval/hash checks. It covers `worker-executor --stage ddl`, `worker-export`, `worker-import`, `worker-executor --stage cdc-enable`, `worker-cdc`, `worker-validate`, and `worker-cutover`.
+
+Use `--source-cluster-id` to scope the scan to one upstream SQL Server cluster directory.
+
+DDL actions are blocked until `schema/schema-diff.json` is `reviewed`. Export, import, CDC enablement, CDC apply, and validation actions are blocked while their plan files are still `draft`.
+
+Cutover is blocked until the runbook is reviewed, cutover approval matches, export/import/validation executor evidence succeeded, validation worker state passed, and for non-offline projects a caught-up CDC checkpoint.
+
+A metadata-only stage is also blocked when the same approved payload hash already has non-empty state such as `planned`, `passed`, `completed`, or `failed`. This prevents reconcile loops from repeatedly running the same action.
+
+This command does not execute workers, acquire leases, or write state.
 
 Add `--json` to emit the same dry-run report as machine-readable JSON with `projects`, `ready_actions`, `blocked_actions`, and `actions` fields.
 
@@ -715,7 +880,11 @@ go run ./cmd/sqlserver2tidb worker-reconcile \
   --state-pr-draft
 ```
 
-This acquires or renews `state/worker-lease.yaml` for the selected source cluster, runs exactly one ready metadata-only worker action (`export`, `import`, `cdc`, `validation`, or `cutover`), and writes the same state/evidence files that the explicit single-project worker would write. Active lease records include non-empty `holder`, `lease_id`, `project_id`, `expires_at`, and `renewed_at`; `project_id` must reference an existing project directory under the same source cluster; timestamps are RFC3339 and `expires_at` must not be before `renewed_at`; `phase: idle` remains the empty placeholder state. DDL is intentionally executor-only and must be run through `worker-executor --stage ddl`. With `--state-pr-draft`, it also writes a deterministic Markdown PR body under the project `prs/` directory for reviewing the state/evidence/lease changes. It does not create a branch or call GitHub. A different holder is blocked until the lease expires.
+This acquires or renews `state/worker-lease.yaml` for the selected source cluster. It runs exactly one ready metadata-only worker action (`export`, `import`, `cdc`, `validation`, or `cutover`) and writes the same state/evidence files that the explicit single-project worker would write.
+
+Active lease records include non-empty `holder`, `lease_id`, `project_id`, `expires_at`, and `renewed_at`. `project_id` must reference an existing project directory under the same source cluster. Timestamps are RFC3339, and `expires_at` must not be before `renewed_at`. `phase: idle` remains the empty placeholder state.
+
+DDL is intentionally executor-only and must be run through `worker-executor --stage ddl`. With `--state-pr-draft`, the command also writes a deterministic Markdown PR body under the project `prs/` directory for reviewing the state/evidence/lease changes. It does not create a branch or call GitHub. A different holder is blocked until the lease expires.
 
 Run a bounded reconcile loop:
 
@@ -793,7 +962,21 @@ go run ./cmd/sqlserver2tidb create-executor-evidence-pr \
   --stage ddl
 ```
 
-`generate-executor-evidence-pr-draft` validates the existing `evidence/executor-<stage>-run.json` against the current approved payload hash, rejects evidence when the corresponding DDL schema diff or stage plan is not reviewed, and rejects evidence that has no executor command records. Evidence status must be `succeeded` or `failed`, top-level `generated_at` must be RFC3339 when present, and command IDs must be unique. Each command record must include `id`, non-empty `args`, shell-quoted `shell_command` matching those args, `exit_code`, `started_at`, `completed_at`, and `duration_ms`; command timestamps must parse as RFC3339Nano, `completed_at` must not be earlier than `started_at`, and duration must be non-negative. Optional command `attempt_count` must be at least 1, and when `attempts` is present its length and per-attempt timing fields must match `attempt_count`. Optional command `error` values are rendered into the PR body when present. Optional `cdc_applied_changes` values must also be non-negative, and CDC evidence PR bodies include a CDC applied-changes column when the field is present. CDC evidence PR drafts also list the source-cluster `state/cdc-checkpoint.yaml` so evidence and checkpoint advancement can be reviewed together. `succeeded` evidence requires every final command exit code to be `0` and every final command error to be empty; `failed` evidence requires at least one non-zero final command exit code or command error. The command then writes a Markdown PR body under `prs/`, including a command summary table with exit codes, attempt counts when present, timing, command errors when present, and a whitespace-normalized output summary capped for review. `create-executor-evidence-pr` is a dry-run by default, rejects stale PR bodies whose content no longer matches the current evidence, and prints deterministic `git switch`, `git add`, `git commit`, `git push`, and `gh pr create` commands. Add `--execute` only when the local checkout should create the branch, commit the evidence/body, push it, and open a GitHub PR. Use `--git-binary <path>` and `--gh-binary <path>` for custom automation clients.
+`generate-executor-evidence-pr-draft` validates the existing `evidence/executor-<stage>-run.json` against the current approved payload hash. It rejects evidence when the matching DDL schema diff or stage plan is not reviewed, and it also rejects evidence with no executor command records.
+
+Evidence status must be `succeeded` or `failed`. Top-level `generated_at` must be RFC3339 when present, and command IDs must be unique.
+
+Each command record must include `id`, non-empty `args`, shell-quoted `shell_command` matching those args, `exit_code`, `started_at`, `completed_at`, and `duration_ms`. Command timestamps must parse as RFC3339Nano, `completed_at` must not be earlier than `started_at`, and duration must be non-negative.
+
+Optional command `attempt_count` must be at least 1. When `attempts` is present, its length and per-attempt timing fields must match `attempt_count`. Optional command `error` values are rendered into the PR body when present.
+
+Optional `cdc_applied_changes` values must be non-negative. CDC evidence PR bodies include a CDC applied-changes column when the field is present, and CDC evidence PR drafts also list `state/cdc-checkpoint.yaml` so evidence and checkpoint advancement can be reviewed together.
+
+`succeeded` evidence requires every final command exit code to be `0` and every final command error to be empty. `failed` evidence requires at least one non-zero final command exit code or command error.
+
+The command writes a Markdown PR body under `prs/`. The body includes a command summary table with exit codes, attempt counts when present, timing, command errors when present, and a whitespace-normalized output summary capped for review.
+
+`create-executor-evidence-pr` is a dry-run by default. It rejects stale PR bodies whose content no longer matches the current evidence, then prints deterministic `git switch`, `git add`, `git commit`, `git push`, and `gh pr create` commands. Add `--execute` only when the local checkout should create the branch, commit the evidence/body, push it, and open a GitHub PR. Use `--git-binary <path>` and `--gh-binary <path>` for custom automation clients.
 
 Generate a project-scoped PR draft for schema review:
 
@@ -834,7 +1017,13 @@ go run ./cmd/sqlserver2tidb complete-github-pr \
 
 This command calls `gh pr view`, refuses pending or failed checks, approves the PR if needed, merges it with `gh pr merge`, pulls the base branch, recomputes the stage payload hash, writes the corresponding approval file, commits it, and pushes it back to the base branch. Omit `--execute` to print the planned `gh` and `git` commands without changing GitHub or the local checkout.
 
-The bundled `github-pr-auto-complete` workflow can run the same closure loop from GitHub Actions. It starts from an approved review, a successful check suite, or manual `workflow_dispatch`, serializes each PR with a `sqlserver2tidb-pr-<number>` concurrency group, checks out the base branch, runs `complete-github-pr --execute`, and records workflow audit metadata in the approval file. Configure `SQLSERVER2TIDB_GITHUB_APP_TOKEN` when branch protection or automated PR approval requires a GitHub App or fine-grained token; otherwise the workflow falls back to `GITHUB_TOKEN` and can still close PRs that are already human-approved and mergeable by the default token. If the approval file already reflects the same merged PR and payload hash, the command preserves the existing approval audit block and exits without `git add`, `git commit`, or `git push`.
+The bundled `github-pr-auto-complete` workflow can run the same closure loop from GitHub Actions. It starts from an approved review, a successful check suite, or manual `workflow_dispatch`.
+
+The workflow serializes each PR with a `sqlserver2tidb-pr-<number>` concurrency group, checks out the base branch, runs `complete-github-pr --execute`, and records workflow audit metadata in the approval file.
+
+Configure `SQLSERVER2TIDB_GITHUB_APP_TOKEN` when branch protection or automated PR approval requires a GitHub App or fine-grained token. Otherwise the workflow falls back to `GITHUB_TOKEN` and can still close PRs that are already human-approved and mergeable by the default token.
+
+If the approval file already reflects the same merged PR and payload hash, the command preserves the existing approval audit block and exits without `git add`, `git commit`, or `git push`.
 
 When an external workflow or human operator has already merged the PR, synchronize its approval status back into the project approval file:
 
