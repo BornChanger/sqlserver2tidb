@@ -288,6 +288,12 @@ make test
 make ci
 ```
 
+运行 GitHub Actions 中的容器构建和 PR 自动化 smoke：
+
+```bash
+make container-smoke
+```
+
 运行离线 quickstart 样例：
 
 ```bash

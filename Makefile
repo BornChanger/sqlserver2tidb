@@ -6,7 +6,7 @@ BINDIR ?= $(PREFIX)/bin
 BUILDINFO_PACKAGE := github.com/BornChanger/sqlserver2tidb/internal/buildinfo
 LDFLAGS := -X $(BUILDINFO_PACKAGE).Version=$(VERSION) -X $(BUILDINFO_PACKAGE).Commit=$(COMMIT) -X $(BUILDINFO_PACKAGE).BuildDate=$(BUILD_DATE)
 
-.PHONY: test integration-test cdc-soak-test vet check build install dist dist-check dockerfile-check workflow-check example-check validate-repo ci fmt fmt-check script-check smoke-check
+.PHONY: test integration-test cdc-soak-test vet check build install dist dist-check dockerfile-check workflow-check example-check validate-repo container-smoke ci fmt fmt-check script-check smoke-check
 
 test:
 	go test -count=1 ./...
@@ -41,6 +41,9 @@ smoke-check: build
 	bin/sqlserver2tidb version
 	bin/sqlserver2tidb-executor version
 
+container-smoke:
+	bash scripts/run-container-smoke.sh
+
 install: build
 	mkdir -p "$(BINDIR)"
 	install -m 0755 bin/sqlserver2tidb "$(BINDIR)/sqlserver2tidb"
@@ -68,6 +71,7 @@ dist-check:
 	tar -tzf "$$archive" "sqlserver2tidb_$(VERSION)_linux_amd64/scripts/run-quickstart-example.sh" >/dev/null; \
 	tar -tzf "$$archive" "sqlserver2tidb_$(VERSION)_linux_amd64/scripts/run-integration-tests.sh" >/dev/null; \
 	tar -tzf "$$archive" "sqlserver2tidb_$(VERSION)_linux_amd64/scripts/run-cdc-soak-tests.sh" >/dev/null; \
+	tar -tzf "$$archive" "sqlserver2tidb_$(VERSION)_linux_amd64/scripts/run-container-smoke.sh" >/dev/null; \
 	tar -tzf "$$archive" "sqlserver2tidb_$(VERSION)_linux_amd64/tests/integration/docker-compose.yaml" >/dev/null; \
 	tar -tzf "$$archive" "sqlserver2tidb_$(VERSION)_linux_amd64/tests/integration/README.md" >/dev/null; \
 	test -s "$$dist_dir/checksums.txt"; \
@@ -80,6 +84,10 @@ dockerfile-check:
 	grep -q '^USER sqlserver2tidb' Dockerfile
 
 workflow-check:
+	test -s .github/workflows/ci.yml
+	grep -q 'pull-requests: read' .github/workflows/ci.yml
+	grep -q 'container-smoke:' .github/workflows/ci.yml
+	grep -q 'make container-smoke' .github/workflows/ci.yml
 	test -s .github/workflows/container.yml
 	grep -q 'packages: write' .github/workflows/container.yml
 	grep -q 'GITHUB_REPOSITORY,,' .github/workflows/container.yml

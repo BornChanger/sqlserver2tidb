@@ -141,6 +141,12 @@ Run the same gate used by GitHub Actions:
 make ci
 ```
 
+Run the container build and PR automation smoke used by GitHub Actions:
+
+```bash
+make container-smoke
+```
+
 Run the offline quickstart example:
 
 ```bash
