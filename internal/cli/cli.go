@@ -1336,6 +1336,10 @@ func buildAgentAutoDryRunReport(root, sourceClusterID, projectID string) (agentA
 				report.StopReason = "dry-run"
 				return report, nil
 			}
+			if agentProjectFileExists(root, sourceClusterID, projectID, "prs/schema-pr.md") {
+				report.StopReason = "review required"
+				return report, nil
+			}
 			report.NextAction = agentAutoAction{
 				Name:            "generate schema PR",
 				SourceClusterID: sourceClusterID,
