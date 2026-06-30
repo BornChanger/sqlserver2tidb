@@ -551,7 +551,7 @@ Common flags:
 - `--poll`
 - `--interval <duration>`
 
-The first code slice should implement `--mode status` and `--mode auto` dry-run. Side-effecting modes should be added incrementally after tests.
+The first code slice implements `--mode status` and `--mode auto --dry-run`. Current implementation also allows one safe non-dry-run `auto` planning step: schema draft generation, schema PR draft generation, and optional schema PR creation with `--execute-pr`. Database/object-storage execution remains behind `execute-approved`.
 
 ## 15. Delivery Model
 
@@ -630,7 +630,7 @@ Deliver:
 
 No file writes except optional test fixtures.
 
-### Phase 2: Dry-Run Autopilot
+### Phase 2: Bounded Autopilot
 
 Deliver:
 
@@ -639,8 +639,10 @@ Deliver:
 - command list rendering
 - stop conditions
 - tests for schema PR boundary and approved executor boundary
+- non-dry-run schema draft / schema PR draft generation
+- optional schema PR creation with `--execute-pr`
 
-No GitHub or database side effects.
+No database or object-storage side effects. GitHub PR creation is allowed only when `--execute-pr` is explicitly set.
 
 ### Phase 3: Planning and PR Mode
 

@@ -5391,6 +5391,32 @@ func TestRunAgentAutoDryRunStopsAtSchemaReviewBoundary(t *testing.T) {
 	assertNotExists(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/prs/schema-pr.md")
 }
 
+func TestRunAgentAutoGeneratesSchemaPRDraft(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createProjectWithSchemaManualReview(t, root, &stdout, &stderr)
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"agent",
+		"--mode", "auto",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("agent auto code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	assertCLIOutputContains(t, output, "migration agent auto")
+	assertCLIOutputContains(t, output, "PR draft generated for schema")
+	assertCLIOutputContains(t, output, "dry run: not calling GitHub")
+	prDraft := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/prs/schema-pr.md")
+	assertCLIOutputContains(t, prDraft, "[schema] sales-db-to-tidb-prod-a")
+}
+
 func TestRunAgentAutoDryRunPlansReadyWorkerActionWithoutMutatingState(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer
@@ -5424,6 +5450,36 @@ func TestRunAgentAutoDryRunPlansReadyWorkerActionWithoutMutatingState(t *testing
 	exportStateAfter := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/export-chunks.yaml")
 	if exportStateAfter != exportStateBefore {
 		t.Fatal("agent auto dry-run mutated export state")
+	}
+}
+
+func TestRunAgentAutoStopsAtWorkerActionWithoutMutatingState(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createCLIReadyExportProjectForCluster(t, root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a")
+	schemaRel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/schema/schema-diff.json"
+	writeCLIFile(t, root, schemaRel, strings.Replace(readCLIRelFile(t, root, schemaRel), `"status": "pending"`, `"status": "reviewed"`, 1))
+	exportStateBefore := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/export-chunks.yaml")
+
+	code := Run([]string{
+		"agent",
+		"--mode", "auto",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("agent auto code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	assertCLIOutputContains(t, output, "migration agent auto")
+	assertCLIOutputContains(t, output, "next action: prod-sqlserver-a/sales-db-to-tidb-prod-a export")
+	assertCLIOutputContains(t, output, "command: sqlserver2tidb worker-export")
+	assertCLIOutputContains(t, output, "stop reason: execution requires --mode execute-approved")
+	exportStateAfter := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/export-chunks.yaml")
+	if exportStateAfter != exportStateBefore {
+		t.Fatal("agent auto mutated export state")
 	}
 }
 

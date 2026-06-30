@@ -400,7 +400,19 @@ go run ./cmd/sqlserver2tidb agent \
   --project-id sales-db-to-tidb-prod-a
 ```
 
-In this implementation slice, `auto --dry-run` can identify a schema review boundary and suggest the `generate-pr-draft --stage schema` command, or report the next ready worker action from the same readiness logic used by `worker-reconcile`. It deliberately does not create PR drafts, call GitHub, execute workers, or touch databases.
+`auto --dry-run` can identify a schema review boundary and suggest the `generate-pr-draft --stage schema` command, or report the next ready worker action from the same readiness logic used by `worker-reconcile`. It deliberately does not create PR drafts, call GitHub, execute workers, or touch databases.
+
+Run one safe automatic planning step:
+
+```bash
+go run ./cmd/sqlserver2tidb agent \
+  --mode auto \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a
+```
+
+Without `--dry-run`, `auto` executes only deterministic non-database planning work. It can generate a schema draft when schema status is `pending`, or generate the schema PR draft at the schema review boundary. Add `--execute-pr` only when the agent should also call `gh pr create` for that generated schema PR. If the next action is an approved worker stage, `auto` stops and prints the `execute-approved` boundary instead of mutating state or running database/object-storage work.
 
 Generate a stage PR draft through the agent and preview the GitHub command:
 
