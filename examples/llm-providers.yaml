@@ -1,0 +1,59 @@
+# Example LLM provider configuration.
+# Copy to global/llm-providers.yaml in the migration metadata repository.
+# Store real secrets only in environment variables or an external secret manager.
+
+default_provider: openai-api-key
+
+providers:
+  - id: openai-api-key
+    type: openai_compatible
+    base_url: https://api.openai.com/v1
+    model: gpt-4.1
+    auth:
+      mode: api_key
+      env: OPENAI_API_KEY
+
+  - id: enterprise-oauth-client
+    type: openai_compatible
+    base_url: https://llm-gateway.example.com/v1
+    model: migration-advisor
+    auth:
+      mode: oauth_client_credentials
+      token_url: https://idp.example.com/oauth2/token
+      client_id_env: SQLSERVER2TIDB_LLM_CLIENT_ID
+      client_secret_env: SQLSERVER2TIDB_LLM_CLIENT_SECRET
+      scopes:
+        - llm.invoke
+        - migration.read
+
+  - id: enterprise-oauth-refresh
+    type: openai_compatible
+    base_url: https://llm-gateway.example.com/v1
+    model: migration-advisor
+    auth:
+      mode: oauth_refresh_token
+      token_url: https://idp.example.com/oauth2/token
+      client_id_env: SQLSERVER2TIDB_LLM_CLIENT_ID
+      client_secret_env: SQLSERVER2TIDB_LLM_CLIENT_SECRET
+      refresh_token_env: SQLSERVER2TIDB_LLM_REFRESH_TOKEN
+
+  - id: enterprise-token-env
+    type: openai_compatible
+    base_url: https://llm-gateway.example.com/v1
+    model: migration-advisor
+    auth:
+      mode: oauth_token_env
+      token_env: SQLSERVER2TIDB_LLM_ACCESS_TOKEN
+
+  - id: vault-external-command
+    type: openai_compatible
+    base_url: https://llm-gateway.example.com/v1
+    model: migration-advisor
+    auth:
+      mode: external_command
+      allow_external_command: true
+      command:
+        - vault
+        - read
+        - -field=token
+        - secret/sqlserver2tidb/llm-token

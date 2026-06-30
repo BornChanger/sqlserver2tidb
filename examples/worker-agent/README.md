@@ -4,6 +4,8 @@ This directory contains deployment-oriented examples for running the metadata-on
 
 The agent reads and writes a mounted migration metadata repository. It does not execute DDL, call the external executor, create GitHub PRs, or connect to SQL Server/TiDB/object storage. Use `create-worker-state-pr` outside the agent process to turn generated state PR drafts into GitHub PRs.
 
+For end-to-end packaging, installation, GitHub token, LLM provider, and release archive guidance, see `docs/delivery.md` in the release archive or source repository.
+
 ## Docker Compose
 
 Copy `.env.example` to `.env`, adjust `SQLSERVER2TIDB_REPO` and `SQLSERVER2TIDB_HOLDER`, then run:

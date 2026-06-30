@@ -59,7 +59,9 @@ dist-check:
 	test -s "$$archive"; \
 	tar -tzf "$$archive" "sqlserver2tidb_$(VERSION)_linux_amd64/README.md" >/dev/null; \
 	tar -tzf "$$archive" "sqlserver2tidb_$(VERSION)_linux_amd64/docs/user-manual.md" >/dev/null; \
+	tar -tzf "$$archive" "sqlserver2tidb_$(VERSION)_linux_amd64/docs/delivery.md" >/dev/null; \
 	tar -tzf "$$archive" "sqlserver2tidb_$(VERSION)_linux_amd64/examples/quickstart/inventory.json" >/dev/null; \
+	tar -tzf "$$archive" "sqlserver2tidb_$(VERSION)_linux_amd64/examples/llm-providers.yaml" >/dev/null; \
 	tar -tzf "$$archive" "sqlserver2tidb_$(VERSION)_linux_amd64/examples/worker-agent/.env.example" >/dev/null; \
 	tar -tzf "$$archive" "sqlserver2tidb_$(VERSION)_linux_amd64/examples/worker-agent/docker-compose.yaml" >/dev/null; \
 	tar -tzf "$$archive" "sqlserver2tidb_$(VERSION)_linux_amd64/examples/worker-agent/systemd/sqlserver2tidb-worker-agent.service" >/dev/null; \
