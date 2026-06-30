@@ -5578,6 +5578,44 @@ func TestRunAgentAutoGeneratesPlanPRDraftAtPlanningBoundary(t *testing.T) {
 	assertCLIOutputContains(t, prDraft, "[plan] sales-db-to-tidb-prod-a")
 }
 
+func TestRunAgentAutoDryRunStopsWhenPlanPRDraftExists(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createCLIProjectWithOneExportChunk(t, root, &stdout, &stderr)
+	schemaRel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/schema/schema-diff.json"
+	writeCLIFile(t, root, schemaRel, strings.Replace(readCLIRelFile(t, root, schemaRel), `"status": "pending"`, `"status": "reviewed"`, 1))
+	if code := Run([]string{
+		"generate-pr-draft",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "plan",
+	}, &stdout, &stderr); code != 0 {
+		t.Fatalf("generate plan PR draft code = %d, stderr = %s", code, stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"agent",
+		"--mode", "auto",
+		"--dry-run",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("agent auto dry-run code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	assertCLIOutputContains(t, output, "next action: none")
+	assertCLIOutputContains(t, output, "stop reason: review required")
+	if strings.Contains(output, "command: sqlserver2tidb generate-pr-draft") {
+		t.Fatalf("agent auto dry-run stdout = %q, should not suggest regenerating existing plan PR draft", output)
+	}
+}
+
 func TestRunAgentPlanAndPRGeneratesDraftAndDryRunCreateCommand(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer

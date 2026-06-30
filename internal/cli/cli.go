@@ -1363,16 +1363,20 @@ func buildAgentAutoDryRunReport(root, sourceClusterID, projectID string) (agentA
 		}
 		report.StopReason = "dry-run"
 	}
-	if report.NextAction.Name == "" && sourceClusterID != "" && projectID != "" && agentProjectFileExists(root, sourceClusterID, projectID, "plan/migration-plan.yaml") && !agentProjectFileExists(root, sourceClusterID, projectID, "prs/plan-pr.md") {
-		report.NextAction = agentAutoAction{
-			Name:            "generate plan PR",
-			SourceClusterID: sourceClusterID,
-			ProjectID:       projectID,
-			Stage:           "plan",
-			Status:          "ready",
-			Command:         fmt.Sprintf("sqlserver2tidb generate-pr-draft --root %s --source-cluster-id %s --project-id %s --stage plan", root, sourceClusterID, projectID),
+	if report.NextAction.Name == "" && sourceClusterID != "" && projectID != "" && agentProjectFileExists(root, sourceClusterID, projectID, "plan/migration-plan.yaml") {
+		if agentProjectFileExists(root, sourceClusterID, projectID, "prs/plan-pr.md") {
+			report.StopReason = "review required"
+		} else {
+			report.NextAction = agentAutoAction{
+				Name:            "generate plan PR",
+				SourceClusterID: sourceClusterID,
+				ProjectID:       projectID,
+				Stage:           "plan",
+				Status:          "ready",
+				Command:         fmt.Sprintf("sqlserver2tidb generate-pr-draft --root %s --source-cluster-id %s --project-id %s --stage plan", root, sourceClusterID, projectID),
+			}
+			report.StopReason = "review required"
 		}
-		report.StopReason = "review required"
 	}
 	return report, nil
 }
