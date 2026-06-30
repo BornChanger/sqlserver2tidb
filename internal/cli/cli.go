@@ -50,6 +50,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runLLMCompatibilityAdvice(args[1:], stdout, stderr)
 	case "llm-schema-advice":
 		return runLLMSchemaAdvice(args[1:], stdout, stderr)
+	case "llm-migration-strategy":
+		return runLLMMigrationStrategy(args[1:], stdout, stderr)
 	case "generate-schema-draft":
 		return runGenerateSchemaDraft(args[1:], stdout, stderr)
 	case "generate-data-plans":
@@ -514,6 +516,97 @@ func runLLMSchemaAdvice(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+func runLLMMigrationStrategy(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("llm-migration-strategy", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	root := fs.String("root", ".", "repository root")
+	sourceClusterID := fs.String("source-cluster-id", "", "upstream SQL Server cluster id")
+	projectID := fs.String("project-id", "", "migration project id")
+	providerConfigPath := fs.String("provider-config", "", "optional LLM provider config file; defaults to inline flags")
+	providerID := fs.String("provider-id", "", "LLM provider id from provider config; defaults to config default_provider")
+	providerType := fs.String("provider-type", llm.ProviderTypeOpenAICompatible, "LLM provider type")
+	baseURL := fs.String("base-url", "", "OpenAI-compatible base URL, for example https://api.openai.com/v1")
+	model := fs.String("model", "", "LLM model name")
+	authMode := fs.String("auth-mode", llm.AuthModeAPIKey, "auth mode: api_key, oauth_client_credentials, oauth_refresh_token, oauth_token_env, external_command")
+	apiKeyEnv := fs.String("api-key-env", "OPENAI_API_KEY", "API key environment variable for api_key auth")
+	tokenEnv := fs.String("token-env", "", "access token environment variable for oauth_token_env auth")
+	tokenURL := fs.String("token-url", "", "OAuth token URL for oauth_client_credentials or oauth_refresh_token auth")
+	clientIDEnv := fs.String("client-id-env", "", "OAuth client id environment variable")
+	clientSecretEnv := fs.String("client-secret-env", "", "OAuth client secret environment variable")
+	refreshTokenEnv := fs.String("refresh-token-env", "", "OAuth refresh token environment variable")
+	scopes := fs.String("scopes", "", "comma-separated OAuth scopes")
+	externalCommand := fs.String("external-command", "", "external token command; disabled unless --allow-external-command is set")
+	allowExternalCommand := fs.Bool("allow-external-command", false, "allow external_command auth to run a local command")
+	execute := fs.Bool("execute", false, "call the LLM provider and write advice files; default is dry-run")
+	timeout := fs.Duration("timeout", 2*time.Minute, "LLM provider request timeout")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	provider := llm.ProviderConfig{
+		ID:      strings.TrimSpace(*providerID),
+		Type:    strings.TrimSpace(*providerType),
+		BaseURL: strings.TrimSpace(*baseURL),
+		Model:   strings.TrimSpace(*model),
+		Auth: llm.AuthConfig{
+			Mode:                 strings.TrimSpace(*authMode),
+			Env:                  strings.TrimSpace(*apiKeyEnv),
+			TokenEnv:             strings.TrimSpace(*tokenEnv),
+			TokenURL:             strings.TrimSpace(*tokenURL),
+			ClientIDEnv:          strings.TrimSpace(*clientIDEnv),
+			ClientSecretEnv:      strings.TrimSpace(*clientSecretEnv),
+			RefreshTokenEnv:      strings.TrimSpace(*refreshTokenEnv),
+			Scopes:               splitCommaList(*scopes),
+			Command:              splitCommand(*externalCommand),
+			AllowExternalCommand: *allowExternalCommand,
+		},
+	}
+	var err error
+	provider, err = resolveLLMProviderConfig(*root, *providerConfigPath, *providerID, provider)
+	if err != nil {
+		fmt.Fprintf(stderr, "llm migration strategy: %v\n", err)
+		return 1
+	}
+	advice, err := buildLLMMigrationStrategyRequest(*root, *sourceClusterID, *projectID)
+	if err != nil {
+		fmt.Fprintf(stderr, "llm migration strategy: %v\n", err)
+		return 1
+	}
+	if !*execute {
+		fmt.Fprintf(stdout, "LLM migration strategy dry run for %s\n", advice.ProjectID)
+		fmt.Fprintf(stdout, "provider id: %s\n", provider.ID)
+		fmt.Fprintf(stdout, "provider type: %s\n", provider.Type)
+		fmt.Fprintf(stdout, "auth mode: %s\n", provider.Auth.Mode)
+		fmt.Fprintf(stdout, "model: %s\n", provider.Model)
+		fmt.Fprintf(stdout, "input files: %d\n", len(advice.Inputs))
+		fmt.Fprintf(stdout, "would write %s\n", advice.OutputFile)
+		fmt.Fprintf(stdout, "would write %s\n", advice.AuditFile)
+		return 0
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+	defer cancel()
+	client, err := newLLMClientFromProvider(provider)
+	if err != nil {
+		fmt.Fprintf(stderr, "llm migration strategy: %v\n", err)
+		return 1
+	}
+	response, err := client.Generate(ctx, advice.Request)
+	if err != nil {
+		fmt.Fprintf(stderr, "llm migration strategy: %v\n", err)
+		return 1
+	}
+	if err := writeLLMMigrationStrategyAdvice(*root, provider, advice, response); err != nil {
+		fmt.Fprintf(stderr, "llm migration strategy: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "LLM migration strategy advice generated for %s\n", advice.ProjectID)
+	fmt.Fprintf(stdout, "provider id: %s\n", provider.ID)
+	fmt.Fprintf(stdout, "auth mode: %s\n", provider.Auth.Mode)
+	fmt.Fprintf(stdout, "model: %s\n", provider.Model)
+	fmt.Fprintf(stdout, "wrote %s\n", advice.OutputFile)
+	fmt.Fprintf(stdout, "wrote %s\n", advice.AuditFile)
+	return 0
+}
+
 type llmCompatibilityAdviceRequest struct {
 	SourceClusterID string
 	Inputs          []llm.InputFile
@@ -525,6 +618,17 @@ type llmCompatibilityAdviceRequest struct {
 }
 
 type llmSchemaAdviceRequest struct {
+	SourceClusterID string
+	ProjectID       string
+	Inputs          []llm.InputFile
+	Request         llm.Request
+	OutputFile      string
+	AuditFile       string
+	InputHashes     []llmAdviceInputHash
+	PromptHash      string
+}
+
+type llmMigrationStrategyRequest struct {
 	SourceClusterID string
 	ProjectID       string
 	Inputs          []llm.InputFile
@@ -827,6 +931,138 @@ func writeLLMSchemaAdvice(root string, provider llm.ProviderConfig, advice llmSc
 	auditPath := filepath.Join(root, filepath.FromSlash(advice.AuditFile))
 	if err := os.WriteFile(auditPath, data, 0o644); err != nil {
 		return fmt.Errorf("write LLM schema advice audit: %w", err)
+	}
+	return nil
+}
+
+func buildLLMMigrationStrategyRequest(root, sourceClusterID, projectID string) (llmMigrationStrategyRequest, error) {
+	sourceClusterID = strings.TrimSpace(sourceClusterID)
+	projectID = strings.TrimSpace(projectID)
+	if sourceClusterID == "" {
+		return llmMigrationStrategyRequest{}, fmt.Errorf("source cluster id is required")
+	}
+	if projectID == "" {
+		return llmMigrationStrategyRequest{}, fmt.Errorf("project id is required")
+	}
+	clusterRel := filepath.ToSlash(filepath.Join("clusters", sourceClusterID))
+	projectRel := filepath.ToSlash(filepath.Join(clusterRel, "projects", projectID))
+	requiredRels := []string{
+		filepath.ToSlash(filepath.Join(clusterRel, "cluster.yaml")),
+		filepath.ToSlash(filepath.Join(projectRel, "project.yaml")),
+		filepath.ToSlash(filepath.Join(projectRel, "plan", "migration-plan.yaml")),
+	}
+	optionalRels := []string{
+		filepath.ToSlash(filepath.Join(clusterRel, "inventory", "compatibility-report.md")),
+		filepath.ToSlash(filepath.Join(projectRel, "schema", "schema-diff.json")),
+		filepath.ToSlash(filepath.Join(projectRel, "schema", "conversion-report.md")),
+		filepath.ToSlash(filepath.Join(projectRel, "plan", "export-plan.yaml")),
+		filepath.ToSlash(filepath.Join(projectRel, "plan", "import-plan.yaml")),
+		filepath.ToSlash(filepath.Join(projectRel, "plan", "cdc-plan.yaml")),
+		filepath.ToSlash(filepath.Join(projectRel, "plan", "validation-plan.yaml")),
+	}
+	inputRels := append([]string{}, requiredRels...)
+	for _, rel := range optionalRels {
+		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel))); err == nil {
+			inputRels = append(inputRels, rel)
+		}
+	}
+	inputs := make([]llm.InputFile, 0, len(inputRels))
+	hashes := make([]llmAdviceInputHash, 0, len(inputRels))
+	for _, rel := range inputRels {
+		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
+		if err != nil {
+			return llmMigrationStrategyRequest{}, fmt.Errorf("read LLM input %s: %w", rel, err)
+		}
+		redacted := redact.Text(string(data))
+		inputs = append(inputs, llm.InputFile{Path: rel, Content: redacted})
+		hashes = append(hashes, llmAdviceInputHash{Path: rel, SHA256: sha256String(redacted)})
+	}
+	request := llm.Request{
+		Task:   "migration_strategy_advice",
+		System: "You are a SQL Server to TiDB migration strategy advisor. Produce advisory strategy text only. Do not claim that any migration stage was executed. Do not include secrets.",
+		Inputs: inputs,
+		OutputStyle: strings.Join([]string{
+			"Write Markdown.",
+			"Start with '# Migration Strategy Advice'.",
+			"Compare offline, short-downtime, and low-downtime fit using the committed metadata and plans.",
+			"Call out review focus for schema, export/import, CDC, validation, and cutover readiness.",
+			"Do not emit approval YAML, state YAML, executor commands, or credentials.",
+		}, "\n"),
+	}
+	outputRel := filepath.ToSlash(filepath.Join(projectRel, "ai", "migration-strategy-advice.md"))
+	auditRel := filepath.ToSlash(filepath.Join(projectRel, "ai", "migration-strategy-advice.audit.json"))
+	return llmMigrationStrategyRequest{
+		SourceClusterID: sourceClusterID,
+		ProjectID:       projectID,
+		Inputs:          inputs,
+		Request:         request,
+		OutputFile:      outputRel,
+		AuditFile:       auditRel,
+		InputHashes:     hashes,
+		PromptHash:      sha256String(renderLLMRequestForHash(request)),
+	}, nil
+}
+
+func writeLLMMigrationStrategyAdvice(root string, provider llm.ProviderConfig, advice llmMigrationStrategyRequest, response llm.Response) error {
+	outputPath := filepath.Join(root, filepath.FromSlash(advice.OutputFile))
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
+		return fmt.Errorf("create LLM migration strategy directory: %w", err)
+	}
+	content := redact.Text(response.Text)
+	if strings.TrimSpace(content) == "" {
+		return fmt.Errorf("LLM migration strategy response is empty")
+	}
+	if err := os.WriteFile(outputPath, []byte(strings.TrimRight(content, "\n")+"\n"), 0o644); err != nil {
+		return fmt.Errorf("write LLM migration strategy advice: %w", err)
+	}
+	audit := struct {
+		SourceClusterID string               `json:"source_cluster_id"`
+		ProjectID       string               `json:"project_id"`
+		ProviderID      string               `json:"provider_id"`
+		ProviderType    string               `json:"provider_type"`
+		AuthMode        string               `json:"auth_mode"`
+		Model           string               `json:"model"`
+		PromptSHA256    string               `json:"prompt_sha256"`
+		InputFiles      []llmAdviceInputHash `json:"input_files"`
+		OutputFile      string               `json:"output_file"`
+		Usage           llm.Usage            `json:"usage"`
+		GeneratedAt     string               `json:"generated_at"`
+	}{
+		SourceClusterID: advice.SourceClusterID,
+		ProjectID:       advice.ProjectID,
+		ProviderID:      provider.ID,
+		ProviderType:    provider.Type,
+		AuthMode:        provider.Auth.Mode,
+		Model:           response.Model,
+		PromptSHA256:    advice.PromptHash,
+		InputFiles:      advice.InputHashes,
+		OutputFile:      advice.OutputFile,
+		Usage:           response.Usage,
+		GeneratedAt:     response.GeneratedAt,
+	}
+	if strings.TrimSpace(audit.ProviderID) == "" {
+		audit.ProviderID = "inline"
+	}
+	if strings.TrimSpace(audit.ProviderType) == "" {
+		audit.ProviderType = llm.ProviderTypeOpenAICompatible
+	}
+	if strings.TrimSpace(audit.AuthMode) == "" {
+		audit.AuthMode = llm.AuthModeAPIKey
+	}
+	if strings.TrimSpace(audit.Model) == "" {
+		audit.Model = provider.Model
+	}
+	if strings.TrimSpace(audit.GeneratedAt) == "" {
+		audit.GeneratedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	data, err := json.MarshalIndent(audit, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal LLM migration strategy audit: %w", err)
+	}
+	data = append(data, '\n')
+	auditPath := filepath.Join(root, filepath.FromSlash(advice.AuditFile))
+	if err := os.WriteFile(auditPath, data, 0o644); err != nil {
+		return fmt.Errorf("write LLM migration strategy audit: %w", err)
 	}
 	return nil
 }
@@ -3761,6 +3997,7 @@ Usage:
   sqlserver2tidb analyze-compatibility --root . --source-cluster-id prod-sqlserver-a
   sqlserver2tidb llm-compatibility-advice --root . --source-cluster-id prod-sqlserver-a --provider-config global/llm-providers.yaml --execute
   sqlserver2tidb llm-schema-advice --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --provider-config global/llm-providers.yaml --execute
+  sqlserver2tidb llm-migration-strategy --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --provider-config global/llm-providers.yaml --execute
   sqlserver2tidb generate-schema-draft --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
   sqlserver2tidb generate-data-plans --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --object-uri-prefix https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full --compression gzip
   sqlserver2tidb repair-schema-drift --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --object-uri-prefix https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full --apply --pr-draft

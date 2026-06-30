@@ -17,7 +17,7 @@ This MVP provides:
 - SQL Server discovery dry-run planning without opening a database connection.
 - SQL Server catalog discovery using a connection string supplied through an environment variable.
 - Rule-based SQL Server compatibility analysis from `inventory/inventory.json`.
-- LLM-assisted compatibility and schema rewrite candidate generation that reads redacted deterministic inputs and writes advisory files under `clusters/<source_cluster_id>/ai/` or project `ai/` directories.
+- LLM-assisted compatibility, schema rewrite candidate, and migration strategy advice generation that reads redacted deterministic inputs and writes advisory files under `clusters/<source_cluster_id>/ai/` or project `ai/` directories.
 - Project-scoped TiDB schema draft generation from SQL Server inventory and project metadata.
 - Project-scoped full export/import plan draft generation from SQL Server inventory and project metadata.
 - Project-scoped schema drift detection against a reviewed schema baseline, with report generation, automatic draft regeneration for repairable drift, and a schema-drift PR draft.
@@ -386,6 +386,19 @@ go run ./cmd/sqlserver2tidb generate-validation-plan \
 ```
 
 This writes `plan/validation-plan.yaml` under the project with one `row_count` check per table in scope. When requested, it also adds `checksum` and `sampled_hash` scalar-query checks for tables that have exact numeric columns; sampled-hash checks require an integer sample column and use `--sample-modulo` to build the deterministic sample predicate. With `--include-bucketed-count`, it adds one `bucketed_count` scalar-query check per modulo bucket for tables that have a non-computed integer bucket column; `--bucket-count` defaults to `16` and is capped at `1024`. The command does not connect to SQL Server or TiDB and does not execute validation.
+
+Generate optional LLM migration strategy advice from committed metadata and generated plan drafts:
+
+```bash
+go run ./cmd/sqlserver2tidb llm-migration-strategy \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --provider-config global/llm-providers.yaml \
+  --execute
+```
+
+This reads cluster/project metadata, `plan/migration-plan.yaml`, and any available compatibility, schema, export/import, CDC, and validation artifacts, then writes advisory strategy notes under `clusters/<source_cluster_id>/projects/<project_id>/ai/`. It does not choose or approve a migration mode, does not rewrite plans, and does not trigger workers.
 
 Compute payload hashes and run reviewed DDL/export/import/CDC/validation/cutover actions after the matching approval files are marked approved. `worker-export`, `worker-import`, `worker-cdc`, and `worker-validate` also require their plan files to be `reviewed` or `approved`; draft export/import/CDC/validation plans are not executable even with approved approval files:
 

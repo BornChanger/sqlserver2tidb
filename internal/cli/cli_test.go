@@ -622,6 +622,108 @@ func TestRunLLMSchemaAdviceExecuteWritesRedactedCandidates(t *testing.T) {
 	}
 }
 
+func TestRunLLMMigrationStrategyDryRunDoesNotCallProvider(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createProjectWithMigrationStrategyInputs(t, root, &stdout, &stderr)
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		t.Fatalf("provider should not be called during dry-run")
+	}))
+	defer server.Close()
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"llm-migration-strategy",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--base-url", server.URL + "/v1",
+		"--model", "migration-advisor",
+		"--auth-mode", "oauth_token_env",
+		"--token-env", "SQLSERVER2TIDB_TEST_LLM_TOKEN",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("llm-migration-strategy dry-run code = %d, stderr = %s", code, stderr.String())
+	}
+	if called {
+		t.Fatal("provider was called during dry-run")
+	}
+	output := stdout.String()
+	assertCLIOutputContains(t, output, "LLM migration strategy dry run for sales-db-to-tidb-prod-a")
+	assertCLIOutputContains(t, output, "provider type: openai_compatible")
+	assertCLIOutputContains(t, output, "auth mode: oauth_token_env")
+	assertCLIOutputContains(t, output, "would write clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/ai/migration-strategy-advice.md")
+	assertNotExists(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/ai/migration-strategy-advice.md")
+}
+
+func TestRunLLMMigrationStrategyExecuteWritesRedactedAdvice(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createProjectWithMigrationStrategyInputs(t, root, &stdout, &stderr)
+	t.Setenv("SQLSERVER2TIDB_TEST_LLM_TOKEN", "raw-provider-token")
+	var requestBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer raw-provider-token" {
+			t.Fatalf("Authorization = %q", r.Header.Get("Authorization"))
+		}
+		data, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("ReadAll() error = %v", err)
+		}
+		requestBody = string(data)
+		if strings.Contains(requestBody, "strategy-raw-password") {
+			t.Fatalf("LLM request leaked secret: %s", requestBody)
+		}
+		if !strings.Contains(requestBody, "migration-plan.yaml") || !strings.Contains(requestBody, "export-plan.yaml") || !strings.Contains(requestBody, "validation-plan.yaml") {
+			t.Fatalf("LLM request = %s, want migration strategy inputs", requestBody)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"choices":[{"message":{"content":"# Migration Strategy Advice\n\n- Prefer low-downtime with reviewed CDC and validation gates."}}],"usage":{"prompt_tokens":23,"completion_tokens":11,"total_tokens":34}}`)
+	}))
+	defer server.Close()
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"llm-migration-strategy",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--base-url", server.URL + "/v1",
+		"--model", "migration-advisor",
+		"--auth-mode", "oauth_token_env",
+		"--token-env", "SQLSERVER2TIDB_TEST_LLM_TOKEN",
+		"--execute",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("llm-migration-strategy execute code = %d, stdout = %s, stderr = %s", code, stdout.String(), stderr.String())
+	}
+	output := stdout.String()
+	assertCLIOutputContains(t, output, "LLM migration strategy advice generated for sales-db-to-tidb-prod-a")
+	assertCLIOutputContains(t, output, "wrote clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/ai/migration-strategy-advice.md")
+	assertCLIOutputContains(t, output, "wrote clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/ai/migration-strategy-advice.audit.json")
+	advice := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/ai/migration-strategy-advice.md")
+	assertCLIOutputContains(t, advice, "# Migration Strategy Advice")
+	assertCLIOutputContains(t, advice, "low-downtime")
+	if strings.Contains(advice, "raw-provider-token") || strings.Contains(advice, "strategy-raw-password") {
+		t.Fatalf("migration strategy advice leaked secret:\n%s", advice)
+	}
+	audit := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/ai/migration-strategy-advice.audit.json")
+	assertCLIOutputContains(t, audit, `"project_id": "sales-db-to-tidb-prod-a"`)
+	assertCLIOutputContains(t, audit, `"provider_id": "inline"`)
+	assertCLIOutputContains(t, audit, `"auth_mode": "oauth_token_env"`)
+	assertCLIOutputContains(t, audit, `"model": "migration-advisor"`)
+	assertCLIOutputContains(t, audit, `"output_file": "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/ai/migration-strategy-advice.md"`)
+	if strings.Contains(audit, "raw-provider-token") || strings.Contains(audit, "strategy-raw-password") {
+		t.Fatalf("migration strategy audit leaked secret:\n%s", audit)
+	}
+}
+
 func TestRunGenerateSchemaDraftCommand(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer
@@ -5622,6 +5724,51 @@ func createProjectWithSchemaManualReview(t *testing.T, root string, stdout, stde
 	conversionRel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/schema/conversion-report.md"
 	conversion := readCLIRelFile(t, root, conversionRel)
 	writeCLIFile(t, root, conversionRel, conversion+"\npassword=schema-raw-password\n")
+}
+
+func createProjectWithMigrationStrategyInputs(t *testing.T, root string, stdout, stderr *bytes.Buffer) {
+	t.Helper()
+	createProjectWithSchemaManualReview(t, root, stdout, stderr)
+	writeCLIFile(t, root, "clusters/prod-sqlserver-a/inventory/compatibility-report.md", `# Compatibility Report
+
+password=strategy-raw-password
+
+| Severity | Code | Object | Message | Recommendation |
+| --- | --- | --- | --- | --- |
+| warning | SQLSERVER_TYPE_XML | sales.dbo.orders.payload | SQL Server xml requires review. | Choose target representation. |
+`)
+	stdout.Reset()
+	stderr.Reset()
+	if code := Run([]string{
+		"generate-data-plans",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--object-uri-prefix", "file:///tmp/sqlserver2tidb-test/full",
+		"--chunk-size-rows", "1000",
+	}, stdout, stderr); code != 0 {
+		t.Fatalf("generate-data-plans code = %d, stderr = %s", code, stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := Run([]string{
+		"generate-cdc-plan",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+	}, stdout, stderr); code != 0 {
+		t.Fatalf("generate-cdc-plan code = %d, stderr = %s", code, stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := Run([]string{
+		"generate-validation-plan",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+	}, stdout, stderr); code != 0 {
+		t.Fatalf("generate-validation-plan code = %d, stderr = %s", code, stderr.String())
+	}
 }
 
 func assertExists(t *testing.T, root, rel string) {

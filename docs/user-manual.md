@@ -147,7 +147,7 @@ LLM 用于：
 - 总结 validation mismatch。
 - 提供故障排查建议。
 
-当前已实现的 LLM 入口是 `llm-compatibility-advice`。它读取源集群目录下的 `inventory/schema-issues.yaml` 和 `inventory/compatibility-report.md`，在发送给 provider 前做日志/证据同款脱敏，然后只写回 `clusters/<source_cluster_id>/ai/compatibility-advice.md` 和 `clusters/<source_cluster_id>/ai/compatibility-advice.audit.json`。`ai/` 目录不是 `approvals/`、`state/`、`plan/` 或 `evidence/`，worker 不会把这些文件当成可执行指令或 gate 依据。
+当前已实现的 LLM 入口是 `llm-compatibility-advice`、`llm-schema-advice` 和 `llm-migration-strategy`。它们在发送给 provider 前做日志/证据同款脱敏，然后只写回源集群或项目目录下的 `ai/` 文件。`ai/` 目录不是 `approvals/`、`state/`、`plan/` 或 `evidence/`，worker 不会把这些文件当成可执行指令或 gate 依据。
 
 LLM 不允许直接决定或执行：
 
@@ -1636,7 +1636,7 @@ bin/sqlserver2tidb worker-agent \
 
 ### 12.4 Provider 配置
 
-`llm-compatibility-advice` 和 `llm-schema-advice` 都支持 OpenAI-compatible chat completions provider。provider 配置可以放在 `global/llm-providers.yaml`，也可以用命令行 flag inline 指定。没有指定 `--provider-id` 时，配置文件会使用 `default_provider`。
+`llm-compatibility-advice`、`llm-schema-advice` 和 `llm-migration-strategy` 都支持 OpenAI-compatible chat completions provider。provider 配置可以放在 `global/llm-providers.yaml`，也可以用命令行 flag inline 指定。没有指定 `--provider-id` 时，配置文件会使用 `default_provider`。
 
 API key 示例：
 
@@ -2069,6 +2069,19 @@ bin/sqlserver2tidb generate-validation-plan \
 ```
 
 该命令读取源集群 inventory 和项目 metadata，写回项目目录下的 `plan/validation-plan.yaml`。它为 project 范围内每张表生成一个 `row_count` 检查项；`--include-checksum` 会为有精确数值列的表生成 `checksum` scalar-query 草稿；`--include-sampled-hash` 会为有整数采样列的表生成 `sampled_hash` scalar-query 草稿；`--sample-modulo` 默认是 `100`；`--include-bucketed-count` 会为有整数分桶列的表生成 `bucketed_count` scalar-query 草稿；`--bucket-count` 默认是 `16`，最大是 `1024`。命令只生成草稿，不连接 SQL Server 或 TiDB，也不执行校验。
+
+### 16.9.5 llm-migration-strategy
+
+```bash
+bin/sqlserver2tidb llm-migration-strategy \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --provider-config global/llm-providers.yaml \
+  --execute
+```
+
+该命令读取源集群和项目 metadata、`plan/migration-plan.yaml`，以及已经存在的 compatibility、schema、export/import、CDC、validation 草案或报告，默认只做 dry-run。显式加 `--execute` 后，它会调用 provider，写回 `clusters/<source_cluster_id>/projects/<project_id>/ai/migration-strategy-advice.md` 和 `migration-strategy-advice.audit.json`。这些内容只用于人工评估 offline、short-downtime、low-downtime 策略取舍和 review 重点；它不会决定迁移模式，不会改写 plan，不会写 approval/state/evidence，也不会触发 worker。
 
 ### 16.10 generate-pr-draft
 
