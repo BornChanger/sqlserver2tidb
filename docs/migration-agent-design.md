@@ -480,48 +480,24 @@ The agent must never treat an LLM-generated summary, a local draft file, or an u
 
 ## 13. Configuration
 
-The first implementation can rely on CLI flags. A later implementation may add a file:
+The agent reads a repository-local policy file:
 
 ```text
-global/agent-policy.yaml
+global/policies/agent-policy.yaml
 ```
 
-Proposed shape:
+Current implemented shape:
 
 ```yaml
 version: 1
-defaults:
-  base_branch: main
-  max_steps: 5
-  execute_pr: false
-  execute_db: false
-  execute_llm: false
-  create_evidence_pr: false
-stages:
-  schema:
-    auto_create_pr: true
-    allow_llm_summary: true
-  ddl:
-    execute_requires_flag: true
-    evidence_pr_required: true
-  export:
-    execute_requires_flag: true
-  import:
-    execute_requires_flag: true
-  cdc:
-    execute_requires_flag: true
-    health_required: true
-  validation:
-    execute_requires_flag: true
-  cutover:
-    execute_requires_flag: true
-    manual_traffic_switch_required: true
-notifications:
-  feishu_min_severity: critical
-  slack_min_severity: critical
+allow_execute: true
+allow_execute_pr: true
+allow_execute_evidence_pr: true
+allow_execute_llm: true
+max_auto_steps: 0
 ```
 
-Policy values should narrow behavior, not expand it beyond compiled safety gates.
+Policy values narrow behavior, not expand it beyond compiled safety gates. `allow_execute: false` blocks all agent `--execute` flows before mode dispatch. `allow_execute_pr: false` blocks `--execute-pr`; `allow_execute_evidence_pr: false` blocks `--execute-evidence-pr`; `allow_execute_llm: false` blocks `--execute-llm`; `max_auto_steps` caps `agent --mode auto --max-steps`, with `0` meaning no policy cap beyond CLI validation.
 
 ## 14. CLI Interface
 
@@ -609,6 +585,9 @@ Agent output should support:
 - `--json` machine-readable status
 - command plan list
 - blocked reason list
+- stage matrix with approval, plan, state, evidence, and PR artifact paths
+- active agent policy summary
+- latest CDC health history summary for a scoped project
 - touched file list
 - optional Markdown run summary under `ai/` or `prs/` only when explicitly requested
 

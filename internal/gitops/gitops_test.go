@@ -20,6 +20,7 @@ func TestInitRepoCreatesGlobalStructure(t *testing.T) {
 	assertFile(t, root, "global/policies/approval-policy.yaml")
 	assertFile(t, root, "global/policies/execution-policy.yaml")
 	assertFile(t, root, "global/policies/file-schema-policy.yaml")
+	assertFile(t, root, "global/policies/agent-policy.yaml")
 	assertFile(t, root, "global/templates/project.yaml")
 	assertFile(t, root, "global/templates/migration-plan.yaml")
 	assertFile(t, root, "global/templates/cutover-runbook.md")
@@ -37,6 +38,12 @@ func TestInitRepoCreatesGlobalStructure(t *testing.T) {
 	assertContains(t, policyYAML, "import_plan: global/schemas/import-plan.schema.json")
 	assertContains(t, policyYAML, "cdc_plan: global/schemas/cdc-plan.schema.json")
 	assertContains(t, policyYAML, "validation_plan: global/schemas/validation-plan.schema.json")
+
+	agentPolicyYAML := readFile(t, root, "global/policies/agent-policy.yaml")
+	assertContains(t, agentPolicyYAML, "allow_execute: true")
+	assertContains(t, agentPolicyYAML, "allow_execute_pr: true")
+	assertContains(t, agentPolicyYAML, "allow_execute_evidence_pr: true")
+	assertContains(t, agentPolicyYAML, "allow_execute_llm: true")
 
 	exportSchema := readFile(t, root, "global/schemas/export-plan.schema.json")
 	assertContains(t, exportSchema, `"compression": {"enum": ["none", "gzip"]}`)

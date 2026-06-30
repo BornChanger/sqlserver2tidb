@@ -1616,7 +1616,7 @@ bin/sqlserver2tidb worker-agent \
 
 推荐把 `agent` 理解成以下几类能力：
 
-- `--mode status`：校验 metadata repo，读取 reconcile 结果，并展示当前第一个 ready action。
+- `--mode status`：校验 metadata repo，读取 reconcile 结果，展示当前第一个 ready action、ready/blocked 明细、stage matrix、artifact 路径、当前 agent policy 摘要，以及指定项目的最新 CDC health 历史摘要。
 - `--mode auto --dry-run`：只读分析下一步安全动作。加 `--json` 后输出机器可读结果。
 - `--mode auto`：执行有明确边界的安全规划动作，例如生成 schema draft、schema PR draft 或 plan PR draft。它默认最多执行 1 步，可通过 `--max-steps <n>` 放宽；遇到已存在 PR draft、需要人工 review 的状态，或 ready worker action 时会停止。加 `--execute-pr` 创建 schema/plan PR 时也支持 `--gh-binary <path>`。
 - `--mode plan-and-pr`：为指定 stage 生成 PR draft，并默认 dry-run 展示 `gh pr create` 命令；加 `--execute-pr` 才会调用 GitHub CLI 创建 PR；如需使用包装过的 GitHub CLI，可以同时传 `--gh-binary <path>`。
@@ -2852,7 +2852,18 @@ bin/sqlserver2tidb agent \
 
 `agent` 本身只做编排，不绕过任何 gate：planning 文件仍要通过 PR review；真实执行仍要满足 approval/hash/status gate；LLM 输出只落在 `ai/` 目录；PR 创建、approve、merge 和 approval 写回只有在显式传入执行类 flag 时才会调用 GitHub CLI。
 
-`agent` 入口会先执行集中化安全策略，再进入具体 mode。外部二进制参数 `--executor-binary`、`--git-binary`、`--gh-binary` 不能包含空白或控制字符；`--source-connection-string-env`、`--target-connection-string-env`、Feishu/Slack webhook/secret env 参数必须是环境变量名，不能直接传连接串或 webhook URL；`--command-timeout`、`--command-retries`、`--retry-backoff`、CDC polling 相关计数和间隔必须非负；executor evidence PR 相关参数必须配合 `--execute`，并且只能用于 executor-backed stage。策略失败时命令会在读取/修改 repo 之前以 `agent policy: ...` 返回。
+`agent` 入口会先执行集中化安全策略，再进入具体 mode。默认策略文件位于 `global/policies/agent-policy.yaml`，由 `init-repo` 创建：
+
+```yaml
+version: 1
+allow_execute: true
+allow_execute_pr: true
+allow_execute_evidence_pr: true
+allow_execute_llm: true
+max_auto_steps: 0
+```
+
+这些配置只能收紧行为，不能绕过 approval/hash/status gate。`allow_execute: false` 会拒绝所有 agent `--execute` 流程；`allow_execute_pr: false` 会拒绝 `--execute-pr`；`allow_execute_evidence_pr: false` 会拒绝 `--execute-evidence-pr`；`allow_execute_llm: false` 会拒绝 `--execute-llm`；`max_auto_steps` 会限制 `agent --mode auto --max-steps`，`0` 表示不额外限制。外部二进制参数 `--executor-binary`、`--git-binary`、`--gh-binary` 不能包含空白或控制字符；`--source-connection-string-env`、`--target-connection-string-env`、Feishu/Slack webhook/secret env 参数必须是环境变量名，不能直接传连接串或 webhook URL；`--command-timeout`、`--command-retries`、`--retry-backoff`、CDC polling 相关计数和间隔必须非负；executor evidence PR 相关参数必须配合 `--execute`，并且只能用于 executor-backed stage。策略失败时命令会在读取/修改 repo 之前以 `agent policy: ...` 返回。
 
 ## 17. 推荐落地顺序
 

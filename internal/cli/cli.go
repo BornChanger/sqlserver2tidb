@@ -262,6 +262,9 @@ type agentStatusReport struct {
 	ProjectID       string                       `json:"project_id,omitempty"`
 	Repository      agentRepositoryStatus        `json:"repository"`
 	Reconcile       gitops.WorkerReconcileReport `json:"reconcile"`
+	StageMatrix     []agentStageStatus           `json:"stage_matrix,omitempty"`
+	Policy          agentPolicyStatus            `json:"policy"`
+	CDCHealth       *agentCDCHealthSummary       `json:"cdc_health,omitempty"`
 	NextAction      gitops.WorkerReconcileAction `json:"next_action"`
 }
 
@@ -270,6 +273,45 @@ type agentRepositoryStatus struct {
 	CheckedDirs  int      `json:"checked_dirs"`
 	CheckedFiles int      `json:"checked_files"`
 	Errors       []string `json:"errors,omitempty"`
+}
+
+type agentStageStatus struct {
+	SourceClusterID       string   `json:"source_cluster_id"`
+	ProjectID             string   `json:"project_id"`
+	Stage                 string   `json:"stage"`
+	Status                string   `json:"status"`
+	Reason                string   `json:"reason,omitempty"`
+	Command               string   `json:"command,omitempty"`
+	SuggestedAgentCommand string   `json:"suggested_agent_command,omitempty"`
+	ApprovalFile          string   `json:"approval_file,omitempty"`
+	PlanFile              string   `json:"plan_file,omitempty"`
+	StateFile             string   `json:"state_file,omitempty"`
+	EvidenceFiles         []string `json:"evidence_files,omitempty"`
+	PRFiles               []string `json:"pr_files,omitempty"`
+}
+
+type agentPolicyStatus struct {
+	Configured             bool   `json:"configured"`
+	Path                   string `json:"path"`
+	AllowExecute           bool   `json:"allow_execute"`
+	AllowExecutePR         bool   `json:"allow_execute_pr"`
+	AllowExecuteEvidencePR bool   `json:"allow_execute_evidence_pr"`
+	AllowExecuteLLM        bool   `json:"allow_execute_llm"`
+	MaxAutoSteps           int    `json:"max_auto_steps"`
+}
+
+type agentCDCHealthSummary struct {
+	Available        bool   `json:"available"`
+	HistoryFile      string `json:"history_file"`
+	Status           string `json:"status,omitempty"`
+	GeneratedAt      string `json:"generated_at,omitempty"`
+	CheckpointStatus string `json:"checkpoint_status,omitempty"`
+	MaxLSN           string `json:"max_lsn,omitempty"`
+	TrackedTables    int    `json:"tracked_tables,omitempty"`
+	LaggingTables    int    `json:"lagging_tables,omitempty"`
+	ExpiredTables    int    `json:"expired_tables,omitempty"`
+	Alerts           int    `json:"alerts,omitempty"`
+	Error            string `json:"error,omitempty"`
 }
 
 type agentAutoDryRunReport struct {
@@ -399,19 +441,25 @@ type agentLLMOptions struct {
 	ExecuteLLM           bool
 }
 
-type agentSecurityPolicy struct{}
+type agentSecurityPolicy struct {
+	Config agentPolicyStatus
+}
 
 type agentSecurityPolicyRequest struct {
 	Mode              string
 	Stage             string
 	Execute           bool
 	ExecutePR         bool
+	ExecuteLLM        bool
+	MaxSteps          int
 	GHBinary          string
 	GitBinary         string
 	ExecutorOptions   agentExecutorOptions
 	EvidencePROptions agentEvidencePROptions
 	CDCOpsOptions     agentCDCOpsOptions
 }
+
+const agentPolicyRelPath = "global/policies/agent-policy.yaml"
 
 func runAgent(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("agent", flag.ContinueOnError)
@@ -580,11 +628,18 @@ func runAgent(args []string, stdout, stderr io.Writer) int {
 	projectIDValue := strings.TrimSpace(*projectID)
 	ghBinaryValue := strings.TrimSpace(*ghBinary)
 	gitBinaryValue := strings.TrimSpace(*gitBinary)
-	if err := (agentSecurityPolicy{}).Validate(agentSecurityPolicyRequest{
+	agentPolicy, err := loadAgentPolicy(*root)
+	if err != nil {
+		fmt.Fprintf(stderr, "agent policy: %v\n", err)
+		return 2
+	}
+	if err := (agentSecurityPolicy{Config: agentPolicy}).Validate(agentSecurityPolicyRequest{
 		Mode:              modeValue,
 		Stage:             stageValue,
 		Execute:           *execute,
 		ExecutePR:         *executePR,
+		ExecuteLLM:        *executeLLM,
+		MaxSteps:          *maxSteps,
 		GHBinary:          ghBinaryValue,
 		GitBinary:         gitBinaryValue,
 		ExecutorOptions:   executorOptions,
@@ -618,7 +673,7 @@ func runAgent(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
-func (agentSecurityPolicy) Validate(req agentSecurityPolicyRequest) error {
+func (policy agentSecurityPolicy) Validate(req agentSecurityPolicyRequest) error {
 	if err := validateAgentBinaryFlag("--executor-binary", req.ExecutorOptions.ExecutorBinary); err != nil {
 		return err
 	}
@@ -667,6 +722,21 @@ func (agentSecurityPolicy) Validate(req agentSecurityPolicyRequest) error {
 	if req.CDCOpsOptions.MinAppliedChanges < 0 {
 		return fmt.Errorf("--min-applied-changes must be non-negative")
 	}
+	if req.Execute && !policy.Config.AllowExecute {
+		return fmt.Errorf("--execute is disabled by %s", policy.Config.Path)
+	}
+	if req.ExecutePR && !policy.Config.AllowExecutePR {
+		return fmt.Errorf("--execute-pr is disabled by %s", policy.Config.Path)
+	}
+	if req.EvidencePROptions.Execute && !policy.Config.AllowExecuteEvidencePR {
+		return fmt.Errorf("--execute-evidence-pr is disabled by %s", policy.Config.Path)
+	}
+	if req.ExecuteLLM && !policy.Config.AllowExecuteLLM {
+		return fmt.Errorf("--execute-llm is disabled by %s", policy.Config.Path)
+	}
+	if req.Mode == "auto" && policy.Config.MaxAutoSteps > 0 && req.MaxSteps > policy.Config.MaxAutoSteps {
+		return fmt.Errorf("--max-steps %d exceeds %s max_auto_steps %d", req.MaxSteps, policy.Config.Path, policy.Config.MaxAutoSteps)
+	}
 	if hasAgentEvidencePRAction(req.EvidencePROptions) && !req.Execute {
 		return fmt.Errorf("evidence PR options require --execute")
 	}
@@ -674,6 +744,96 @@ func (agentSecurityPolicy) Validate(req agentSecurityPolicyRequest) error {
 		return fmt.Errorf("evidence PR options require an executor-backed stage; use --use-executor for %q", req.Stage)
 	}
 	return nil
+}
+
+func defaultAgentPolicyStatus() agentPolicyStatus {
+	return agentPolicyStatus{
+		Path:                   agentPolicyRelPath,
+		AllowExecute:           true,
+		AllowExecutePR:         true,
+		AllowExecuteEvidencePR: true,
+		AllowExecuteLLM:        true,
+	}
+}
+
+func loadAgentPolicy(root string) (agentPolicyStatus, error) {
+	policy := defaultAgentPolicyStatus()
+	data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(agentPolicyRelPath)))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return policy, nil
+		}
+		return agentPolicyStatus{}, fmt.Errorf("read %s: %w", agentPolicyRelPath, err)
+	}
+	policy.Configured = true
+	lines := strings.Split(string(data), "\n")
+	for lineNo, line := range lines {
+		line = strings.TrimSpace(stripYAMLComment(line))
+		if line == "" || strings.HasSuffix(line, ":") {
+			continue
+		}
+		key, value, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		value = strings.Trim(strings.TrimSpace(value), `"'`)
+		switch key {
+		case "version":
+			if value != "1" {
+				return agentPolicyStatus{}, fmt.Errorf("%s:%d unsupported version %q", agentPolicyRelPath, lineNo+1, value)
+			}
+		case "allow_execute":
+			parsed, err := parseAgentPolicyBool(agentPolicyRelPath, lineNo+1, value)
+			if err != nil {
+				return agentPolicyStatus{}, err
+			}
+			policy.AllowExecute = parsed
+		case "allow_execute_pr":
+			parsed, err := parseAgentPolicyBool(agentPolicyRelPath, lineNo+1, value)
+			if err != nil {
+				return agentPolicyStatus{}, err
+			}
+			policy.AllowExecutePR = parsed
+		case "allow_execute_evidence_pr":
+			parsed, err := parseAgentPolicyBool(agentPolicyRelPath, lineNo+1, value)
+			if err != nil {
+				return agentPolicyStatus{}, err
+			}
+			policy.AllowExecuteEvidencePR = parsed
+		case "allow_execute_llm":
+			parsed, err := parseAgentPolicyBool(agentPolicyRelPath, lineNo+1, value)
+			if err != nil {
+				return agentPolicyStatus{}, err
+			}
+			policy.AllowExecuteLLM = parsed
+		case "max_auto_steps":
+			parsed, err := strconv.Atoi(value)
+			if err != nil || parsed < 0 {
+				return agentPolicyStatus{}, fmt.Errorf("%s:%d max_auto_steps must be a non-negative integer", agentPolicyRelPath, lineNo+1)
+			}
+			policy.MaxAutoSteps = parsed
+		}
+	}
+	return policy, nil
+}
+
+func stripYAMLComment(line string) string {
+	if idx := strings.Index(line, "#"); idx >= 0 {
+		return line[:idx]
+	}
+	return line
+}
+
+func parseAgentPolicyBool(path string, lineNo int, value string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "true":
+		return true, nil
+	case "false":
+		return false, nil
+	default:
+		return false, fmt.Errorf("%s:%d policy value must be true or false", path, lineNo)
+	}
 }
 
 func validateAgentBinaryFlag(flagName, value string) error {
@@ -741,9 +901,12 @@ func runAgentStatus(root, sourceClusterID, projectID string, jsonOutput bool, st
 	} else {
 		fmt.Fprintf(stdout, "repository: invalid (%d errors)\n", len(report.Repository.Errors))
 	}
+	writeAgentStatusPolicy(stdout, report.Policy)
+	writeAgentCDCHealthSummary(stdout, report.CDCHealth)
 	fmt.Fprintf(stdout, "projects: %d\n", report.Reconcile.Projects)
 	fmt.Fprintf(stdout, "ready actions: %d\n", report.Reconcile.ReadyActions)
 	fmt.Fprintf(stdout, "blocked actions: %d\n", report.Reconcile.BlockedActions)
+	writeAgentStageMatrix(stdout, report.StageMatrix)
 	writeAgentStatusActionDetails(stdout, "ready action details", report.Reconcile.Actions, "ready", root)
 	writeAgentStatusActionDetails(stdout, "blocked action details", report.Reconcile.Actions, "blocked", root)
 	if report.NextAction.Stage == "" {
@@ -753,6 +916,75 @@ func runAgentStatus(root, sourceClusterID, projectID string, jsonOutput bool, st
 	fmt.Fprintf(stdout, "next action: %s/%s %s\n", report.NextAction.SourceClusterID, report.NextAction.ProjectID, report.NextAction.Stage)
 	fmt.Fprintf(stdout, "command: %s\n", redact.Text(report.NextAction.Command))
 	return 0
+}
+
+func writeAgentStatusPolicy(stdout io.Writer, policy agentPolicyStatus) {
+	configured := "default"
+	if policy.Configured {
+		configured = "configured"
+	}
+	fmt.Fprintf(stdout, "policy: %s (%s)\n", configured, policy.Path)
+	fmt.Fprintf(stdout, "allow execute: %t\n", policy.AllowExecute)
+	fmt.Fprintf(stdout, "allow execute-pr: %t\n", policy.AllowExecutePR)
+	fmt.Fprintf(stdout, "allow execute-evidence-pr: %t\n", policy.AllowExecuteEvidencePR)
+	fmt.Fprintf(stdout, "allow execute-llm: %t\n", policy.AllowExecuteLLM)
+	if policy.MaxAutoSteps > 0 {
+		fmt.Fprintf(stdout, "max auto steps: %d\n", policy.MaxAutoSteps)
+	} else {
+		fmt.Fprintln(stdout, "max auto steps: unlimited")
+	}
+}
+
+func writeAgentCDCHealthSummary(stdout io.Writer, summary *agentCDCHealthSummary) {
+	if summary == nil || !summary.Available {
+		return
+	}
+	if summary.Error != "" {
+		fmt.Fprintf(stdout, "cdc health: unavailable (%s)\n", redact.Text(summary.Error))
+		fmt.Fprintf(stdout, "history file: %s\n", summary.HistoryFile)
+		return
+	}
+	fmt.Fprintf(stdout, "cdc health: %s\n", summary.Status)
+	fmt.Fprintf(stdout, "history file: %s\n", summary.HistoryFile)
+	if summary.GeneratedAt != "" {
+		fmt.Fprintf(stdout, "generated at: %s\n", summary.GeneratedAt)
+	}
+	if summary.CheckpointStatus != "" {
+		fmt.Fprintf(stdout, "checkpoint status: %s\n", summary.CheckpointStatus)
+	}
+	if summary.MaxLSN != "" {
+		fmt.Fprintf(stdout, "max lsn: %s\n", summary.MaxLSN)
+	}
+	fmt.Fprintf(stdout, "tracked tables: %d\n", summary.TrackedTables)
+	fmt.Fprintf(stdout, "lagging tables: %d\n", summary.LaggingTables)
+	fmt.Fprintf(stdout, "expired tables: %d\n", summary.ExpiredTables)
+	fmt.Fprintf(stdout, "alerts: %d\n", summary.Alerts)
+}
+
+func writeAgentStageMatrix(stdout io.Writer, matrix []agentStageStatus) {
+	if len(matrix) == 0 {
+		return
+	}
+	fmt.Fprintln(stdout, "stage matrix:")
+	fmt.Fprintln(stdout, "stage | status | approval | plan | state | evidence | pr")
+	for _, row := range matrix {
+		fmt.Fprintf(stdout, "%s | %s | %s | %s | %s | %s | %s\n",
+			row.Stage,
+			row.Status,
+			dashIfEmpty(row.ApprovalFile),
+			dashIfEmpty(row.PlanFile),
+			dashIfEmpty(row.StateFile),
+			dashIfEmpty(strings.Join(row.EvidenceFiles, ", ")),
+			dashIfEmpty(strings.Join(row.PRFiles, ", ")),
+		)
+	}
+}
+
+func dashIfEmpty(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "-"
+	}
+	return value
 }
 
 func writeAgentStatusActionDetails(stdout io.Writer, title string, actions []gitops.WorkerReconcileAction, status, root string) {
@@ -1457,6 +1689,10 @@ func agentLLMArgs(root, sourceClusterID, projectID, stage string, options agentL
 }
 
 func buildAgentStatusReport(root, sourceClusterID, projectID string) (agentStatusReport, error) {
+	policy, err := loadAgentPolicy(root)
+	if err != nil {
+		return agentStatusReport{}, fmt.Errorf("load agent policy: %w", err)
+	}
 	repoReport, err := gitops.ValidateRepo(root)
 	if err != nil {
 		return agentStatusReport{}, fmt.Errorf("validate repo: %w", err)
@@ -1471,6 +1707,7 @@ func buildAgentStatusReport(root, sourceClusterID, projectID string) (agentStatu
 			CheckedFiles: repoReport.CheckedFiles,
 			Errors:       repoReport.Errors,
 		},
+		Policy: policy,
 	}
 	if !repoReport.Valid {
 		return status, fmt.Errorf("repository validation failed with %d errors", len(repoReport.Errors))
@@ -1486,6 +1723,8 @@ func buildAgentStatusReport(root, sourceClusterID, projectID string) (agentStatu
 		}
 	}
 	status.Reconcile = reconcileReport
+	status.StageMatrix = buildAgentStageMatrix(root, reconcileReport.Actions)
+	status.CDCHealth = loadLatestAgentCDCHealth(root, sourceClusterID, projectID)
 	for _, action := range reconcileReport.Actions {
 		if action.Status == "ready" {
 			status.NextAction = action
@@ -1611,6 +1850,145 @@ func filterWorkerReconcileReportByProject(report gitops.WorkerReconcileReport, p
 	}
 	filtered.Projects = len(seenProjects)
 	return filtered
+}
+
+func buildAgentStageMatrix(root string, actions []gitops.WorkerReconcileAction) []agentStageStatus {
+	matrix := make([]agentStageStatus, 0, len(actions))
+	for _, action := range actions {
+		artifacts := agentStageArtifactPaths(action.Stage)
+		row := agentStageStatus{
+			SourceClusterID: action.SourceClusterID,
+			ProjectID:       action.ProjectID,
+			Stage:           action.Stage,
+			Status:          action.Status,
+			Reason:          action.Reason,
+			Command:         action.Command,
+			ApprovalFile:    artifacts.ApprovalFile,
+			PlanFile:        artifacts.PlanFile,
+			StateFile:       artifacts.StateFile,
+			EvidenceFiles:   artifacts.EvidenceFiles,
+			PRFiles:         artifacts.PRFiles,
+		}
+		if action.Status == "ready" {
+			row.SuggestedAgentCommand = renderAgentExecuteApprovedCommand(root, action)
+		}
+		matrix = append(matrix, row)
+	}
+	return matrix
+}
+
+func loadLatestAgentCDCHealth(root, sourceClusterID, projectID string) *agentCDCHealthSummary {
+	if strings.TrimSpace(sourceClusterID) == "" || strings.TrimSpace(projectID) == "" {
+		return nil
+	}
+	historyRel := "state/cdc-health-history.jsonl"
+	summary := &agentCDCHealthSummary{
+		Available:   true,
+		HistoryFile: historyRel,
+	}
+	path := filepath.Join(root, "clusters", sourceClusterID, "projects", projectID, filepath.FromSlash(historyRel))
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		summary.Error = fmt.Sprintf("read %s: %v", historyRel, err)
+		return summary
+	}
+	var latest string
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			latest = line
+		}
+	}
+	if latest == "" {
+		summary.Error = "history file is empty"
+		return summary
+	}
+	var report gitops.CDCHealthReport
+	if err := json.Unmarshal([]byte(latest), &report); err != nil {
+		summary.Error = fmt.Sprintf("parse %s: %v", historyRel, err)
+		return summary
+	}
+	summary.Status = report.Status
+	summary.GeneratedAt = report.GeneratedAt
+	summary.CheckpointStatus = report.CheckpointStatus
+	summary.MaxLSN = report.MaxLSN
+	summary.TrackedTables = report.TrackedTables
+	summary.LaggingTables = report.LaggingTables
+	summary.ExpiredTables = report.ExpiredTables
+	summary.Alerts = len(report.Alerts)
+	return summary
+}
+
+type agentStageArtifactPathsResult struct {
+	ApprovalFile  string
+	PlanFile      string
+	StateFile     string
+	EvidenceFiles []string
+	PRFiles       []string
+}
+
+func agentStageArtifactPaths(stage string) agentStageArtifactPathsResult {
+	switch stage {
+	case "ddl":
+		return agentStageArtifactPathsResult{
+			ApprovalFile:  "approvals/ddl-approval.yaml",
+			PlanFile:      "schema/schema-diff.json",
+			EvidenceFiles: []string{"evidence/executor-ddl-run.json"},
+			PRFiles:       []string{"prs/schema-pr.md", "prs/executor-ddl-evidence-pr.md"},
+		}
+	case "export":
+		return agentStageArtifactPathsResult{
+			ApprovalFile:  "approvals/export-approval.yaml",
+			PlanFile:      "plan/export-plan.yaml",
+			StateFile:     "state/export-chunks.yaml",
+			EvidenceFiles: []string{"evidence/precheck.json", "evidence/executor-export-run.json"},
+			PRFiles:       []string{"prs/export-pr.md", "prs/executor-export-evidence-pr.md"},
+		}
+	case "import":
+		return agentStageArtifactPathsResult{
+			ApprovalFile:  "approvals/import-approval.yaml",
+			PlanFile:      "plan/import-plan.yaml",
+			StateFile:     "state/import-jobs.yaml",
+			EvidenceFiles: []string{"evidence/precheck.json", "evidence/executor-import-run.json"},
+			PRFiles:       []string{"prs/import-pr.md", "prs/executor-import-evidence-pr.md"},
+		}
+	case "cdc-enable":
+		return agentStageArtifactPathsResult{
+			ApprovalFile:  "approvals/cdc-approval.yaml",
+			PlanFile:      "plan/cdc-plan.yaml",
+			EvidenceFiles: []string{"evidence/executor-cdc-enable-run.json"},
+			PRFiles:       []string{"prs/cdc-pr.md", "prs/executor-cdc-enable-evidence-pr.md"},
+		}
+	case "cdc":
+		return agentStageArtifactPathsResult{
+			ApprovalFile:  "approvals/cdc-approval.yaml",
+			PlanFile:      "plan/cdc-plan.yaml",
+			StateFile:     "state/migration-state.yaml",
+			EvidenceFiles: []string{"evidence/cdc-summary.json", "evidence/executor-cdc-run.json"},
+			PRFiles:       []string{"prs/cdc-pr.md", "prs/cdc-range-pr.md", "prs/executor-cdc-evidence-pr.md"},
+		}
+	case "validation":
+		return agentStageArtifactPathsResult{
+			ApprovalFile:  "approvals/validation-approval.yaml",
+			PlanFile:      "plan/validation-plan.yaml",
+			StateFile:     "state/validation-status.yaml",
+			EvidenceFiles: []string{"evidence/validation-report.md", "evidence/executor-validation-run.json"},
+			PRFiles:       []string{"prs/validation-pr.md", "prs/executor-validation-evidence-pr.md"},
+		}
+	case "cutover":
+		return agentStageArtifactPathsResult{
+			ApprovalFile:  "approvals/cutover-approval.yaml",
+			PlanFile:      "plan/cutover-runbook.md",
+			StateFile:     "state/migration-state.yaml",
+			EvidenceFiles: []string{"evidence/cutover-evidence.md", "evidence/post-cutover-report.md"},
+			PRFiles:       []string{"prs/cutover-pr.md"},
+		}
+	default:
+		return agentStageArtifactPathsResult{}
+	}
 }
 
 func runDiscoverSQLServer(args []string, stdout, stderr io.Writer) int {

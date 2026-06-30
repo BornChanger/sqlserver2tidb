@@ -5369,6 +5369,59 @@ func TestRunAgentStatusReportsReadyAndBlockedActionDetails(t *testing.T) {
 	assertCLIOutputContains(t, output, "- prod-sqlserver-a/sales-db-to-tidb-prod-a validation: blocked - validation approval is not approved")
 }
 
+func TestRunAgentStatusReportsStageMatrixArtifactsAndPolicy(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createCLIReadyExportProjectForCluster(t, root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a")
+
+	code := Run([]string{
+		"agent",
+		"--mode", "status",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("agent status code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	assertCLIOutputContains(t, output, "policy: configured")
+	assertCLIOutputContains(t, output, "allow execute: true")
+	assertCLIOutputContains(t, output, "stage matrix:")
+	assertCLIOutputContains(t, output, "stage | status | approval | plan | state | evidence | pr")
+	assertCLIOutputContains(t, output, "export | ready | approvals/export-approval.yaml | plan/export-plan.yaml | state/export-chunks.yaml | evidence/precheck.json, evidence/executor-export-run.json | prs/export-pr.md, prs/executor-export-evidence-pr.md")
+	assertCLIOutputContains(t, output, "ddl | blocked | approvals/ddl-approval.yaml | schema/schema-diff.json | - | evidence/executor-ddl-run.json | prs/schema-pr.md, prs/executor-ddl-evidence-pr.md")
+}
+
+func TestRunAgentStatusReportsLatestCDCHealthSummary(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createCLIReadyExportProjectForCluster(t, root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a")
+	writeCLIFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/cdc-health-history.jsonl", `{"source_cluster_id":"prod-sqlserver-a","project_id":"sales-db-to-tidb-prod-a","status":"ok","generated_at":"2026-01-02T03:04:05Z","checkpoint_status":"running","max_lsn":"0x00000027000001f40001","tracked_tables":1,"lagging_tables":0,"expired_tables":0,"alerts":[]}
+{"source_cluster_id":"prod-sqlserver-a","project_id":"sales-db-to-tidb-prod-a","status":"warning","generated_at":"2026-01-02T03:05:05Z","checkpoint_status":"running","max_lsn":"0x00000027000001f40002","tracked_tables":1,"lagging_tables":1,"expired_tables":0,"alerts":[{"severity":"warning","code":"cdc_lag","source_object":"sales.dbo.orders","message":"checkpoint is behind"}]}
+`)
+
+	code := Run([]string{
+		"agent",
+		"--mode", "status",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("agent status code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	assertCLIOutputContains(t, output, "cdc health: warning")
+	assertCLIOutputContains(t, output, "history file: state/cdc-health-history.jsonl")
+	assertCLIOutputContains(t, output, "generated at: 2026-01-02T03:05:05Z")
+	assertCLIOutputContains(t, output, "checkpoint status: running")
+	assertCLIOutputContains(t, output, "lagging tables: 1")
+	assertCLIOutputContains(t, output, "alerts: 1")
+}
+
 func TestRunAgentPolicyRejectsUnsafeExecutorBinaryBeforeModeDispatch(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer
@@ -5457,6 +5510,162 @@ func TestRunAgentPolicyCentralizesEvidencePRExecutionGate(t *testing.T) {
 	}
 }
 
+func TestRunAgentPolicyConfigCanDisableExecuteBeforeModeDispatch(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	if err := gitops.InitRepo(root); err != nil {
+		t.Fatal(err)
+	}
+	writeCLIFile(t, root, "global/policies/agent-policy.yaml", `version: 1
+allow_execute: false
+allow_execute_pr: true
+allow_execute_evidence_pr: true
+allow_execute_llm: true
+max_auto_steps: 3
+`)
+
+	code := Run([]string{
+		"agent",
+		"--mode", "execute-approved",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "ddl",
+		"--execute",
+	}, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("agent policy disable execute code = %d, stdout = %s, stderr = %s", code, stdout.String(), stderr.String())
+	}
+	assertCLIOutputContains(t, stderr.String(), "agent policy: --execute is disabled by global/policies/agent-policy.yaml")
+	if strings.Contains(stderr.String(), "validate repo") {
+		t.Fatalf("agent policy disable execute stderr = %q, should fail before mode dispatch", stderr.String())
+	}
+}
+
+func TestRunAgentPolicyConfigCanLimitAutoStepsBeforeModeDispatch(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	if err := gitops.InitRepo(root); err != nil {
+		t.Fatal(err)
+	}
+	writeCLIFile(t, root, "global/policies/agent-policy.yaml", `version: 1
+allow_execute: true
+allow_execute_pr: true
+allow_execute_evidence_pr: true
+allow_execute_llm: true
+max_auto_steps: 1
+`)
+
+	code := Run([]string{
+		"agent",
+		"--mode", "auto",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--max-steps", "2",
+	}, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("agent policy max auto steps code = %d, stdout = %s, stderr = %s", code, stdout.String(), stderr.String())
+	}
+	assertCLIOutputContains(t, stderr.String(), "agent policy: --max-steps 2 exceeds global/policies/agent-policy.yaml max_auto_steps 1")
+	if strings.Contains(stderr.String(), "validate repo") {
+		t.Fatalf("agent policy max auto steps stderr = %q, should fail before mode dispatch", stderr.String())
+	}
+}
+
+func TestRunAgentPolicyConfigCanDisablePRLLMAndEvidencePRBeforeModeDispatch(t *testing.T) {
+	cases := []struct {
+		name       string
+		policyBody string
+		args       []string
+		want       string
+	}{
+		{
+			name: "execute pr",
+			policyBody: `version: 1
+allow_execute: true
+allow_execute_pr: false
+allow_execute_evidence_pr: true
+allow_execute_llm: true
+max_auto_steps: 0
+`,
+			args: []string{
+				"agent",
+				"--mode", "plan-and-pr",
+				"--source-cluster-id", "prod-sqlserver-a",
+				"--project-id", "sales-db-to-tidb-prod-a",
+				"--stage", "export",
+				"--execute-pr",
+			},
+			want: "agent policy: --execute-pr is disabled by global/policies/agent-policy.yaml",
+		},
+		{
+			name: "evidence pr",
+			policyBody: `version: 1
+allow_execute: true
+allow_execute_pr: true
+allow_execute_evidence_pr: false
+allow_execute_llm: true
+max_auto_steps: 0
+`,
+			args: []string{
+				"agent",
+				"--mode", "execute-approved",
+				"--source-cluster-id", "prod-sqlserver-a",
+				"--project-id", "sales-db-to-tidb-prod-a",
+				"--stage", "export",
+				"--execute",
+				"--execute-evidence-pr",
+			},
+			want: "agent policy: --execute-evidence-pr is disabled by global/policies/agent-policy.yaml",
+		},
+		{
+			name: "llm",
+			policyBody: `version: 1
+allow_execute: true
+allow_execute_pr: true
+allow_execute_evidence_pr: true
+allow_execute_llm: false
+max_auto_steps: 0
+`,
+			args: []string{
+				"agent",
+				"--mode", "review-assist",
+				"--source-cluster-id", "prod-sqlserver-a",
+				"--project-id", "sales-db-to-tidb-prod-a",
+				"--stage", "schema",
+				"--execute-llm",
+			},
+			want: "agent policy: --execute-llm is disabled by global/policies/agent-policy.yaml",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			var stdout, stderr bytes.Buffer
+
+			if err := gitops.InitRepo(root); err != nil {
+				t.Fatal(err)
+			}
+			writeCLIFile(t, root, "global/policies/agent-policy.yaml", tc.policyBody)
+			args := append([]string{}, tc.args...)
+			args = append(args, "--root", root)
+
+			code := Run(args, &stdout, &stderr)
+			if code != 2 {
+				t.Fatalf("agent policy config code = %d, stdout = %s, stderr = %s", code, stdout.String(), stderr.String())
+			}
+			assertCLIOutputContains(t, stderr.String(), tc.want)
+			if strings.Contains(stderr.String(), "validate repo") {
+				t.Fatalf("agent policy config stderr = %q, should fail before mode dispatch", stderr.String())
+			}
+		})
+	}
+}
+
 func TestRunAgentStatusJSONReportsReconcileState(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer
@@ -5492,6 +5701,22 @@ func TestRunAgentStatusJSONReportsReconcileState(t *testing.T) {
 			Status          string `json:"status"`
 			Command         string `json:"command"`
 		} `json:"next_action"`
+		StageMatrix []struct {
+			Stage        string   `json:"stage"`
+			Status       string   `json:"status"`
+			ApprovalFile string   `json:"approval_file,omitempty"`
+			PlanFile     string   `json:"plan_file,omitempty"`
+			StateFile    string   `json:"state_file,omitempty"`
+			PRFiles      []string `json:"pr_files,omitempty"`
+		} `json:"stage_matrix"`
+		Policy struct {
+			Configured             bool `json:"configured"`
+			AllowExecute           bool `json:"allow_execute"`
+			AllowExecutePR         bool `json:"allow_execute_pr"`
+			AllowExecuteEvidencePR bool `json:"allow_execute_evidence_pr"`
+			AllowExecuteLLM        bool `json:"allow_execute_llm"`
+			MaxAutoSteps           int  `json:"max_auto_steps"`
+		} `json:"policy"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
 		t.Fatalf("agent status json stdout = %q, unmarshal error = %v", stdout.String(), err)
@@ -5507,6 +5732,24 @@ func TestRunAgentStatusJSONReportsReconcileState(t *testing.T) {
 	}
 	if !strings.Contains(report.NextAction.Command, "sqlserver2tidb worker-export") {
 		t.Fatalf("agent status json next command = %q, want worker-export", report.NextAction.Command)
+	}
+	if !report.Policy.Configured || !report.Policy.AllowExecute || !report.Policy.AllowExecutePR || !report.Policy.AllowExecuteEvidencePR || !report.Policy.AllowExecuteLLM {
+		t.Fatalf("agent status json policy = %+v, want default configured allow policy", report.Policy)
+	}
+	if report.Policy.MaxAutoSteps != 0 {
+		t.Fatalf("agent status json policy max auto steps = %d, want unlimited default", report.Policy.MaxAutoSteps)
+	}
+	if len(report.StageMatrix) != 7 {
+		t.Fatalf("agent status json stage matrix len = %d, want 7", len(report.StageMatrix))
+	}
+	if report.StageMatrix[1].Stage != "export" || report.StageMatrix[1].Status != "ready" {
+		t.Fatalf("agent status json stage matrix[1] = %+v, want ready export", report.StageMatrix[1])
+	}
+	if report.StageMatrix[1].ApprovalFile != "approvals/export-approval.yaml" || report.StageMatrix[1].PlanFile != "plan/export-plan.yaml" || report.StageMatrix[1].StateFile != "state/export-chunks.yaml" {
+		t.Fatalf("agent status json export artifacts = %+v, want approval/plan/state", report.StageMatrix[1])
+	}
+	if len(report.StageMatrix[1].PRFiles) == 0 || report.StageMatrix[1].PRFiles[0] != "prs/export-pr.md" {
+		t.Fatalf("agent status json export PR files = %+v, want export PR path", report.StageMatrix[1].PRFiles)
 	}
 }
 

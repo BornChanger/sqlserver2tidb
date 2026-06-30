@@ -61,6 +61,13 @@ worker:
   require_approval_file: true
   require_idempotent_steps: true
 `,
+		"global/policies/agent-policy.yaml": `version: 1
+allow_execute: true
+allow_execute_pr: true
+allow_execute_evidence_pr: true
+allow_execute_llm: true
+max_auto_steps: 0
+`,
 		"global/policies/file-schema-policy.yaml": `version: 1
 schemas:
   cluster: global/schemas/cluster.schema.json

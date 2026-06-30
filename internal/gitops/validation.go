@@ -23,6 +23,7 @@ type ValidationReport struct {
 var requiredGlobalFiles = []string{
 	"global/policies/approval-policy.yaml",
 	"global/policies/execution-policy.yaml",
+	"global/policies/agent-policy.yaml",
 	"global/policies/file-schema-policy.yaml",
 	"global/schemas/cluster.schema.json",
 	"global/schemas/project.schema.json",
