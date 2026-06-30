@@ -805,6 +805,137 @@ func TestRunSyncGitHubPRApprovalInfersProjectFromGeneratedPRBody(t *testing.T) {
 	assertCLIOutputContains(t, approval, "approved_by:\n  - alice")
 }
 
+func TestRunCompleteGitHubPRDryRunPrintsClosureCommands(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	createCLIProjectWithOneExportChunk(t, root, &stdout, &stderr)
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"complete-github-pr",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "export",
+		"--pr", "42",
+		"--repo", "BornChanger/sqlserver2tidb",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("complete-github-pr dry-run code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	assertCLIOutputContains(t, output, "dry run: not changing GitHub or git")
+	assertCLIOutputContains(t, output, "gh pr view 42 --json title,body,state,reviewDecision,mergedAt,latestReviews,statusCheckRollup,files --repo BornChanger/sqlserver2tidb")
+	assertCLIOutputContains(t, output, "gh pr review 42 --approve --body 'sqlserver2tidb automated approval' --repo BornChanger/sqlserver2tidb")
+	assertCLIOutputContains(t, output, "gh pr merge 42 --squash --delete-branch --repo BornChanger/sqlserver2tidb")
+	assertCLIOutputContains(t, output, "git pull --ff-only origin main")
+	assertCLIOutputContains(t, output, "sync approval: clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/approvals/export-approval.yaml")
+	assertCLIOutputContains(t, output, "git add clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/approvals/export-approval.yaml")
+	assertCLIOutputContains(t, output, "git commit -m '[approval:export] sales-db-to-tidb-prod-a from PR #42'")
+	assertCLIOutputContains(t, output, "git push origin HEAD:main")
+}
+
+func TestRunCompleteGitHubPRExecuteApprovesMergesSyncsAndPushesApproval(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	createCLIProjectWithOneExportChunk(t, root, &stdout, &stderr)
+	reviewCLIExportPlanPredicates(t, root)
+	setCLIReviewPlanStatus(t, root, "export", "reviewed")
+
+	fakeGH := filepath.Join(root, "fake-gh-complete")
+	firstView := `{
+  "title": "[export] sales-db-to-tidb-prod-a",
+  "body": "",
+  "state": "OPEN",
+  "reviewDecision": "REVIEW_REQUIRED",
+  "mergedAt": "",
+  "latestReviews": [],
+  "statusCheckRollup": [
+    {"__typename": "CheckRun", "conclusion": "SUCCESS"}
+  ],
+  "files": [
+    {"path": "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/export-plan.yaml"}
+  ]
+}
+`
+	secondView := `{
+  "title": "[export] sales-db-to-tidb-prod-a",
+  "body": "",
+  "state": "MERGED",
+  "reviewDecision": "APPROVED",
+  "mergedAt": "2026-01-02T03:04:05Z",
+  "latestReviews": [
+    {"state": "APPROVED", "author": {"login": "alice"}}
+  ],
+  "statusCheckRollup": [
+    {"__typename": "CheckRun", "conclusion": "SUCCESS"}
+  ],
+  "files": [
+    {"path": "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/export-plan.yaml"}
+  ]
+}
+`
+	fakeGHScript := "#!/bin/sh\n" +
+		"printf '%s\\n' \"$*\" >> gh-args.log\n" +
+		"if [ \"$1\" = \"pr\" ] && [ \"$2\" = \"view\" ]; then\n" +
+		"  count=0\n" +
+		"  if [ -f gh-view-count ]; then count=$(cat gh-view-count); fi\n" +
+		"  count=$((count + 1))\n" +
+		"  printf '%s\\n' \"$count\" > gh-view-count\n" +
+		"  if [ \"$count\" = \"1\" ]; then\n" +
+		"    cat <<'JSON'\n" + firstView + "JSON\n" +
+		"  else\n" +
+		"    cat <<'JSON'\n" + secondView + "JSON\n" +
+		"  fi\n" +
+		"  exit 0\n" +
+		"fi\n" +
+		"if [ \"$1\" = \"pr\" ] && [ \"$2\" = \"review\" ]; then printf 'approved\\n'; exit 0; fi\n" +
+		"if [ \"$1\" = \"pr\" ] && [ \"$2\" = \"merge\" ]; then printf 'merged\\n'; exit 0; fi\n" +
+		"exit 1\n"
+	if err := os.WriteFile(fakeGH, []byte(fakeGHScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fakeGit := filepath.Join(root, "fake-git-complete")
+	if err := os.WriteFile(fakeGit, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> git-args.log\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"complete-github-pr",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "export",
+		"--pr", "42",
+		"--repo", "BornChanger/sqlserver2tidb",
+		"--gh-binary", "./fake-gh-complete",
+		"--git-binary", "./fake-git-complete",
+		"--execute",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("complete-github-pr execute code = %d, stdout = %s, stderr = %s", code, stdout.String(), stderr.String())
+	}
+	output := stdout.String()
+	assertCLIOutputContains(t, output, "GitHub PR completed for export")
+	assertCLIOutputContains(t, output, "approval file: clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/approvals/export-approval.yaml")
+	approval := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/approvals/export-approval.yaml")
+	assertCLIOutputContains(t, approval, "status: approved")
+	assertCLIOutputContains(t, approval, "approved_by:\n  - alice")
+	assertCLIOutputContains(t, approval, "github_pr:\n  number: 42")
+	ghArgs := readCLIRelFile(t, root, "gh-args.log")
+	assertCLIOutputContains(t, ghArgs, "pr view 42 --json title,body,state,reviewDecision,mergedAt,latestReviews,statusCheckRollup,files --repo BornChanger/sqlserver2tidb")
+	assertCLIOutputContains(t, ghArgs, "pr review 42 --approve --body sqlserver2tidb automated approval --repo BornChanger/sqlserver2tidb")
+	assertCLIOutputContains(t, ghArgs, "pr merge 42 --squash --delete-branch --repo BornChanger/sqlserver2tidb")
+	gitArgs := readCLIRelFile(t, root, "git-args.log")
+	assertCLIOutputContains(t, gitArgs, "pull --ff-only origin main")
+	assertCLIOutputContains(t, gitArgs, "add clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/approvals/export-approval.yaml")
+	assertCLIOutputContains(t, gitArgs, "commit -m [approval:export] sales-db-to-tidb-prod-a from PR #42")
+	assertCLIOutputContains(t, gitArgs, "push origin HEAD:main")
+}
+
 func TestRunWorkerValidateCommand(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer

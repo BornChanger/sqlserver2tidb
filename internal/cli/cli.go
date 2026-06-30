@@ -67,6 +67,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runCreatePR(args[1:], stdout, stderr)
 	case "sync-github-pr-approval":
 		return runSyncGitHubPRApproval(args[1:], stdout, stderr)
+	case "complete-github-pr":
+		return runCompleteGitHubPR(args[1:], stdout, stderr)
 	case "create-worker-state-pr":
 		return runCreateWorkerStatePR(args[1:], stdout, stderr)
 	case "generate-executor-evidence-pr-draft":
@@ -1379,6 +1381,275 @@ func runSyncGitHubPRApproval(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+func runCompleteGitHubPR(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("complete-github-pr", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	root := fs.String("root", ".", "repository root")
+	sourceClusterID := fs.String("source-cluster-id", "", "upstream SQL Server cluster id")
+	projectID := fs.String("project-id", "", "migration project id")
+	stage := fs.String("stage", "", "PR stage with an approval file: schema, export, import, cdc, validation, or cutover")
+	prNumber := fs.Int("pr", 0, "GitHub pull request number")
+	repo := fs.String("repo", "", "optional GitHub repository in owner/name form")
+	ghBinary := fs.String("gh-binary", "gh", "GitHub CLI binary used to read, approve, and merge PRs")
+	gitBinary := fs.String("git-binary", "git", "git binary used to sync and push approval files")
+	base := fs.String("base", "main", "base branch to pull and push approval commits")
+	mergeMethod := fs.String("merge-method", "squash", "GitHub PR merge method: squash, merge, or rebase")
+	skipApprove := fs.Bool("skip-approve", false, "skip automated gh pr review --approve before merge")
+	deleteBranch := fs.Bool("delete-branch", true, "delete the PR branch after merge")
+	execute := fs.Bool("execute", false, "approve, merge, sync approval, commit, and push; default is dry-run")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	spec := githubPRCompletionSpec{
+		Root:            *root,
+		SourceClusterID: strings.TrimSpace(*sourceClusterID),
+		ProjectID:       strings.TrimSpace(*projectID),
+		Stage:           strings.ToLower(strings.TrimSpace(*stage)),
+		PRNumber:        *prNumber,
+		Repo:            strings.TrimSpace(*repo),
+		GHBinary:        commandBinary(*ghBinary, "gh"),
+		GitBinary:       commandBinary(*gitBinary, "git"),
+		Base:            strings.TrimSpace(*base),
+		MergeMethod:     strings.ToLower(strings.TrimSpace(*mergeMethod)),
+		SkipApprove:     *skipApprove,
+		DeleteBranch:    *deleteBranch,
+		Execute:         *execute,
+	}
+	if err := validateGitHubPRCompletionSpec(spec); err != nil {
+		fmt.Fprintf(stderr, "complete GitHub PR: %v\n", err)
+		return 2
+	}
+	if !spec.Execute {
+		printCompleteGitHubPRDryRun(stdout, spec)
+		return 0
+	}
+	result, err := completeGitHubPR(spec, stdout)
+	if err != nil {
+		fmt.Fprintf(stderr, "complete GitHub PR: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "GitHub PR completed for %s\n", result.ApprovalStage)
+	fmt.Fprintf(stdout, "PR: #%d\n", result.PRNumber)
+	fmt.Fprintf(stdout, "approval file: %s\n", result.ApprovalFile)
+	fmt.Fprintf(stdout, "payload hash: %s\n", result.PayloadHash)
+	fmt.Fprintf(stdout, "approved by: %s\n", strings.Join(result.ApprovedBy, ", "))
+	return 0
+}
+
+type githubPRCompletionSpec struct {
+	Root            string
+	SourceClusterID string
+	ProjectID       string
+	Stage           string
+	PRNumber        int
+	Repo            string
+	GHBinary        string
+	GitBinary       string
+	Base            string
+	MergeMethod     string
+	SkipApprove     bool
+	DeleteBranch    bool
+	Execute         bool
+}
+
+func validateGitHubPRCompletionSpec(spec githubPRCompletionSpec) error {
+	if spec.PRNumber <= 0 {
+		return fmt.Errorf("--pr must be positive")
+	}
+	if strings.TrimSpace(spec.SourceClusterID) == "" {
+		return fmt.Errorf("--source-cluster-id is required")
+	}
+	if strings.TrimSpace(spec.ProjectID) == "" {
+		return fmt.Errorf("--project-id is required")
+	}
+	if strings.TrimSpace(spec.Stage) == "" {
+		return fmt.Errorf("--stage is required")
+	}
+	if strings.TrimSpace(spec.Base) == "" {
+		return fmt.Errorf("--base is required")
+	}
+	switch spec.MergeMethod {
+	case "merge", "squash", "rebase":
+		return nil
+	default:
+		return fmt.Errorf("--merge-method must be one of merge, squash, or rebase")
+	}
+}
+
+func printCompleteGitHubPRDryRun(stdout io.Writer, spec githubPRCompletionSpec) {
+	approvalFile := githubPRCompletionApprovalFile(spec.SourceClusterID, spec.ProjectID, spec.Stage)
+	fmt.Fprintln(stdout, "dry run: not changing GitHub or git")
+	fmt.Fprintf(stdout, "%s\n", redact.Text(renderArgsForGitHubPRCompletion(append([]string{spec.GHBinary}, githubPRViewArgs(spec.PRNumber, spec.Repo)...))))
+	if !spec.SkipApprove {
+		fmt.Fprintf(stdout, "%s\n", redact.Text(renderArgsForGitHubPRCompletion(append([]string{spec.GHBinary}, githubPRReviewArgs(spec.PRNumber, spec.Repo)...))))
+	}
+	fmt.Fprintf(stdout, "%s\n", redact.Text(renderArgsForGitHubPRCompletion(append([]string{spec.GHBinary}, githubPRMergeArgs(spec.PRNumber, spec.Repo, spec.MergeMethod, spec.DeleteBranch)...))))
+	fmt.Fprintf(stdout, "%s\n", redact.Text(renderArgsForGitHubPRCompletion(append([]string{spec.GitBinary}, gitPullArgs(spec.Base)...))))
+	fmt.Fprintf(stdout, "sync approval: %s\n", approvalFile)
+	fmt.Fprintf(stdout, "%s\n", redact.Text(renderArgsForGitHubPRCompletion(append([]string{spec.GitBinary}, gitAddArgs(approvalFile)...))))
+	fmt.Fprintf(stdout, "%s\n", redact.Text(renderArgsForGitHubPRCompletion(append([]string{spec.GitBinary}, gitCommitArgs(spec.Stage, spec.ProjectID, spec.PRNumber)...))))
+	fmt.Fprintf(stdout, "%s\n", redact.Text(renderArgsForGitHubPRCompletion(append([]string{spec.GitBinary}, gitPushArgs(spec.Base)...))))
+}
+
+func completeGitHubPR(spec githubPRCompletionSpec, stdout io.Writer) (gitops.GitHubPRApprovalSyncResult, error) {
+	initialStatus, err := readGitHubPRStatus(spec.Root, spec.GHBinary, spec.Repo, spec.PRNumber)
+	if err != nil {
+		return gitops.GitHubPRApprovalSyncResult{}, err
+	}
+	if checksStatus := deriveGitHubPRChecksStatus(initialStatus.StatusCheckRollup); checksStatus != "PASSED" {
+		return gitops.GitHubPRApprovalSyncResult{}, fmt.Errorf("PR checks status is %s, want PASSED", checksStatus)
+	}
+
+	state := strings.ToUpper(strings.TrimSpace(initialStatus.State))
+	switch state {
+	case "MERGED":
+	case "OPEN":
+		if !spec.SkipApprove && strings.ToUpper(strings.TrimSpace(initialStatus.ReviewDecision)) != "APPROVED" {
+			if err := runRepositoryCommand(spec.Root, spec.GHBinary, githubPRReviewArgs(spec.PRNumber, spec.Repo), stdout, "gh pr review"); err != nil {
+				return gitops.GitHubPRApprovalSyncResult{}, err
+			}
+		}
+		if err := runRepositoryCommand(spec.Root, spec.GHBinary, githubPRMergeArgs(spec.PRNumber, spec.Repo, spec.MergeMethod, spec.DeleteBranch), stdout, "gh pr merge"); err != nil {
+			return gitops.GitHubPRApprovalSyncResult{}, err
+		}
+	default:
+		return gitops.GitHubPRApprovalSyncResult{}, fmt.Errorf("PR state is %s, want OPEN or MERGED", state)
+	}
+
+	if err := runRepositoryCommand(spec.Root, spec.GitBinary, gitPullArgs(spec.Base), stdout, "git pull"); err != nil {
+		return gitops.GitHubPRApprovalSyncResult{}, err
+	}
+	finalStatus, err := readGitHubPRStatus(spec.Root, spec.GHBinary, spec.Repo, spec.PRNumber)
+	if err != nil {
+		return gitops.GitHubPRApprovalSyncResult{}, err
+	}
+	inferred := inferGitHubPRMetadata(finalStatus)
+	effectiveSourceClusterID := firstNonEmpty(spec.SourceClusterID, inferred.SourceClusterID)
+	effectiveProjectID := firstNonEmpty(spec.ProjectID, inferred.ProjectID)
+	effectiveStage := firstNonEmpty(spec.Stage, inferred.Stage)
+	result, err := gitops.SyncGitHubPRApproval(spec.Root, gitops.GitHubPRApprovalSyncSpec{
+		SourceClusterID: effectiveSourceClusterID,
+		ProjectID:       effectiveProjectID,
+		Stage:           effectiveStage,
+		PRNumber:        spec.PRNumber,
+		PRState:         finalStatus.State,
+		ReviewDecision:  finalStatus.ReviewDecision,
+		ChecksStatus:    deriveGitHubPRChecksStatus(finalStatus.StatusCheckRollup),
+		MergedAt:        finalStatus.MergedAt,
+		ApprovedBy:      githubPRApprovers(finalStatus.LatestReviews),
+		ChangedFiles:    githubPRChangedFiles(finalStatus.Files),
+	})
+	if err != nil {
+		return gitops.GitHubPRApprovalSyncResult{}, err
+	}
+	if err := runRepositoryCommand(spec.Root, spec.GitBinary, gitAddArgs(result.ApprovalFile), stdout, "git add"); err != nil {
+		return gitops.GitHubPRApprovalSyncResult{}, err
+	}
+	if err := runRepositoryCommand(spec.Root, spec.GitBinary, gitCommitArgs(result.Stage, result.ProjectID, result.PRNumber), stdout, "git commit"); err != nil {
+		return gitops.GitHubPRApprovalSyncResult{}, err
+	}
+	if err := runRepositoryCommand(spec.Root, spec.GitBinary, gitPushArgs(spec.Base), stdout, "git push"); err != nil {
+		return gitops.GitHubPRApprovalSyncResult{}, err
+	}
+	return result, nil
+}
+
+func commandBinary(value, fallback string) string {
+	if trimmed := strings.TrimSpace(value); trimmed != "" {
+		return trimmed
+	}
+	return fallback
+}
+
+const githubPRViewJSONFields = "title,body,state,reviewDecision,mergedAt,latestReviews,statusCheckRollup,files"
+
+func renderArgsForGitHubPRCompletion(args []string) string {
+	quoted := make([]string, 0, len(args))
+	for _, arg := range args {
+		if arg == githubPRViewJSONFields {
+			quoted = append(quoted, arg)
+			continue
+		}
+		quoted = append(quoted, shellQuoteForEvidence(arg))
+	}
+	return strings.Join(quoted, " ")
+}
+
+func githubPRViewArgs(prNumber int, repo string) []string {
+	args := []string{
+		"pr", "view", strconv.Itoa(prNumber),
+		"--json", githubPRViewJSONFields,
+	}
+	if strings.TrimSpace(repo) != "" {
+		args = append(args, "--repo", strings.TrimSpace(repo))
+	}
+	return args
+}
+
+func githubPRReviewArgs(prNumber int, repo string) []string {
+	args := []string{
+		"pr", "review", strconv.Itoa(prNumber),
+		"--approve",
+		"--body", "sqlserver2tidb automated approval",
+	}
+	if strings.TrimSpace(repo) != "" {
+		args = append(args, "--repo", strings.TrimSpace(repo))
+	}
+	return args
+}
+
+func githubPRMergeArgs(prNumber int, repo, method string, deleteBranch bool) []string {
+	args := []string{"pr", "merge", strconv.Itoa(prNumber), "--" + strings.ToLower(strings.TrimSpace(method))}
+	if deleteBranch {
+		args = append(args, "--delete-branch")
+	}
+	if strings.TrimSpace(repo) != "" {
+		args = append(args, "--repo", strings.TrimSpace(repo))
+	}
+	return args
+}
+
+func gitPullArgs(base string) []string {
+	return []string{"pull", "--ff-only", "origin", strings.TrimSpace(base)}
+}
+
+func gitAddArgs(file string) []string {
+	return []string{"add", filepath.ToSlash(file)}
+}
+
+func gitCommitArgs(stage, projectID string, prNumber int) []string {
+	return []string{"commit", "-m", fmt.Sprintf("[approval:%s] %s from PR #%d", githubPRCompletionApprovalStage(stage), strings.TrimSpace(projectID), prNumber)}
+}
+
+func gitPushArgs(base string) []string {
+	return []string{"push", "origin", "HEAD:" + strings.TrimSpace(base)}
+}
+
+func githubPRCompletionApprovalFile(sourceClusterID, projectID, stage string) string {
+	return filepath.ToSlash(filepath.Join("clusters", strings.TrimSpace(sourceClusterID), "projects", strings.TrimSpace(projectID), "approvals", githubPRCompletionApprovalStage(stage)+"-approval.yaml"))
+}
+
+func githubPRCompletionApprovalStage(stage string) string {
+	stage = strings.ToLower(strings.TrimSpace(stage))
+	if stage == "schema" {
+		return "ddl"
+	}
+	return stage
+}
+
+func runRepositoryCommand(root, binary string, args []string, stdout io.Writer, name string) error {
+	cmd := exec.Command(binary, args...)
+	cmd.Dir = root
+	output, err := cmd.CombinedOutput()
+	if len(output) > 0 {
+		fmt.Fprint(stdout, redact.Text(string(output)))
+	}
+	if err != nil {
+		return fmt.Errorf("%s failed: %w", name, err)
+	}
+	return nil
+}
+
 type githubPRViewStatus struct {
 	Title             string                `json:"title"`
 	Body              string                `json:"body"`
@@ -1411,13 +1682,7 @@ func readGitHubPRStatus(root, ghBinary, repo string, prNumber int) (githubPRView
 	if binary == "" {
 		binary = "gh"
 	}
-	args := []string{
-		"pr", "view", strconv.Itoa(prNumber),
-		"--json", "title,body,state,reviewDecision,mergedAt,latestReviews,statusCheckRollup,files",
-	}
-	if strings.TrimSpace(repo) != "" {
-		args = append(args, "--repo", strings.TrimSpace(repo))
-	}
+	args := githubPRViewArgs(prNumber, repo)
 	cmd := exec.Command(binary, args...)
 	cmd.Dir = root
 	output, err := cmd.CombinedOutput()
@@ -2812,6 +3077,7 @@ Usage:
   sqlserver2tidb generate-pr-draft --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage schema
   sqlserver2tidb create-pr --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage schema
   sqlserver2tidb sync-github-pr-approval --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage export --pr 42 --repo BornChanger/sqlserver2tidb
+  sqlserver2tidb complete-github-pr --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage export --pr 42 --repo BornChanger/sqlserver2tidb --execute
   sqlserver2tidb create-worker-state-pr --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage export
   sqlserver2tidb generate-executor-evidence-pr-draft --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage ddl
   sqlserver2tidb create-executor-evidence-pr --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage ddl
