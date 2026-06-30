@@ -2083,6 +2083,46 @@ bin/sqlserver2tidb llm-migration-strategy \
 
 该命令读取源集群和项目 metadata、`plan/migration-plan.yaml`，以及已经存在的 compatibility、schema、export/import、CDC、validation 草案或报告，默认只做 dry-run。显式加 `--execute` 后，它会调用 provider，写回 `clusters/<source_cluster_id>/projects/<project_id>/ai/migration-strategy-advice.md` 和 `migration-strategy-advice.audit.json`。这些内容只用于人工评估 offline、short-downtime、low-downtime 策略取舍和 review 重点；它不会决定迁移模式，不会改写 plan，不会写 approval/state/evidence，也不会触发 worker。
 
+### 16.9.6 llm-validation-analysis
+
+```bash
+bin/sqlserver2tidb llm-validation-analysis \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --provider-config global/llm-providers.yaml \
+  --execute
+```
+
+该命令读取 `plan/validation-plan.yaml`，以及已经存在的 `state/validation-status.yaml`、`evidence/validation-report.md`、`evidence/executor-validation-run.json` 和 schema 上下文，默认只做 dry-run。显式加 `--execute` 后，它会调用 provider，写回 `clusters/<source_cluster_id>/projects/<project_id>/ai/validation-mismatch-analysis.md` 和 `validation-mismatch-analysis.audit.json`。它只能解释 mismatch、归纳可能原因、建议后续 deterministic 检查；它不会把 validation 标为通过，不会修改 validation evidence，不会改 approval/state/plan，也不会触发 worker。
+
+### 16.9.7 llm-cutover-risk
+
+```bash
+bin/sqlserver2tidb llm-cutover-risk \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --provider-config global/llm-providers.yaml \
+  --execute
+```
+
+该命令读取 `plan/cutover-runbook.md`，以及已经存在的 migration state、validation state、源集群 CDC checkpoint、cutover approval、executor evidence、validation report、cutover evidence 和 post-cutover report，默认只做 dry-run。显式加 `--execute` 后，它会调用 provider，写回 `clusters/<source_cluster_id>/projects/<project_id>/ai/cutover-risk-summary.md` 和 `cutover-risk-summary.audit.json`。它只辅助人工 review cutover 风险、rollback 边界和 post-cutover 检查；它不会批准 cutover，不会执行 cutover，不会修改 state/evidence。
+
+### 16.9.8 llm-pr-summary
+
+```bash
+bin/sqlserver2tidb llm-pr-summary \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --stage schema \
+  --provider-config global/llm-providers.yaml \
+  --execute
+```
+
+该命令读取已经由 `generate-pr-draft` 生成的 `prs/<stage>-pr.md`，以及相关 project metadata、migration plan、schema diff、conversion report 和可用的 stage plan，默认只做 dry-run。显式加 `--execute` 后，它会调用 provider，写回 `clusters/<source_cluster_id>/projects/<project_id>/ai/pr-summary.md` 和 `pr-summary.audit.json`。它只能生成 review prose、review focus 和风险摘要；PR 文件列表、approval 文件、payload hash、GitHub CLI 参数和 stage gate 仍然由确定性代码生成。
+
 ### 16.10 generate-pr-draft
 
 项目级 stage：

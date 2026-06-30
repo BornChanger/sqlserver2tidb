@@ -724,6 +724,210 @@ func TestRunLLMMigrationStrategyExecuteWritesRedactedAdvice(t *testing.T) {
 	}
 }
 
+func TestRunLLMValidationAnalysisDryRunDoesNotCallProvider(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createProjectWithValidationAnalysisInputs(t, root, &stdout, &stderr)
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		t.Fatalf("provider should not be called during dry-run")
+	}))
+	defer server.Close()
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"llm-validation-analysis",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--base-url", server.URL + "/v1",
+		"--model", "migration-advisor",
+		"--auth-mode", "oauth_token_env",
+		"--token-env", "SQLSERVER2TIDB_TEST_LLM_TOKEN",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("llm-validation-analysis dry-run code = %d, stderr = %s", code, stderr.String())
+	}
+	if called {
+		t.Fatal("provider was called during dry-run")
+	}
+	output := stdout.String()
+	assertCLIOutputContains(t, output, "LLM validation analysis dry run for sales-db-to-tidb-prod-a")
+	assertCLIOutputContains(t, output, "provider type: openai_compatible")
+	assertCLIOutputContains(t, output, "auth mode: oauth_token_env")
+	assertCLIOutputContains(t, output, "would write clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/ai/validation-mismatch-analysis.md")
+	assertNotExists(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/ai/validation-mismatch-analysis.md")
+}
+
+func TestRunLLMValidationAnalysisExecuteWritesRedactedAnalysis(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createProjectWithValidationAnalysisInputs(t, root, &stdout, &stderr)
+	t.Setenv("SQLSERVER2TIDB_TEST_LLM_TOKEN", "raw-provider-token")
+	var requestBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer raw-provider-token" {
+			t.Fatalf("Authorization = %q", r.Header.Get("Authorization"))
+		}
+		data, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("ReadAll() error = %v", err)
+		}
+		requestBody = string(data)
+		if strings.Contains(requestBody, "validation-raw-password") {
+			t.Fatalf("LLM request leaked secret: %s", requestBody)
+		}
+		if !strings.Contains(requestBody, "validation-plan.yaml") || !strings.Contains(requestBody, "validation-report.md") || !strings.Contains(requestBody, "executor-validation-run.json") {
+			t.Fatalf("LLM request = %s, want validation inputs", requestBody)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"choices":[{"message":{"content":"# Validation Mismatch Analysis\n\n- Investigate the failed bucket before cutover."}}],"usage":{"prompt_tokens":31,"completion_tokens":12,"total_tokens":43}}`)
+	}))
+	defer server.Close()
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"llm-validation-analysis",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--base-url", server.URL + "/v1",
+		"--model", "migration-advisor",
+		"--auth-mode", "oauth_token_env",
+		"--token-env", "SQLSERVER2TIDB_TEST_LLM_TOKEN",
+		"--execute",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("llm-validation-analysis execute code = %d, stdout = %s, stderr = %s", code, stdout.String(), stderr.String())
+	}
+	output := stdout.String()
+	assertCLIOutputContains(t, output, "LLM validation analysis generated for sales-db-to-tidb-prod-a")
+	assertCLIOutputContains(t, output, "wrote clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/ai/validation-mismatch-analysis.md")
+	assertCLIOutputContains(t, output, "wrote clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/ai/validation-mismatch-analysis.audit.json")
+	advice := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/ai/validation-mismatch-analysis.md")
+	assertCLIOutputContains(t, advice, "# Validation Mismatch Analysis")
+	assertCLIOutputContains(t, advice, "failed bucket")
+	if strings.Contains(advice, "raw-provider-token") || strings.Contains(advice, "validation-raw-password") {
+		t.Fatalf("validation analysis leaked secret:\n%s", advice)
+	}
+	audit := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/ai/validation-mismatch-analysis.audit.json")
+	assertCLIOutputContains(t, audit, `"project_id": "sales-db-to-tidb-prod-a"`)
+	assertCLIOutputContains(t, audit, `"output_file": "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/ai/validation-mismatch-analysis.md"`)
+	if strings.Contains(audit, "raw-provider-token") || strings.Contains(audit, "validation-raw-password") {
+		t.Fatalf("validation analysis audit leaked secret:\n%s", audit)
+	}
+}
+
+func TestRunLLMCutoverRiskExecuteWritesRedactedSummary(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createProjectWithCutoverRiskInputs(t, root, &stdout, &stderr)
+	t.Setenv("SQLSERVER2TIDB_TEST_LLM_TOKEN", "raw-provider-token")
+	var requestBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("ReadAll() error = %v", err)
+		}
+		requestBody = string(data)
+		if strings.Contains(requestBody, "cutover-raw-password") {
+			t.Fatalf("LLM request leaked secret: %s", requestBody)
+		}
+		if !strings.Contains(requestBody, "cutover-runbook.md") || !strings.Contains(requestBody, "cdc-checkpoint.yaml") || !strings.Contains(requestBody, "cutover-evidence.md") {
+			t.Fatalf("LLM request = %s, want cutover inputs", requestBody)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"choices":[{"message":{"content":"# Cutover Risk Summary\n\n- Keep rollback owner on bridge until post-cutover checks pass."}}],"usage":{"prompt_tokens":37,"completion_tokens":13,"total_tokens":50}}`)
+	}))
+	defer server.Close()
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"llm-cutover-risk",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--base-url", server.URL + "/v1",
+		"--model", "migration-advisor",
+		"--auth-mode", "oauth_token_env",
+		"--token-env", "SQLSERVER2TIDB_TEST_LLM_TOKEN",
+		"--execute",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("llm-cutover-risk execute code = %d, stdout = %s, stderr = %s", code, stdout.String(), stderr.String())
+	}
+	output := stdout.String()
+	assertCLIOutputContains(t, output, "LLM cutover risk summary generated for sales-db-to-tidb-prod-a")
+	assertCLIOutputContains(t, output, "wrote clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/ai/cutover-risk-summary.md")
+	assertCLIOutputContains(t, output, "wrote clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/ai/cutover-risk-summary.audit.json")
+	summary := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/ai/cutover-risk-summary.md")
+	assertCLIOutputContains(t, summary, "# Cutover Risk Summary")
+	assertCLIOutputContains(t, summary, "rollback owner")
+	if strings.Contains(summary, "raw-provider-token") || strings.Contains(summary, "cutover-raw-password") {
+		t.Fatalf("cutover risk summary leaked secret:\n%s", summary)
+	}
+}
+
+func TestRunLLMPRSummaryExecuteWritesRedactedSummary(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createProjectWithPRSummaryInputs(t, root, &stdout, &stderr)
+	t.Setenv("SQLSERVER2TIDB_TEST_LLM_TOKEN", "raw-provider-token")
+	var requestBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("ReadAll() error = %v", err)
+		}
+		requestBody = string(data)
+		if strings.Contains(requestBody, "pr-raw-password") {
+			t.Fatalf("LLM request leaked secret: %s", requestBody)
+		}
+		if !strings.Contains(requestBody, "prs/") || !strings.Contains(requestBody, "migration-plan.yaml") || !strings.Contains(requestBody, "schema-diff.json") {
+			t.Fatalf("LLM request = %s, want PR summary inputs", requestBody)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"choices":[{"message":{"content":"# PR Summary\n\n- Review schema and validation changes before approval."}}],"usage":{"prompt_tokens":41,"completion_tokens":10,"total_tokens":51}}`)
+	}))
+	defer server.Close()
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"llm-pr-summary",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "schema",
+		"--base-url", server.URL + "/v1",
+		"--model", "migration-advisor",
+		"--auth-mode", "oauth_token_env",
+		"--token-env", "SQLSERVER2TIDB_TEST_LLM_TOKEN",
+		"--execute",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("llm-pr-summary execute code = %d, stdout = %s, stderr = %s", code, stdout.String(), stderr.String())
+	}
+	output := stdout.String()
+	assertCLIOutputContains(t, output, "LLM PR summary generated for sales-db-to-tidb-prod-a")
+	assertCLIOutputContains(t, output, "wrote clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/ai/pr-summary.md")
+	assertCLIOutputContains(t, output, "wrote clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/ai/pr-summary.audit.json")
+	summary := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/ai/pr-summary.md")
+	assertCLIOutputContains(t, summary, "# PR Summary")
+	assertCLIOutputContains(t, summary, "schema and validation")
+	if strings.Contains(summary, "raw-provider-token") || strings.Contains(summary, "pr-raw-password") {
+		t.Fatalf("PR summary leaked secret:\n%s", summary)
+	}
+}
+
 func TestRunGenerateSchemaDraftCommand(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer
@@ -5769,6 +5973,72 @@ password=strategy-raw-password
 	}, stdout, stderr); code != 0 {
 		t.Fatalf("generate-validation-plan code = %d, stderr = %s", code, stderr.String())
 	}
+}
+
+func createProjectWithValidationAnalysisInputs(t *testing.T, root string, stdout, stderr *bytes.Buffer) {
+	t.Helper()
+	createProjectWithMigrationStrategyInputs(t, root, stdout, stderr)
+	writeCLIFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-validation-run.json", `{
+  "stage": "validation",
+  "status": "failed",
+  "project_id": "sales-db-to-tidb-prod-a",
+  "source_cluster_id": "prod-sqlserver-a",
+  "payload_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "commands": [
+    {
+      "id": "orders-bucket-0",
+      "args": ["sqlserver2tidb-executor", "validate-count", "--execute"],
+      "shell_command": "sqlserver2tidb-executor validate-count --execute",
+      "exit_code": 1,
+      "output": "validation mismatch password=validation-raw-password source=10 target=9\n",
+      "started_at": "2026-01-02T03:04:05Z",
+      "completed_at": "2026-01-02T03:04:06Z",
+      "duration_ms": 1000
+    }
+  ]
+}
+`)
+	writeCLIFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/validation-report.md", `# Validation Report
+
+password=validation-raw-password
+
+| Check | Status | Message |
+| --- | --- | --- |
+| validation_executor_evidence | failed | orders-bucket-0 mismatch source=10 target=9 |
+`)
+}
+
+func createProjectWithCutoverRiskInputs(t *testing.T, root string, stdout, stderr *bytes.Buffer) {
+	t.Helper()
+	createCLICutoverReadyProject(t, root)
+	hash, err := gitops.ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "cutover")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeCLIStageApproval(t, root, "cutover", hash)
+	if _, err := gitops.RunCutoverWorker(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a"); err != nil {
+		t.Fatal(err)
+	}
+	evidenceRel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/cutover-evidence.md"
+	evidence := readCLIRelFile(t, root, evidenceRel)
+	writeCLIFile(t, root, evidenceRel, evidence+"\npassword=cutover-raw-password\n")
+}
+
+func createProjectWithPRSummaryInputs(t *testing.T, root string, stdout, stderr *bytes.Buffer) {
+	t.Helper()
+	createProjectWithMigrationStrategyInputs(t, root, stdout, stderr)
+	stdout.Reset()
+	stderr.Reset()
+	if code := Run([]string{
+		"generate-pr-draft",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "schema",
+	}, stdout, stderr); code != 0 {
+		t.Fatalf("generate-pr-draft code = %d, stderr = %s", code, stderr.String())
+	}
+	writeCLIFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/schema/schema-diff.json", readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/schema/schema-diff.json")+"\npr_password=pr-raw-password\n")
 }
 
 func assertExists(t *testing.T, root, rel string) {

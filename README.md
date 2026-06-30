@@ -17,7 +17,7 @@ This MVP provides:
 - SQL Server discovery dry-run planning without opening a database connection.
 - SQL Server catalog discovery using a connection string supplied through an environment variable.
 - Rule-based SQL Server compatibility analysis from `inventory/inventory.json`.
-- LLM-assisted compatibility, schema rewrite candidate, and migration strategy advice generation that reads redacted deterministic inputs and writes advisory files under `clusters/<source_cluster_id>/ai/` or project `ai/` directories.
+- LLM-assisted compatibility, schema rewrite candidate, migration strategy, validation mismatch, cutover risk, and PR summary advice generation that reads redacted deterministic inputs and writes advisory files under `clusters/<source_cluster_id>/ai/` or project `ai/` directories.
 - Project-scoped TiDB schema draft generation from SQL Server inventory and project metadata.
 - Project-scoped full export/import plan draft generation from SQL Server inventory and project metadata.
 - Project-scoped schema drift detection against a reviewed schema baseline, with report generation, automatic draft regeneration for repairable drift, and a schema-drift PR draft.
@@ -399,6 +399,46 @@ go run ./cmd/sqlserver2tidb llm-migration-strategy \
 ```
 
 This reads cluster/project metadata, `plan/migration-plan.yaml`, and any available compatibility, schema, export/import, CDC, and validation artifacts, then writes advisory strategy notes under `clusters/<source_cluster_id>/projects/<project_id>/ai/`. It does not choose or approve a migration mode, does not rewrite plans, and does not trigger workers.
+
+Generate optional LLM validation mismatch analysis after validation evidence exists:
+
+```bash
+go run ./cmd/sqlserver2tidb llm-validation-analysis \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --provider-config global/llm-providers.yaml \
+  --execute
+```
+
+This reads the reviewed validation plan plus available validation state/report/executor evidence and writes `clusters/<source_cluster_id>/projects/<project_id>/ai/validation-mismatch-analysis.md` plus an audit JSON file. It can explain likely mismatch causes and deterministic checks to rerun, but it does not mark validation passed or modify validation evidence.
+
+Generate optional LLM cutover risk notes before or after cutover rehearsal:
+
+```bash
+go run ./cmd/sqlserver2tidb llm-cutover-risk \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --provider-config global/llm-providers.yaml \
+  --execute
+```
+
+This reads the reviewed cutover runbook plus available CDC checkpoint, validation status, approvals, and evidence files, then writes `ai/cutover-risk-summary.md` and an audit JSON file. It is advisory only and does not approve or execute cutover.
+
+Generate optional LLM PR review prose from a deterministic PR draft:
+
+```bash
+go run ./cmd/sqlserver2tidb llm-pr-summary \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --stage schema \
+  --provider-config global/llm-providers.yaml \
+  --execute
+```
+
+This reads `prs/<stage>-pr.md` plus relevant project metadata and plan/schema artifacts, then writes `ai/pr-summary.md` and an audit JSON file. File lists, approval files, payload hashes, and GitHub CLI arguments remain deterministic; the LLM output is review assistance only.
 
 Compute payload hashes and run reviewed DDL/export/import/CDC/validation/cutover actions after the matching approval files are marked approved. `worker-export`, `worker-import`, `worker-cdc`, and `worker-validate` also require their plan files to be `reviewed` or `approved`; draft export/import/CDC/validation plans are not executable even with approved approval files:
 
