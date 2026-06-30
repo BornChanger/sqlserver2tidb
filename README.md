@@ -99,7 +99,7 @@ Build local release archives under `dist/`:
 make dist VERSION=v0.1.0
 ```
 
-Each archive includes both binaries, `README.md`, `LICENSE`, and the core documents under `docs/`.
+Each archive includes both binaries, `README.md`, `LICENSE`, core documents under `docs/`, quickstart and worker-agent examples, the LLM provider configuration template, helper scripts, and optional integration-test assets.
 
 Limit local release builds to selected `GOOS/GOARCH` targets:
 
@@ -712,6 +712,7 @@ This checks approved metadata, writes `state/validation-status.yaml`, and writes
 
 - [User Manual](docs/user-manual.md): end-to-end operator guide for the target SQL Server to TiDB migration agent workflow.
 - [Design Notes](docs/design.md): control-plane, metadata, and LLM responsibility boundaries.
+- [Delivery Guide](docs/delivery.md): release archive, container, metadata repository, worker-agent, GitHub, and LLM provider delivery instructions.
 
 ## Design Principles
 

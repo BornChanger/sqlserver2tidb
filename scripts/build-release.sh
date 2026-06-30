@@ -53,9 +53,10 @@ for target in "${targets[@]}"; do
   GOOS="${goos}" GOARCH="${goarch}" go build -ldflags "${ldflags}" -o "${outdir}/sqlserver2tidb-executor${suffix}" ./cmd/sqlserver2tidb-executor
   cp README.md LICENSE "${outdir}/"
   mkdir -p "${outdir}/docs"
-  cp docs/design.md docs/user-manual.md "${outdir}/docs/"
+  cp docs/design.md docs/user-manual.md docs/delivery.md "${outdir}/docs/"
   mkdir -p "${outdir}/examples" "${outdir}/scripts"
   cp -R examples/quickstart examples/worker-agent "${outdir}/examples/"
+  cp examples/llm-providers.yaml "${outdir}/examples/"
   cp scripts/run-quickstart-example.sh scripts/run-integration-tests.sh scripts/run-cdc-soak-tests.sh "${outdir}/scripts/"
   mkdir -p "${outdir}/tests"
   cp -R tests/integration "${outdir}/tests/"
