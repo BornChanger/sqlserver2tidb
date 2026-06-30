@@ -21,7 +21,7 @@ LLM 只生成解释、候选方案和文档，不直接执行迁移
 
 ## 2. 当前状态与终极目标
 
-### 2.1 当前 MVP 已实现
+### 2.1 当前版本已实现
 
 当前代码已实现：
 
@@ -121,7 +121,7 @@ clusters/<source_cluster_id>/projects/<project_id>/
 
 PR 是审批边界。Agent 或 CLI 可以生成文件，但这些文件必须进入 PR，由 DBA、应用 owner、SRE 等角色 review 后，worker 才能执行对应步骤。
 
-当前 MVP 可以生成本地 PR draft 文件，不会直接调用 GitHub API。生成的 draft 保存到：
+当前版本可以生成本地 PR draft 文件，不会直接调用 GitHub API。生成的 draft 保存到：
 
 ```text
 clusters/<source_cluster_id>/prs/<stage>-pr.md
@@ -134,7 +134,7 @@ clusters/<source_cluster_id>/projects/<project_id>/prs/<stage>-pr.md
 
 Worker 是终极形态中的执行器。它从 GitHub repo 拉取已批准 instruction，执行确定性操作，并把状态和证据写回 repo。
 
-当前 MVP 实现了显式指定 project 的 `worker-export`、`worker-import`、`worker-cdc`、`worker-validate` 和 `worker-cutover`。它们都需要 approval 和 payload hash 匹配；`worker-export`、`worker-import`、`worker-cdc` 和 `worker-validate` 还要求对应 plan 已经是 `reviewed` 或 `approved`。`worker-cutover` 要求 cutover runbook 已 review、export/import/validation executor evidence 成功、validation worker 状态 passed，非 offline 项目还要求 CDC executor evidence 成功且源集群 CDC checkpoint 为 `caught_up`。当前还实现了 `worker-executor`，用于在同一 approval/hash gate 后生成外部执行器命令，默认 dry-run。当前还实现了 `worker-reconcile --dry-run`、`worker-reconcile --execute-next`、`worker-reconcile --loop` 和 `worker-agent`；`--execute-next` 会获取源集群级 lease，并执行第一个 ready metadata-only action，`--loop` 会用同一个 holder 连续执行 ready metadata-only actions，直到没有 ready action 或达到最大迭代次数，`worker-agent` 则把同一 loop 包装成本地进程/容器 worker 入口。DDL action 在 `schema/schema-diff.json` 未 `reviewed` 时会被视为 blocked，export、import、CDC 或 validation action 在对应 plan 仍为 `draft` 时也会被视为 blocked，cutover action 在证据或 checkpoint gate 未满足时会被视为 blocked；同一 approved payload hash 如果已经有非空 stage state，也会被视为 blocked，避免 reconcile loop 重复运行同一个动作。加上 `--state-pr-draft` 后，reconcile 单步执行或 worker agent 可以生成 state/evidence/lease 写回的 PR body 草稿。`create-worker-state-pr` 可以默认 dry-run 地准备 bot branch、commit、push 和 GitHub PR 命令；如果存在 `evidence/executor-<stage>-run.json`，会先校验 approval、payload hash、已 review 的执行指令和 executor command 结构，再纳入提交文件列表；dry-run 会提示 PR body 文件列表是否需要刷新，只有显式 `--execute` 时才会刷新 body 并调用本地 `git` 和 `gh`。对于 DDL 这类 executor-only 阶段，`generate-executor-evidence-pr-draft` 可以把 `evidence/executor-ddl-run.json` 转成 PR body，`create-executor-evidence-pr` 可以默认 dry-run 地准备 evidence PR 的 bot branch、commit、push 和 GitHub PR 命令。
+当前版本实现了显式指定 project 的 `worker-export`、`worker-import`、`worker-cdc`、`worker-validate` 和 `worker-cutover`。它们都需要 approval 和 payload hash 匹配；`worker-export`、`worker-import`、`worker-cdc` 和 `worker-validate` 还要求对应 plan 已经是 `reviewed` 或 `approved`。`worker-cutover` 要求 cutover runbook 已 review、export/import/validation executor evidence 成功、validation worker 状态 passed，非 offline 项目还要求 CDC executor evidence 成功且源集群 CDC checkpoint 为 `caught_up`。当前还实现了 `worker-executor`，用于在同一 approval/hash gate 后生成外部执行器命令，默认 dry-run。当前还实现了 `worker-reconcile --dry-run`、`worker-reconcile --execute-next`、`worker-reconcile --loop` 和 `worker-agent`；`--execute-next` 会获取源集群级 lease，并执行第一个 ready metadata-only action，`--loop` 会用同一个 holder 连续执行 ready metadata-only actions，直到没有 ready action 或达到最大迭代次数，`worker-agent` 则把同一 loop 包装成本地进程/容器 worker 入口。DDL action 在 `schema/schema-diff.json` 未 `reviewed` 时会被视为 blocked，export、import、CDC 或 validation action 在对应 plan 仍为 `draft` 时也会被视为 blocked，cutover action 在证据或 checkpoint gate 未满足时会被视为 blocked；同一 approved payload hash 如果已经有非空 stage state，也会被视为 blocked，避免 reconcile loop 重复运行同一个动作。加上 `--state-pr-draft` 后，reconcile 单步执行或 worker agent 可以生成 state/evidence/lease 写回的 PR body 草稿。`create-worker-state-pr` 可以默认 dry-run 地准备 bot branch、commit、push 和 GitHub PR 命令；如果存在 `evidence/executor-<stage>-run.json`，会先校验 approval、payload hash、已 review 的执行指令和 executor command 结构，再纳入提交文件列表；dry-run 会提示 PR body 文件列表是否需要刷新，只有显式 `--execute` 时才会刷新 body 并调用本地 `git` 和 `gh`。对于 DDL 这类 executor-only 阶段，`generate-executor-evidence-pr-draft` 可以把 `evidence/executor-ddl-run.json` 转成 PR body，`create-executor-evidence-pr` 可以默认 dry-run 地准备 evidence PR 的 bot branch、commit、push 和 GitHub PR 命令。
 
 ### 3.5 LLM
 
@@ -701,7 +701,7 @@ inventory/compatibility-report.md
 inventory/schema-issues.yaml
 ```
 
-当前 MVP 会创建占位文件，并支持两种 discovery 模式：
+当前版本会创建占位文件，并支持两种 discovery 模式：
 
 - dry-run：只根据 `cluster.yaml` 和目录结构输出计划，不连接 SQL Server，不写入 inventory 文件。
 - catalog discovery：通过环境变量中的 SQL Server 连接串读取当前连接数据库的 `sys.*` catalog，并写回 `inventory/inventory.json`。
@@ -763,7 +763,7 @@ Agent 根据规则识别风险：
 - xml。
 - geometry/geography。
 
-当前 MVP 已支持确定性规则分析，输入是：
+当前版本已支持确定性规则分析，输入是：
 
 ```text
 clusters/<source_cluster_id>/inventory/inventory.json
@@ -813,7 +813,7 @@ schema/schema-diff.json
 - DDL 必须在 shadow TiDB 集群 dry run。
 - 最终 DDL 必须通过 PR review。
 
-当前 MVP 已支持项目级 schema draft：
+当前版本已支持项目级 schema draft：
 
 ```bash
 bin/sqlserver2tidb generate-schema-draft \
@@ -867,7 +867,7 @@ CREATE TABLE IF NOT EXISTS `app`.`orders` (
 - cutover 条件。
 - required approvals。
 
-当前 MVP 已支持从 inventory 和 project metadata 生成项目级全量导出/导入计划草稿：
+当前版本已支持从 inventory 和 project metadata 生成项目级全量导出/导入计划草稿：
 
 ```bash
 bin/sqlserver2tidb generate-data-plans \
@@ -958,7 +958,7 @@ jobs:
       - "@sqlserver2tidb_null_bitmap"
 ```
 
-当前 MVP 也支持从 inventory 和 project metadata 生成项目级 CDC 计划草稿：
+当前版本也支持从 inventory 和 project metadata 生成项目级 CDC 计划草稿：
 
 ```bash
 bin/sqlserver2tidb generate-cdc-plan \
@@ -1045,7 +1045,7 @@ tracked_tables:
     status: draft
 ```
 
-当前 MVP 也支持从 inventory 和 project metadata 生成项目级 validation plan 草稿：
+当前版本也支持从 inventory 和 project metadata 生成项目级 validation plan 草稿：
 
 ```bash
 bin/sqlserver2tidb generate-validation-plan \
@@ -1097,7 +1097,7 @@ checks:
 state/export-chunks.yaml
 ```
 
-当前 MVP 的 `worker-export` 只在 export approval 和 payload hash 匹配、且 `plan/export-plan.yaml` 的 status 已经是 `reviewed` 或 `approved` 后，把 `plan/export-plan.yaml` 写成 planned 状态和 evidence。它会拒绝 draft export plan，也会拒绝仍包含 `TODO` predicate 的 export chunk。`worker-import` 同样要求 `plan/import-plan.yaml` 的 status 已经是 `reviewed` 或 `approved`，并会拒绝 import job `fields` 与所选 import engine 不兼容的计划。它们不执行导出/导入、不连接 SQL Server 或 TiDB、不写对象存储。
+当前版本的 `worker-export` 只在 export approval 和 payload hash 匹配、且 `plan/export-plan.yaml` 的 status 已经是 `reviewed` 或 `approved` 后，把 `plan/export-plan.yaml` 写成 planned 状态和 evidence。它会拒绝 draft export plan，也会拒绝仍包含 `TODO` predicate 的 export chunk。`worker-import` 同样要求 `plan/import-plan.yaml` 的 status 已经是 `reviewed` 或 `approved`，并会拒绝 import job `fields` 与所选 import engine 不兼容的计划。它们不执行导出/导入、不连接 SQL Server 或 TiDB、不写对象存储。
 
 先计算 export payload hash：
 
@@ -1183,7 +1183,7 @@ evidence/import-summary.json
 - 文件 checksum 已确认。
 - TiDB 集群容量已确认。
 
-当前 MVP 的 `worker-import` 只在 import approval 和 payload hash 匹配后，把 `plan/import-plan.yaml` 写成 planned 状态和 evidence；如果 `tidb-import-into` import job 带有 `fields`，会原样写入 `state/import-jobs.yaml`。它会拒绝没有 jobs、缺少必需字段、import job `source_uri` 与所选 import engine 不匹配、`sql-insert` 或 `tidb-lightning` import job 带有 `fields`，或 `tidb-import-into` import job 的 `fields` 为空、重复、包含不安全 user variable。S3/GCS 可由 executor 在执行前读取 header，因此 `tidb-import-into` 的手工 plan 可以省略 `fields`；Azure Blob 当前可用于 `sql-insert` 和 `tidb-lightning`，不用于 TiDB `IMPORT INTO`。`tidb-lightning` plan 还必须解析出一个与所有 job 源目录一致的 `data_source_uri`。metadata worker 本身不执行 TiDB Lightning 或 `IMPORT INTO`，也不连接 TiDB。
+当前版本的 `worker-import` 只在 import approval 和 payload hash 匹配后，把 `plan/import-plan.yaml` 写成 planned 状态和 evidence；如果 `tidb-import-into` import job 带有 `fields`，会原样写入 `state/import-jobs.yaml`。它会拒绝没有 jobs、缺少必需字段、import job `source_uri` 与所选 import engine 不匹配、`sql-insert` 或 `tidb-lightning` import job 带有 `fields`，或 `tidb-import-into` import job 的 `fields` 为空、重复、包含不安全 user variable。S3/GCS 可由 executor 在执行前读取 header，因此 `tidb-import-into` 的手工 plan 可以省略 `fields`；Azure Blob 当前可用于 `sql-insert` 和 `tidb-lightning`，不用于 TiDB `IMPORT INTO`。`tidb-lightning` plan 还必须解析出一个与所有 job 源目录一致的 `data_source_uri`。metadata worker 本身不执行 TiDB Lightning 或 `IMPORT INTO`，也不连接 TiDB。
 
 先计算 import payload hash：
 
@@ -1251,7 +1251,7 @@ clusters/<source_cluster_id>/state/cdc-checkpoint.yaml
 
 LLM 不参与 LSN 判断，也不参与 offset 决策。
 
-当前 MVP 的 `worker-cdc` 只在 `plan/cdc-plan.yaml` 已经是 `reviewed` 或 `approved`、cdc approval 通过且 payload hash 匹配后，把 `plan/cdc-plan.yaml` 写成 planned 状态和 evidence。它会拒绝 draft CDC plan、没有 tracked tables、缺少 `columns`、缺少 `key_columns`、key columns 不在 captured columns 中或缺少其他必需字段的 CDC plan。它不启用 SQL Server CDC，不启动 Debezium，不读取 LSN，不判断 catch-up，也不向 TiDB 回放增量。
+当前版本的 `worker-cdc` 只在 `plan/cdc-plan.yaml` 已经是 `reviewed` 或 `approved`、cdc approval 通过且 payload hash 匹配后，把 `plan/cdc-plan.yaml` 写成 planned 状态和 evidence。它会拒绝 draft CDC plan、没有 tracked tables、缺少 `columns`、缺少 `key_columns`、key columns 不在 captured columns 中或缺少其他必需字段的 CDC plan。它不启用 SQL Server CDC，不启动 Debezium，不读取 LSN，不判断 catch-up，也不向 TiDB 回放增量。
 
 先计算 cdc payload hash：
 
@@ -1342,7 +1342,7 @@ evidence/validation-report.md
 
 LLM 可以解释 mismatch，但 pass/fail 必须由确定性校验结果决定。
 
-当前 MVP 已支持 metadata-only validation worker。它不会连接 SQL Server 或 TiDB，只校验当前仓库里的迁移元数据是否满足进入后续执行的最低条件，包括 schema diff 可解析、DDL 已生成、manual review 已清空、conversion report 存在、validation plan 存在，row-count 检查项的 `id`、`source_object`、`target_object` 已填写，`source_object` / `target_object` 符合 executor 支持的对象名形态，并且 predicate / target predicate 不再包含 `TODO`；`checksum`、`sampled_hash`、`bucketed_count` 和 `business_sql` 检查项的 `id`、`source_sql`、`target_sql` 已填写，并且 source_sql / target_sql 不再包含 `TODO`。真实数据校验目前提供行数校验和 reviewed scalar-query 校验路径：先用 `generate-validation-plan` 生成 `plan/validation-plan.yaml`，可选打开 `--include-checksum` / `--include-sampled-hash` / `--include-bucketed-count`，再通过 PR review 补充或确认检查项，并把 validation plan 标成 `reviewed` 或 `approved`。validation approval/hash 通过后，`worker-executor --stage validation` 会先读取当前 inventory 做 schema drift gate：row-count 的 `source_object` 必须仍存在，query 类检查会对 `source_sql` 里可识别的 `FROM` / `JOIN` 三段式 SQL Server 源对象做同样校验；如果 `schema/schema-diff.json` 已 reviewed，还会比较 reviewed 源列基线和当前 inventory 列名/类型。通过后才会为 `type: row_count` 或 `type: row-count` 的检查项生成 `sqlserver2tidb-executor validate-count` 命令，也会为 `type: checksum`、`type: sampled_hash`、`type: bucketed_count` 或 `type: business_sql` 的检查项生成 `sqlserver2tidb-executor validate-query` 命令；执行模式会跑完整个 validation 命令清单，再把每条命令的输出和 exit code 汇总进 `executor-validation-run.json`，因此一个 mismatch 不会遮住后续检查结果。
+当前版本已支持 metadata-only validation worker。它不会连接 SQL Server 或 TiDB，只校验当前仓库里的迁移元数据是否满足进入后续执行的最低条件，包括 schema diff 可解析、DDL 已生成、manual review 已清空、conversion report 存在、validation plan 存在，row-count 检查项的 `id`、`source_object`、`target_object` 已填写，`source_object` / `target_object` 符合 executor 支持的对象名形态，并且 predicate / target predicate 不再包含 `TODO`；`checksum`、`sampled_hash`、`bucketed_count` 和 `business_sql` 检查项的 `id`、`source_sql`、`target_sql` 已填写，并且 source_sql / target_sql 不再包含 `TODO`。真实数据校验目前提供行数校验和 reviewed scalar-query 校验路径：先用 `generate-validation-plan` 生成 `plan/validation-plan.yaml`，可选打开 `--include-checksum` / `--include-sampled-hash` / `--include-bucketed-count`，再通过 PR review 补充或确认检查项，并把 validation plan 标成 `reviewed` 或 `approved`。validation approval/hash 通过后，`worker-executor --stage validation` 会先读取当前 inventory 做 schema drift gate：row-count 的 `source_object` 必须仍存在，query 类检查会对 `source_sql` 里可识别的 `FROM` / `JOIN` 三段式 SQL Server 源对象做同样校验；如果 `schema/schema-diff.json` 已 reviewed，还会比较 reviewed 源列基线和当前 inventory 列名/类型。通过后才会为 `type: row_count` 或 `type: row-count` 的检查项生成 `sqlserver2tidb-executor validate-count` 命令，也会为 `type: checksum`、`type: sampled_hash`、`type: bucketed_count` 或 `type: business_sql` 的检查项生成 `sqlserver2tidb-executor validate-query` 命令；执行模式会跑完整个 validation 命令清单，再把每条命令的输出和 exit code 汇总进 `executor-validation-run.json`，因此一个 mismatch 不会遮住后续检查结果。
 
 先生成 validation plan 草稿：
 
@@ -1547,9 +1547,9 @@ clusters/<source_cluster_id>/state/worker-lease.yaml
 
 worker lease 是上游 SQL Server 集群级，避免多个 worker 同时操作同一个源集群。`phase: idle` 表示空闲占位；当 phase 是 `export`、`import`、`cdc`、`validation` 或 `cutover` 时，lease 必须带有非空 `holder`、`lease_id`、`project_id`、`expires_at` 和 `renewed_at`，`project_id` 必须引用同一源集群下已存在的项目目录，两个时间字段必须是 RFC3339，且 `expires_at` 不能早于 `renewed_at`，否则 `validate-repo` 会拒绝该仓库状态。
 
-当前 MVP 实现了 `worker-export`、`worker-import`、`worker-cdc`、`worker-validate` 和 `worker-cutover`。它们不是完整 reconcile loop，也不会抢占 worker lease。它们只针对一个显式指定的 project 执行 approval gate、payload hash 校验和 metadata-only 状态写回，并要求对应 plan 或 cutover runbook / evidence gate 满足执行条件。
+当前版本实现了 `worker-export`、`worker-import`、`worker-cdc`、`worker-validate` 和 `worker-cutover`。它们不是完整 reconcile loop，也不会抢占 worker lease。它们只针对一个显式指定的 project 执行 approval gate、payload hash 校验和 metadata-only 状态写回，并要求对应 plan 或 cutover runbook / evidence gate 满足执行条件。
 
-当前 MVP 也实现了只读扫描：
+当前版本也实现了只读扫描：
 
 ```bash
 bin/sqlserver2tidb worker-reconcile --root . --dry-run
@@ -1566,7 +1566,7 @@ bin/sqlserver2tidb worker-reconcile --root . --dry-run
 
 加上 `--json` 后，dry-run 会输出机器可读 JSON，字段包括 `projects`、`ready_actions`、`blocked_actions` 和 `actions`，方便调度器、监控或外部 agent wrapper 读取。`--json` 只支持 dry-run，不支持 execute-next 或 loop。
 
-当前 MVP 还支持单步执行：
+当前版本还支持单步执行：
 
 ```bash
 bin/sqlserver2tidb worker-reconcile \
@@ -1580,7 +1580,7 @@ bin/sqlserver2tidb worker-reconcile \
 
 该命令按 source cluster / project / stage 顺序选择第一个 ready metadata-only action，也就是 `export`、`import`、`cdc` 或 `validation`，先写入源集群级 `state/worker-lease.yaml`，再调用对应 metadata-only worker。`ddl` 是 executor-only action，会在 dry-run 中展示，但不会被 `--execute-next` 自动选择。当前同一 `--holder` 可以续租自己的未过期 lease；不同 holder 在 lease 过期前会被拒绝。加上 `--state-pr-draft` 后，它会在项目 `prs/` 目录下写入 `reconcile-<stage>-state-pr.md`，用于审阅本次 state/evidence/lease 写回。它仍然不连接 SQL Server/TiDB/Kafka/对象存储，也不创建 GitHub branch 或 PR。
 
-当前 MVP 还支持 bounded loop：
+当前版本还支持 bounded loop：
 
 ```bash
 bin/sqlserver2tidb worker-reconcile \
@@ -1841,7 +1841,7 @@ bin/sqlserver2tidb repair-schema-drift \
 
 ### 15.4 当前能直接迁移数据吗？
 
-当前 MVP 可以只读连接 SQL Server catalog 生成 inventory，可以从 inventory 生成 TiDB DDL 草稿、全量导出/导入计划草稿、CDC 计划草稿和 validation plan 草稿，并执行 metadata-only export/import/CDC/validation/cutover worker。`worker-executor` 可以在 approval/hash gate 后生成外部执行器命令；当前 export 只接受 `format: csv`，import 接受 `engine: sql-insert`、`engine: tidb-import-into` 和 `engine: tidb-lightning`。`sqlserver2tidb-executor` 当前已经可以解析这些 work item 并 dry-run 输出上下文。`apply-ddl --execute` 支持把已 review 且不含 `TODO` 的 DDL 文件执行到 TiDB。`export --execute` 支持 SQL Server 到本地 `file://` CSV、HTTP(S) CSV、原生 `s3://` CSV、原生 `gs://` CSV 或原生 `azblob://` CSV 的真实导出路径；默认通过内部 null bitmap 尾列保留 SQL NULL，Lightning 计划则使用 `\N` NULL 编码且不写内部 bitmap。远端对象上传使用本地临时文件 close-time 上传和有界重试。`import --execute` 的默认 `sql-insert` 支持本地 `file://`、HTTP(S)、S3、GCS 或 Azure Blob CSV 到 TiDB 的流式逐行 insert 路径，会识别并排除内部 null bitmap 尾列，并用 `--import-batch-size` 分批提交事务；`tidb-import-into` 会执行 TiDB `IMPORT INTO ... FROM FILE`，支持绝对本地路径、本地 `file://`、`s3://`、`gs://`，S3/GCS URI 必须包含 bucket 和对象路径，其中本地/file/S3/GCS CSV 会读取 header、跳过内部 null bitmap 尾列，并预审计行数、字节数和 SHA256；`tidb-lightning` 会预审计 import plan 中所有 CSV source，生成 TiDB Lightning TOML，并调用外部 `tidb-lightning -config <toml>`，支持 local/file、S3、GCS 和 Azure Blob data-source URI。Azure Blob 当前可用于 `sql-insert` 和 `tidb-lightning`，不用于 TiDB `IMPORT INTO`。`worker-executor --stage validation` 可以在 validation approval/hash gate 后生成 `validate-count` 和 `validate-query` 命令，`validate-count --execute` 支持单对象 SQL Server/TiDB 行数对比，`validate-query --execute` 支持已 review 的 checksum、sampled-hash、bucketed-count 和 business-SQL scalar-query 结果对比。`generate-validation-plan` 可以显式生成 exact-numeric checksum/sample-hash 和整数 bucketed-count scalar-query 草稿。`cdc-lsn --execute` 支持显式读取 SQL Server CDC min/max LSN，`cdc-enable --execute` 支持在 CDC plan approval gate 后幂等启用 SQL Server database/table CDC，`cdc --execute` 支持显式 LSN 范围的 SQL Server CDC 读取和 TiDB upsert/delete apply，`advance-cdc-checkpoint` 可以基于成功 CDC executor evidence 推进源集群 checkpoint snapshot，`prepare-cdc-range` 可以用已提交 checkpoint 和 operator 提供的 `--to-lsn` 生成下一段 CDC plan；`cdc-orchestrator` 可以长期探测 max LSN、生成下一段 CDC range PR 草稿，并可通过 `--apply-approved` 执行已经审批通过的当前 range 后自动推进 checkpoint；`worker-cutover` 可以在 reviewed runbook、成功 executor evidence、passed validation state 和 caught-up CDC checkpoint 都满足后写入 completed 状态和 cutover/post-cutover evidence。GitHub PR 自动闭环已由 `complete-github-pr` 覆盖；通用行级 digest、生产级 bucketed sampled-hash 和大规模校验引擎仍是后续能力。
+当前版本可以只读连接 SQL Server catalog 生成 inventory，可以从 inventory 生成 TiDB DDL 草稿、全量导出/导入计划草稿、CDC 计划草稿和 validation plan 草稿，并执行 metadata-only export/import/CDC/validation/cutover worker。`worker-executor` 可以在 approval/hash gate 后生成外部执行器命令；当前 export 只接受 `format: csv`，import 接受 `engine: sql-insert`、`engine: tidb-import-into` 和 `engine: tidb-lightning`。`sqlserver2tidb-executor` 当前已经可以解析这些 work item 并 dry-run 输出上下文。`apply-ddl --execute` 支持把已 review 且不含 `TODO` 的 DDL 文件执行到 TiDB。`export --execute` 支持 SQL Server 到本地 `file://` CSV、HTTP(S) CSV、原生 `s3://` CSV、原生 `gs://` CSV 或原生 `azblob://` CSV 的真实导出路径；默认通过内部 null bitmap 尾列保留 SQL NULL，Lightning 计划则使用 `\N` NULL 编码且不写内部 bitmap。远端对象上传使用本地临时文件 close-time 上传和有界重试。`import --execute` 的默认 `sql-insert` 支持本地 `file://`、HTTP(S)、S3、GCS 或 Azure Blob CSV 到 TiDB 的流式逐行 insert 路径，会识别并排除内部 null bitmap 尾列，并用 `--import-batch-size` 分批提交事务；`tidb-import-into` 会执行 TiDB `IMPORT INTO ... FROM FILE`，支持绝对本地路径、本地 `file://`、`s3://`、`gs://`，S3/GCS URI 必须包含 bucket 和对象路径，其中本地/file/S3/GCS CSV 会读取 header、跳过内部 null bitmap 尾列，并预审计行数、字节数和 SHA256；`tidb-lightning` 会预审计 import plan 中所有 CSV source，生成 TiDB Lightning TOML，并调用外部 `tidb-lightning -config <toml>`，支持 local/file、S3、GCS 和 Azure Blob data-source URI。Azure Blob 当前可用于 `sql-insert` 和 `tidb-lightning`，不用于 TiDB `IMPORT INTO`。`worker-executor --stage validation` 可以在 validation approval/hash gate 后生成 `validate-count` 和 `validate-query` 命令，`validate-count --execute` 支持单对象 SQL Server/TiDB 行数对比，`validate-query --execute` 支持已 review 的 checksum、sampled-hash、bucketed-count 和 business-SQL scalar-query 结果对比。`generate-validation-plan` 可以显式生成 exact-numeric checksum/sample-hash 和整数 bucketed-count scalar-query 草稿。`cdc-lsn --execute` 支持显式读取 SQL Server CDC min/max LSN，`cdc-enable --execute` 支持在 CDC plan approval gate 后幂等启用 SQL Server database/table CDC，`cdc --execute` 支持显式 LSN 范围的 SQL Server CDC 读取和 TiDB upsert/delete apply，`advance-cdc-checkpoint` 可以基于成功 CDC executor evidence 推进源集群 checkpoint snapshot，`prepare-cdc-range` 可以用已提交 checkpoint 和 operator 提供的 `--to-lsn` 生成下一段 CDC plan；`cdc-orchestrator` 可以长期探测 max LSN、生成下一段 CDC range PR 草稿，并可通过 `--apply-approved` 执行已经审批通过的当前 range 后自动推进 checkpoint；`worker-cutover` 可以在 reviewed runbook、成功 executor evidence、passed validation state 和 caught-up CDC checkpoint 都满足后写入 completed 状态和 cutover/post-cutover evidence。GitHub PR 自动闭环已由 `complete-github-pr` 覆盖；通用行级 digest、生产级 bucketed sampled-hash 和大规模校验引擎仍是后续能力。
 
 ### 15.5 可以把 LLM 接进来吗？
 
