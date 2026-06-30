@@ -1,0 +1,178 @@
+name: github-pr-auto-complete
+
+on:
+  pull_request_review:
+    types:
+      - submitted
+  check_suite:
+    types:
+      - completed
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "GitHub pull request number to complete"
+        required: true
+      source_cluster_id:
+        description: "Optional source cluster id; inferred from PR body when omitted"
+        required: false
+      project_id:
+        description: "Optional migration project id; inferred from PR title/body when omitted"
+        required: false
+      stage:
+        description: "Optional approval stage; inferred from PR title/body when omitted"
+        required: false
+      base:
+        description: "Base branch to pull/push"
+        required: false
+        default: "main"
+      merge_method:
+        description: "GitHub PR merge method: squash, merge, or rebase"
+        required: false
+        default: "squash"
+      skip_approve:
+        description: "Skip automated gh pr review --approve"
+        required: false
+        default: "false"
+      delete_branch:
+        description: "Delete PR branch after merge"
+        required: false
+        default: "true"
+
+permissions:
+  contents: write
+  pull-requests: write
+  checks: read
+  statuses: read
+
+jobs:
+  complete-pr:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: sqlserver2tidb-pr-${{ github.event.pull_request.number || github.event.check_suite.pull_requests[0].number || inputs.pr_number }}
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ secrets.SQLSERVER2TIDB_GITHUB_APP_TOKEN || github.token }}
+
+    steps:
+      - name: Resolve PR completion target
+        id: resolve
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REVIEW_STATE: ${{ github.event.review.state }}
+          CHECK_SUITE_CONCLUSION: ${{ github.event.check_suite.conclusion }}
+          REVIEW_PR_NUMBER: ${{ github.event.pull_request.number }}
+          CHECK_SUITE_PR_NUMBER: ${{ github.event.check_suite.pull_requests[0].number }}
+          INPUT_PR_NUMBER: ${{ inputs.pr_number }}
+          INPUT_SOURCE_CLUSTER_ID: ${{ inputs.source_cluster_id }}
+          INPUT_PROJECT_ID: ${{ inputs.project_id }}
+          INPUT_STAGE: ${{ inputs.stage }}
+          INPUT_BASE: ${{ inputs.base }}
+          INPUT_MERGE_METHOD: ${{ inputs.merge_method }}
+          INPUT_SKIP_APPROVE: ${{ inputs.skip_approve }}
+          INPUT_DELETE_BRANCH: ${{ inputs.delete_branch }}
+        run: |
+          set -euo pipefail
+          active=false
+          pr_number=""
+          case "${EVENT_NAME}" in
+            workflow_dispatch)
+              active=true
+              pr_number="${INPUT_PR_NUMBER}"
+              ;;
+            pull_request_review)
+              if [ "${REVIEW_STATE}" = "approved" ]; then
+                active=true
+                pr_number="${REVIEW_PR_NUMBER}"
+              fi
+              ;;
+            check_suite)
+              if [ "${CHECK_SUITE_CONCLUSION}" = "success" ] && [ -n "${CHECK_SUITE_PR_NUMBER}" ]; then
+                active=true
+                pr_number="${CHECK_SUITE_PR_NUMBER}"
+              fi
+              ;;
+          esac
+          if [ "${active}" != "true" ]; then
+            echo "::notice::Event does not indicate an approved/green migration PR; skipping"
+            echo "active=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          if [ -z "${pr_number}" ]; then
+            echo "::notice::No PR number resolved; skipping"
+            echo "active=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          echo "active=true" >> "${GITHUB_OUTPUT}"
+          echo "pr_number=${pr_number}" >> "${GITHUB_OUTPUT}"
+          echo "source_cluster_id=${INPUT_SOURCE_CLUSTER_ID}" >> "${GITHUB_OUTPUT}"
+          echo "project_id=${INPUT_PROJECT_ID}" >> "${GITHUB_OUTPUT}"
+          echo "stage=${INPUT_STAGE}" >> "${GITHUB_OUTPUT}"
+          echo "base=${INPUT_BASE:-main}" >> "${GITHUB_OUTPUT}"
+          echo "merge_method=${INPUT_MERGE_METHOD:-squash}" >> "${GITHUB_OUTPUT}"
+          echo "skip_approve=${INPUT_SKIP_APPROVE:-false}" >> "${GITHUB_OUTPUT}"
+          echo "delete_branch=${INPUT_DELETE_BRANCH:-true}" >> "${GITHUB_OUTPUT}"
+
+      - name: Check out base branch
+        if: steps.resolve.outputs.active == 'true'
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.resolve.outputs.base }}
+          token: ${{ secrets.SQLSERVER2TIDB_GITHUB_APP_TOKEN || github.token }}
+
+      - name: Set up Go
+        if: steps.resolve.outputs.active == 'true'
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.22.x"
+          cache: true
+
+      - name: Build CLI
+        if: steps.resolve.outputs.active == 'true'
+        run: make build
+
+      - name: Complete GitHub PR and sync approval
+        if: steps.resolve.outputs.active == 'true'
+        env:
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+          SOURCE_CLUSTER_ID: ${{ steps.resolve.outputs.source_cluster_id }}
+          PROJECT_ID: ${{ steps.resolve.outputs.project_id }}
+          STAGE: ${{ steps.resolve.outputs.stage }}
+          BASE: ${{ steps.resolve.outputs.base }}
+          MERGE_METHOD: ${{ steps.resolve.outputs.merge_method }}
+          SKIP_APPROVE: ${{ steps.resolve.outputs.skip_approve }}
+          DELETE_BRANCH: ${{ steps.resolve.outputs.delete_branch }}
+        run: |
+          set -euo pipefail
+          git config user.name "sqlserver2tidb[bot]"
+          git config user.email "sqlserver2tidb[bot]@users.noreply.github.com"
+          args=(
+            complete-github-pr
+            --root .
+            --pr "${PR_NUMBER}"
+            --repo "${GITHUB_REPOSITORY}"
+            --base "${BASE}"
+            --merge-method "${MERGE_METHOD}"
+            --automation-actor "${GITHUB_ACTOR}"
+            --automation-workflow "${GITHUB_WORKFLOW}"
+            --automation-run-id "${GITHUB_RUN_ID}"
+            --automation-run-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            --automation-commit "${GITHUB_SHA}"
+            --execute
+          )
+          if [ -n "${SOURCE_CLUSTER_ID}" ]; then
+            args+=(--source-cluster-id "${SOURCE_CLUSTER_ID}")
+          fi
+          if [ -n "${PROJECT_ID}" ]; then
+            args+=(--project-id "${PROJECT_ID}")
+          fi
+          if [ -n "${STAGE}" ]; then
+            args+=(--stage "${STAGE}")
+          fi
+          if [ "${SKIP_APPROVE}" = "true" ]; then
+            args+=(--skip-approve)
+          fi
+          if [ "${DELETE_BRANCH}" = "false" ]; then
+            args+=(--delete-branch=false)
+          fi
+          bin/sqlserver2tidb "${args[@]}"

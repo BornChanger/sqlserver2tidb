@@ -1341,6 +1341,12 @@ func runSyncGitHubPRApproval(args []string, stdout, stderr io.Writer) int {
 	prNumber := fs.Int("pr", 0, "GitHub pull request number")
 	repo := fs.String("repo", "", "optional GitHub repository in owner/name form")
 	ghBinary := fs.String("gh-binary", "gh", "GitHub CLI binary used to read PR status")
+	base := fs.String("base", "main", "base branch recorded in optional automation audit metadata")
+	automationActor := fs.String("automation-actor", os.Getenv("GITHUB_ACTOR"), "optional actor recorded in approval automation audit metadata")
+	automationWorkflow := fs.String("automation-workflow", os.Getenv("GITHUB_WORKFLOW"), "optional workflow name recorded in approval automation audit metadata")
+	automationRunID := fs.String("automation-run-id", os.Getenv("GITHUB_RUN_ID"), "optional workflow run id recorded in approval automation audit metadata")
+	automationRunURL := fs.String("automation-run-url", defaultGitHubRunURL(), "optional workflow run URL recorded in approval automation audit metadata")
+	automationCommit := fs.String("automation-commit", os.Getenv("GITHUB_SHA"), "optional workflow commit SHA recorded in approval automation audit metadata")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -1358,16 +1364,22 @@ func runSyncGitHubPRApproval(args []string, stdout, stderr io.Writer) int {
 	effectiveProjectID := firstNonEmpty(*projectID, inferred.ProjectID)
 	effectiveStage := firstNonEmpty(*stage, inferred.Stage)
 	result, err := gitops.SyncGitHubPRApproval(*root, gitops.GitHubPRApprovalSyncSpec{
-		SourceClusterID: effectiveSourceClusterID,
-		ProjectID:       effectiveProjectID,
-		Stage:           effectiveStage,
-		PRNumber:        *prNumber,
-		PRState:         prStatus.State,
-		ReviewDecision:  prStatus.ReviewDecision,
-		ChecksStatus:    deriveGitHubPRChecksStatus(prStatus.StatusCheckRollup),
-		MergedAt:        prStatus.MergedAt,
-		ApprovedBy:      githubPRApprovers(prStatus.LatestReviews),
-		ChangedFiles:    githubPRChangedFiles(prStatus.Files),
+		SourceClusterID:    effectiveSourceClusterID,
+		ProjectID:          effectiveProjectID,
+		Stage:              effectiveStage,
+		PRNumber:           *prNumber,
+		PRState:            prStatus.State,
+		ReviewDecision:     prStatus.ReviewDecision,
+		ChecksStatus:       deriveGitHubPRChecksStatus(prStatus.StatusCheckRollup),
+		MergedAt:           prStatus.MergedAt,
+		ApprovedBy:         githubPRApprovers(prStatus.LatestReviews),
+		ChangedFiles:       githubPRChangedFiles(prStatus.Files),
+		AutomationActor:    strings.TrimSpace(*automationActor),
+		AutomationWorkflow: strings.TrimSpace(*automationWorkflow),
+		AutomationRunID:    strings.TrimSpace(*automationRunID),
+		AutomationRunURL:   strings.TrimSpace(*automationRunURL),
+		AutomationCommit:   strings.TrimSpace(*automationCommit),
+		BaseBranch:         strings.TrimSpace(*base),
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "sync GitHub PR approval: %v\n", err)
@@ -1397,23 +1409,33 @@ func runCompleteGitHubPR(args []string, stdout, stderr io.Writer) int {
 	skipApprove := fs.Bool("skip-approve", false, "skip automated gh pr review --approve before merge")
 	deleteBranch := fs.Bool("delete-branch", true, "delete the PR branch after merge")
 	execute := fs.Bool("execute", false, "approve, merge, sync approval, commit, and push; default is dry-run")
+	automationActor := fs.String("automation-actor", os.Getenv("GITHUB_ACTOR"), "optional actor recorded in approval automation audit metadata")
+	automationWorkflow := fs.String("automation-workflow", os.Getenv("GITHUB_WORKFLOW"), "optional workflow name recorded in approval automation audit metadata")
+	automationRunID := fs.String("automation-run-id", os.Getenv("GITHUB_RUN_ID"), "optional workflow run id recorded in approval automation audit metadata")
+	automationRunURL := fs.String("automation-run-url", defaultGitHubRunURL(), "optional workflow run URL recorded in approval automation audit metadata")
+	automationCommit := fs.String("automation-commit", os.Getenv("GITHUB_SHA"), "optional workflow commit SHA recorded in approval automation audit metadata")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	spec := githubPRCompletionSpec{
-		Root:            *root,
-		SourceClusterID: strings.TrimSpace(*sourceClusterID),
-		ProjectID:       strings.TrimSpace(*projectID),
-		Stage:           strings.ToLower(strings.TrimSpace(*stage)),
-		PRNumber:        *prNumber,
-		Repo:            strings.TrimSpace(*repo),
-		GHBinary:        commandBinary(*ghBinary, "gh"),
-		GitBinary:       commandBinary(*gitBinary, "git"),
-		Base:            strings.TrimSpace(*base),
-		MergeMethod:     strings.ToLower(strings.TrimSpace(*mergeMethod)),
-		SkipApprove:     *skipApprove,
-		DeleteBranch:    *deleteBranch,
-		Execute:         *execute,
+		Root:               *root,
+		SourceClusterID:    strings.TrimSpace(*sourceClusterID),
+		ProjectID:          strings.TrimSpace(*projectID),
+		Stage:              strings.ToLower(strings.TrimSpace(*stage)),
+		PRNumber:           *prNumber,
+		Repo:               strings.TrimSpace(*repo),
+		GHBinary:           commandBinary(*ghBinary, "gh"),
+		GitBinary:          commandBinary(*gitBinary, "git"),
+		Base:               strings.TrimSpace(*base),
+		MergeMethod:        strings.ToLower(strings.TrimSpace(*mergeMethod)),
+		SkipApprove:        *skipApprove,
+		DeleteBranch:       *deleteBranch,
+		Execute:            *execute,
+		AutomationActor:    strings.TrimSpace(*automationActor),
+		AutomationWorkflow: strings.TrimSpace(*automationWorkflow),
+		AutomationRunID:    strings.TrimSpace(*automationRunID),
+		AutomationRunURL:   strings.TrimSpace(*automationRunURL),
+		AutomationCommit:   strings.TrimSpace(*automationCommit),
 	}
 	if err := validateGitHubPRCompletionSpec(spec); err != nil {
 		fmt.Fprintf(stderr, "complete GitHub PR: %v\n", err)
@@ -1437,32 +1459,37 @@ func runCompleteGitHubPR(args []string, stdout, stderr io.Writer) int {
 }
 
 type githubPRCompletionSpec struct {
-	Root            string
-	SourceClusterID string
-	ProjectID       string
-	Stage           string
-	PRNumber        int
-	Repo            string
-	GHBinary        string
-	GitBinary       string
-	Base            string
-	MergeMethod     string
-	SkipApprove     bool
-	DeleteBranch    bool
-	Execute         bool
+	Root               string
+	SourceClusterID    string
+	ProjectID          string
+	Stage              string
+	PRNumber           int
+	Repo               string
+	GHBinary           string
+	GitBinary          string
+	Base               string
+	MergeMethod        string
+	SkipApprove        bool
+	DeleteBranch       bool
+	Execute            bool
+	AutomationActor    string
+	AutomationWorkflow string
+	AutomationRunID    string
+	AutomationRunURL   string
+	AutomationCommit   string
 }
 
 func validateGitHubPRCompletionSpec(spec githubPRCompletionSpec) error {
 	if spec.PRNumber <= 0 {
 		return fmt.Errorf("--pr must be positive")
 	}
-	if strings.TrimSpace(spec.SourceClusterID) == "" {
+	if !spec.Execute && strings.TrimSpace(spec.SourceClusterID) == "" {
 		return fmt.Errorf("--source-cluster-id is required")
 	}
-	if strings.TrimSpace(spec.ProjectID) == "" {
+	if !spec.Execute && strings.TrimSpace(spec.ProjectID) == "" {
 		return fmt.Errorf("--project-id is required")
 	}
-	if strings.TrimSpace(spec.Stage) == "" {
+	if !spec.Execute && strings.TrimSpace(spec.Stage) == "" {
 		return fmt.Errorf("--stage is required")
 	}
 	if strings.TrimSpace(spec.Base) == "" {
@@ -1527,20 +1554,40 @@ func completeGitHubPR(spec githubPRCompletionSpec, stdout io.Writer) (gitops.Git
 	effectiveSourceClusterID := firstNonEmpty(spec.SourceClusterID, inferred.SourceClusterID)
 	effectiveProjectID := firstNonEmpty(spec.ProjectID, inferred.ProjectID)
 	effectiveStage := firstNonEmpty(spec.Stage, inferred.Stage)
+	approvalFile := githubPRCompletionApprovalFile(effectiveSourceClusterID, effectiveProjectID, effectiveStage)
+	beforeApproval, beforeApprovalExists, err := readOptionalFile(filepath.Join(spec.Root, filepath.FromSlash(approvalFile)))
+	if err != nil {
+		return gitops.GitHubPRApprovalSyncResult{}, err
+	}
 	result, err := gitops.SyncGitHubPRApproval(spec.Root, gitops.GitHubPRApprovalSyncSpec{
-		SourceClusterID: effectiveSourceClusterID,
-		ProjectID:       effectiveProjectID,
-		Stage:           effectiveStage,
-		PRNumber:        spec.PRNumber,
-		PRState:         finalStatus.State,
-		ReviewDecision:  finalStatus.ReviewDecision,
-		ChecksStatus:    deriveGitHubPRChecksStatus(finalStatus.StatusCheckRollup),
-		MergedAt:        finalStatus.MergedAt,
-		ApprovedBy:      githubPRApprovers(finalStatus.LatestReviews),
-		ChangedFiles:    githubPRChangedFiles(finalStatus.Files),
+		SourceClusterID:    effectiveSourceClusterID,
+		ProjectID:          effectiveProjectID,
+		Stage:              effectiveStage,
+		PRNumber:           spec.PRNumber,
+		PRState:            finalStatus.State,
+		ReviewDecision:     finalStatus.ReviewDecision,
+		ChecksStatus:       deriveGitHubPRChecksStatus(finalStatus.StatusCheckRollup),
+		MergedAt:           finalStatus.MergedAt,
+		ApprovedBy:         githubPRApprovers(finalStatus.LatestReviews),
+		ChangedFiles:       githubPRChangedFiles(finalStatus.Files),
+		AutomationActor:    spec.AutomationActor,
+		AutomationWorkflow: spec.AutomationWorkflow,
+		AutomationRunID:    spec.AutomationRunID,
+		AutomationRunURL:   spec.AutomationRunURL,
+		AutomationCommit:   spec.AutomationCommit,
+		MergeMethod:        spec.MergeMethod,
+		BaseBranch:         spec.Base,
 	})
 	if err != nil {
 		return gitops.GitHubPRApprovalSyncResult{}, err
+	}
+	afterApproval, afterApprovalExists, err := readOptionalFile(filepath.Join(spec.Root, filepath.FromSlash(result.ApprovalFile)))
+	if err != nil {
+		return gitops.GitHubPRApprovalSyncResult{}, err
+	}
+	if beforeApprovalExists && afterApprovalExists && string(beforeApproval) == string(afterApproval) {
+		fmt.Fprintln(stdout, "approval already current; no git commit needed")
+		return result, nil
 	}
 	if err := runRepositoryCommand(spec.Root, spec.GitBinary, gitAddArgs(result.ApprovalFile), stdout, "git add"); err != nil {
 		return gitops.GitHubPRApprovalSyncResult{}, err
@@ -1559,6 +1606,30 @@ func commandBinary(value, fallback string) string {
 		return trimmed
 	}
 	return fallback
+}
+
+func defaultGitHubRunURL() string {
+	if value := strings.TrimSpace(os.Getenv("GITHUB_RUN_URL")); value != "" {
+		return value
+	}
+	serverURL := strings.TrimRight(strings.TrimSpace(os.Getenv("GITHUB_SERVER_URL")), "/")
+	repository := strings.TrimSpace(os.Getenv("GITHUB_REPOSITORY"))
+	runID := strings.TrimSpace(os.Getenv("GITHUB_RUN_ID"))
+	if serverURL == "" || repository == "" || runID == "" {
+		return ""
+	}
+	return serverURL + "/" + repository + "/actions/runs/" + runID
+}
+
+func readOptionalFile(path string) ([]byte, bool, error) {
+	data, err := os.ReadFile(path)
+	if err == nil {
+		return data, true, nil
+	}
+	if os.IsNotExist(err) {
+		return nil, false, nil
+	}
+	return nil, false, fmt.Errorf("read %s: %w", path, err)
 }
 
 const githubPRViewJSONFields = "title,body,state,reviewDecision,mergedAt,latestReviews,statusCheckRollup,files"

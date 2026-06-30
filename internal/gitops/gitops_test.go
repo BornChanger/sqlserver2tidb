@@ -3697,6 +3697,13 @@ approved_at: ""
 			"clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/export-plan.yaml",
 			"clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/approvals/export-approval.yaml",
 		},
+		AutomationActor:    "migration-bot",
+		AutomationWorkflow: "github-pr-auto-complete",
+		AutomationRunID:    "123456",
+		AutomationRunURL:   "https://github.com/BornChanger/sqlserver2tidb/actions/runs/123456",
+		AutomationCommit:   "abc123",
+		MergeMethod:        "squash",
+		BaseBranch:         "main",
 	})
 	if err != nil {
 		t.Fatalf("SyncGitHubPRApproval() error = %v", err)
@@ -3715,6 +3722,79 @@ approved_at: ""
 	assertContains(t, approval, "  - bob")
 	assertContains(t, approval, "github_pr:")
 	assertContains(t, approval, "  number: 42")
+	assertContains(t, approval, "automation:")
+	assertContains(t, approval, "  actor: migration-bot")
+	assertContains(t, approval, "  workflow: github-pr-auto-complete")
+	assertContains(t, approval, "  run_id: \"123456\"")
+	assertContains(t, approval, "  run_url: \"https://github.com/BornChanger/sqlserver2tidb/actions/runs/123456\"")
+	assertContains(t, approval, "  workflow_sha: abc123")
+	assertContains(t, approval, "  merge_method: squash")
+	assertContains(t, approval, "  base_branch: main")
+}
+
+func TestSyncGitHubPRApprovalPreservesExistingCurrentApprovalAudit(t *testing.T) {
+	root := t.TempDir()
+	createReadyExportProjectForCluster(t, root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a")
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
+	if err != nil {
+		t.Fatal(err)
+	}
+	approvalRel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/approvals/export-approval.yaml"
+	existing := `approval_id: export-github-pr-42
+project_id: sales-db-to-tidb-prod-a
+source_cluster_id: prod-sqlserver-a
+action: export
+payload_hash: ` + hash + `
+required_reviewers:
+  - github-pr-review
+approved_by:
+  - alice
+status: approved
+approved_at: "2026-01-02T03:04:05Z"
+github_pr:
+  number: 42
+  state: MERGED
+  review_decision: APPROVED
+  checks_status: PASSED
+  merged_at: "2026-01-02T03:04:05Z"
+automation:
+  actor: migration-bot
+  workflow: github-pr-auto-complete
+  run_id: "111"
+  run_url: "https://github.com/BornChanger/sqlserver2tidb/actions/runs/111"
+  workflow_sha: abc123
+  merge_method: squash
+  base_branch: main
+`
+	writeFileForTest(t, root, approvalRel, existing)
+
+	_, err = SyncGitHubPRApproval(root, GitHubPRApprovalSyncSpec{
+		SourceClusterID: "prod-sqlserver-a",
+		ProjectID:       "sales-db-to-tidb-prod-a",
+		Stage:           "export",
+		PRNumber:        42,
+		PRState:         "MERGED",
+		ReviewDecision:  "APPROVED",
+		ChecksStatus:    "PASSED",
+		MergedAt:        "2026-01-02T03:04:05Z",
+		ApprovedBy:      []string{"alice"},
+		ChangedFiles: []string{
+			"clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/export-plan.yaml",
+		},
+		AutomationActor:    "github-actions[bot]",
+		AutomationWorkflow: "github-pr-approval-sync",
+		AutomationRunID:    "222",
+		AutomationRunURL:   "https://github.com/BornChanger/sqlserver2tidb/actions/runs/222",
+		AutomationCommit:   "def456",
+		BaseBranch:         "main",
+	})
+	if err != nil {
+		t.Fatalf("SyncGitHubPRApproval() error = %v", err)
+	}
+	after := readFile(t, root, approvalRel)
+	if after != existing {
+		t.Fatalf("current approval audit was overwritten\nbefore:\n%s\nafter:\n%s", existing, after)
+	}
 }
 
 func TestSyncGitHubPRApprovalRejectsFailedChecksWithoutMutatingApproval(t *testing.T) {

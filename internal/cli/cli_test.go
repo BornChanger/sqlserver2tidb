@@ -936,6 +936,241 @@ func TestRunCompleteGitHubPRExecuteApprovesMergesSyncsAndPushesApproval(t *testi
 	assertCLIOutputContains(t, gitArgs, "push origin HEAD:main")
 }
 
+func TestRunCompleteGitHubPRExecuteNoopsWhenApprovalAlreadyCurrent(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	createCLIProjectWithOneExportChunk(t, root, &stdout, &stderr)
+	reviewCLIExportPlanPredicates(t, root)
+	setCLIReviewPlanStatus(t, root, "export", "reviewed")
+
+	mergedView := `{
+  "title": "[export] sales-db-to-tidb-prod-a",
+  "body": "",
+  "state": "MERGED",
+  "reviewDecision": "APPROVED",
+  "mergedAt": "2026-01-02T03:04:05Z",
+  "latestReviews": [
+    {"state": "APPROVED", "author": {"login": "alice"}}
+  ],
+  "statusCheckRollup": [
+    {"__typename": "CheckRun", "conclusion": "SUCCESS"}
+  ],
+  "files": [
+    {"path": "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/export-plan.yaml"}
+  ]
+}
+`
+	fakeGH := filepath.Join(root, "fake-gh-current")
+	if err := os.WriteFile(fakeGH, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> gh-args.log\ncat <<'JSON'\n"+mergedView+"JSON\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fakeGit := filepath.Join(root, "fake-git-current")
+	if err := os.WriteFile(fakeGit, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> git-args.log\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	args := []string{
+		"complete-github-pr",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "export",
+		"--pr", "42",
+		"--repo", "BornChanger/sqlserver2tidb",
+		"--gh-binary", "./fake-gh-current",
+		"--git-binary", "./fake-git-current",
+		"--execute",
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := Run(args, &stdout, &stderr); code != 0 {
+		t.Fatalf("first complete-github-pr code = %d, stdout = %s, stderr = %s", code, stdout.String(), stderr.String())
+	}
+	if err := os.Remove(filepath.Join(root, "git-args.log")); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := Run(args, &stdout, &stderr); code != 0 {
+		t.Fatalf("second complete-github-pr code = %d, stdout = %s, stderr = %s", code, stdout.String(), stderr.String())
+	}
+	assertCLIOutputContains(t, stdout.String(), "approval already current; no git commit needed")
+	gitArgs := readCLIRelFile(t, root, "git-args.log")
+	assertCLIOutputContains(t, gitArgs, "pull --ff-only origin main")
+	if strings.Contains(gitArgs, "add ") || strings.Contains(gitArgs, "commit ") || strings.Contains(gitArgs, "push ") {
+		t.Fatalf("git args after idempotent rerun = %q, want pull only", gitArgs)
+	}
+}
+
+func TestRunCompleteGitHubPRExecuteWritesAutomationAudit(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	createCLIProjectWithOneExportChunk(t, root, &stdout, &stderr)
+	reviewCLIExportPlanPredicates(t, root)
+	setCLIReviewPlanStatus(t, root, "export", "reviewed")
+
+	fakeGH := filepath.Join(root, "fake-gh-audit")
+	firstView := `{
+  "title": "[export] sales-db-to-tidb-prod-a",
+  "body": "",
+  "state": "OPEN",
+  "reviewDecision": "REVIEW_REQUIRED",
+  "mergedAt": "",
+  "latestReviews": [],
+  "statusCheckRollup": [
+    {"__typename": "CheckRun", "conclusion": "SUCCESS"}
+  ],
+  "files": [
+    {"path": "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/export-plan.yaml"}
+  ]
+}
+`
+	secondView := `{
+  "title": "[export] sales-db-to-tidb-prod-a",
+  "body": "",
+  "state": "MERGED",
+  "reviewDecision": "APPROVED",
+  "mergedAt": "2026-01-02T03:04:05Z",
+  "latestReviews": [
+    {"state": "APPROVED", "author": {"login": "alice"}}
+  ],
+  "statusCheckRollup": [
+    {"__typename": "CheckRun", "conclusion": "SUCCESS"}
+  ],
+  "files": [
+    {"path": "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/export-plan.yaml"}
+  ]
+}
+`
+	fakeGHScript := "#!/bin/sh\n" +
+		"printf '%s\\n' \"$*\" >> gh-args.log\n" +
+		"if [ \"$1\" = \"pr\" ] && [ \"$2\" = \"view\" ]; then\n" +
+		"  count=0\n" +
+		"  if [ -f gh-view-count ]; then count=$(cat gh-view-count); fi\n" +
+		"  count=$((count + 1))\n" +
+		"  printf '%s\\n' \"$count\" > gh-view-count\n" +
+		"  if [ \"$count\" = \"1\" ]; then\n" +
+		"    cat <<'JSON'\n" + firstView + "JSON\n" +
+		"  else\n" +
+		"    cat <<'JSON'\n" + secondView + "JSON\n" +
+		"  fi\n" +
+		"  exit 0\n" +
+		"fi\n" +
+		"if [ \"$1\" = \"pr\" ] && [ \"$2\" = \"review\" ]; then printf 'approved\\n'; exit 0; fi\n" +
+		"if [ \"$1\" = \"pr\" ] && [ \"$2\" = \"merge\" ]; then printf 'merged\\n'; exit 0; fi\n" +
+		"exit 1\n"
+	if err := os.WriteFile(fakeGH, []byte(fakeGHScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fakeGit := filepath.Join(root, "fake-git-audit")
+	if err := os.WriteFile(fakeGit, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> git-args.log\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"complete-github-pr",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "export",
+		"--pr", "42",
+		"--repo", "BornChanger/sqlserver2tidb",
+		"--base", "release-1",
+		"--merge-method", "rebase",
+		"--delete-branch=false",
+		"--automation-actor", "migration-bot",
+		"--automation-workflow", "github-pr-auto-complete",
+		"--automation-run-id", "123456",
+		"--automation-run-url", "https://github.com/BornChanger/sqlserver2tidb/actions/runs/123456",
+		"--automation-commit", "abc123",
+		"--gh-binary", "./fake-gh-audit",
+		"--git-binary", "./fake-git-audit",
+		"--execute",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("complete-github-pr audit code = %d, stdout = %s, stderr = %s", code, stdout.String(), stderr.String())
+	}
+	approval := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/approvals/export-approval.yaml")
+	assertCLIOutputContains(t, approval, "automation:")
+	assertCLIOutputContains(t, approval, "  actor: migration-bot")
+	assertCLIOutputContains(t, approval, "  workflow: github-pr-auto-complete")
+	assertCLIOutputContains(t, approval, "  run_id: \"123456\"")
+	assertCLIOutputContains(t, approval, "  run_url: \"https://github.com/BornChanger/sqlserver2tidb/actions/runs/123456\"")
+	assertCLIOutputContains(t, approval, "  workflow_sha: abc123")
+	assertCLIOutputContains(t, approval, "  merge_method: rebase")
+	assertCLIOutputContains(t, approval, "  base_branch: release-1")
+	ghArgs := readCLIRelFile(t, root, "gh-args.log")
+	assertCLIOutputContains(t, ghArgs, "pr merge 42 --rebase --repo BornChanger/sqlserver2tidb")
+	if strings.Contains(ghArgs, "--delete-branch") {
+		t.Fatalf("gh args = %q, want no delete branch", ghArgs)
+	}
+	gitArgs := readCLIRelFile(t, root, "git-args.log")
+	assertCLIOutputContains(t, gitArgs, "pull --ff-only origin release-1")
+	assertCLIOutputContains(t, gitArgs, "push origin HEAD:release-1")
+}
+
+func TestRunCompleteGitHubPRExecuteRejectsFailedChecksBeforeMutatingGitHub(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	createCLIProjectWithOneExportChunk(t, root, &stdout, &stderr)
+	reviewCLIExportPlanPredicates(t, root)
+	setCLIReviewPlanStatus(t, root, "export", "reviewed")
+
+	failedView := `{
+  "title": "[export] sales-db-to-tidb-prod-a",
+  "body": "",
+  "state": "OPEN",
+  "reviewDecision": "APPROVED",
+  "mergedAt": "",
+  "latestReviews": [
+    {"state": "APPROVED", "author": {"login": "alice"}}
+  ],
+  "statusCheckRollup": [
+    {"__typename": "CheckRun", "conclusion": "FAILURE"}
+  ],
+  "files": [
+    {"path": "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/export-plan.yaml"}
+  ]
+}
+`
+	fakeGH := filepath.Join(root, "fake-gh-failed-checks")
+	if err := os.WriteFile(fakeGH, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> gh-args.log\ncat <<'JSON'\n"+failedView+"JSON\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fakeGit := filepath.Join(root, "fake-git-failed-checks")
+	if err := os.WriteFile(fakeGit, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> git-args.log\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"complete-github-pr",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "export",
+		"--pr", "42",
+		"--repo", "BornChanger/sqlserver2tidb",
+		"--gh-binary", "./fake-gh-failed-checks",
+		"--git-binary", "./fake-git-failed-checks",
+		"--execute",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("complete-github-pr failed checks code = 0, stdout = %s", stdout.String())
+	}
+	assertCLIOutputContains(t, stderr.String(), "PR checks status is FAILED, want PASSED")
+	ghArgs := readCLIRelFile(t, root, "gh-args.log")
+	if strings.Contains(ghArgs, "pr review") || strings.Contains(ghArgs, "pr merge") {
+		t.Fatalf("gh args = %q, want no review or merge after failed checks", ghArgs)
+	}
+	if _, err := os.Stat(filepath.Join(root, "git-args.log")); !os.IsNotExist(err) {
+		t.Fatalf("git should not be called after failed checks, stat err = %v", err)
+	}
+}
+
 func TestRunWorkerValidateCommand(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer

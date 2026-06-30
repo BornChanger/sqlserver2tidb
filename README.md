@@ -576,6 +576,8 @@ go run ./cmd/sqlserver2tidb complete-github-pr \
 
 This command calls `gh pr view`, refuses pending or failed checks, approves the PR if needed, merges it with `gh pr merge`, pulls the base branch, recomputes the stage payload hash, writes the corresponding approval file, commits it, and pushes it back to the base branch. Omit `--execute` to print the planned `gh` and `git` commands without changing GitHub or the local checkout.
 
+The bundled `github-pr-auto-complete` workflow can run the same closure loop from GitHub Actions. It starts from an approved review, a successful check suite, or manual `workflow_dispatch`, serializes each PR with a `sqlserver2tidb-pr-<number>` concurrency group, checks out the base branch, runs `complete-github-pr --execute`, and records workflow audit metadata in the approval file. Configure `SQLSERVER2TIDB_GITHUB_APP_TOKEN` when branch protection or automated PR approval requires a GitHub App or fine-grained token; otherwise the workflow falls back to `GITHUB_TOKEN` and can still close PRs that are already human-approved and mergeable by the default token. If the approval file already reflects the same merged PR and payload hash, the command preserves the existing approval audit block and exits without `git add`, `git commit`, or `git push`.
+
 When an external workflow or human operator has already merged the PR, synchronize its approval status back into the project approval file:
 
 ```bash
@@ -588,7 +590,7 @@ go run ./cmd/sqlserver2tidb sync-github-pr-approval \
   --repo BornChanger/sqlserver2tidb
 ```
 
-The sync command calls `gh pr view`, requires `state: MERGED`, `reviewDecision: APPROVED`, passed checks, at least one approving reviewer, and a PR file list restricted to that stage's review scope. It then recomputes the stage payload hash and writes the corresponding `approvals/<stage>-approval.yaml` file. The bundled `github-pr-approval-sync` workflow runs this command from `pull_request_target` after an approval-stage PR is merged; set `SQLSERVER2TIDB_GITHUB_APP_TOKEN` to a GitHub App or fine-grained token if branch protection does not allow `GITHUB_TOKEN` to push the generated approval commit.
+The sync command calls `gh pr view`, requires `state: MERGED`, `reviewDecision: APPROVED`, passed checks, at least one approving reviewer, and a PR file list restricted to that stage's review scope. It then recomputes the stage payload hash and writes the corresponding `approvals/<stage>-approval.yaml` file. The bundled `github-pr-approval-sync` workflow runs this command from `pull_request_target` after an approval-stage PR is merged, uses the same per-PR concurrency group as auto-complete, and preserves an existing current approval file so it does not overwrite the audit block produced by `github-pr-auto-complete`. Set `SQLSERVER2TIDB_GITHUB_APP_TOKEN` to a GitHub App or fine-grained token if branch protection does not allow `GITHUB_TOKEN` to push the generated approval commit.
 
 Compute the validation payload hash before approving validation:
 

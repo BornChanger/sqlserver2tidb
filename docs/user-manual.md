@@ -272,7 +272,7 @@ docker run --rm \
 
 仓库和 release archive 都包含 `examples/worker-agent/`，里面有 Docker Compose、`.env.example` 和 systemd unit 模板，可作为本地/容器部署起点。
 
-镜像内包含 `git`、`sqlserver2tidb` 和 `sqlserver2tidb-executor`，默认使用非 root 的 `sqlserver2tidb` 用户运行。镜像不内置 GitHub CLI；如果需要在容器内执行 `create-pr --execute`、`create-worker-state-pr --execute` 或 `create-executor-evidence-pr --execute`，请扩展镜像安装 `gh`，或者在宿主机执行这些 GitHub PR wrapper。
+镜像内包含 `git`、`sqlserver2tidb` 和 `sqlserver2tidb-executor`，默认使用非 root 的 `sqlserver2tidb` 用户运行。镜像不内置 GitHub CLI；如果需要在容器内执行 `create-pr --execute`、`complete-github-pr --execute`、`create-worker-state-pr --execute` 或 `create-executor-evidence-pr --execute`，请扩展镜像安装 `gh`，或者在宿主机/GitHub Actions 执行这些 GitHub PR wrapper。
 
 ### 5.4 运行测试
 
@@ -647,6 +647,21 @@ bin/sqlserver2tidb create-pr \
 - 不会 merge PR。
 - 不会 approval PR。
 - 不会绕过 GitHub branch protection 或 CODEOWNERS。
+
+### 9.6 GitHub PR 自动闭环 workflow
+
+仓库内置两个 GitHub Actions workflow：
+
+- `.github/workflows/github-pr-auto-complete.yml`：在 review approved、check suite success 或手动 `workflow_dispatch` 时运行 `complete-github-pr --execute`，负责检查 PR 状态、按配置 approve/merge、写回 approval 文件并 push 到 base branch。
+- `.github/workflows/github-pr-approval-sync.yml`：作为 fallback，在外部系统或人工已经 merge PR 后，从 merged/approved/green PR 同步 approval 文件。
+
+两个 workflow 使用相同的 `sqlserver2tidb-pr-<pr-number>` concurrency group，同一个 PR 的自动 completion 和 closed-event fallback 会串行执行，避免同一 approval 文件被并发写入。`complete-github-pr` 和 `sync-github-pr-approval` 都会在 approval 文件中记录可选的 `automation:` 审计块，包括 actor、workflow、run id、run URL、workflow SHA、merge method 和 base branch；如果已有 approval 文件已经对应同一个 PR、同一个 payload hash 和同一个 GitHub 审批事实，后续 sync 会保留原文件，不覆盖已有审计来源。
+
+权限建议：
+
+- 默认使用 `GITHUB_TOKEN` 可以处理已经人工 approve 且该 token 有权限 merge/push 的场景。
+- 如果 branch protection 不允许 `GITHUB_TOKEN` push，或需要 agent 自动执行 `gh pr review --approve`，配置仓库 secret `SQLSERVER2TIDB_GITHUB_APP_TOKEN`，指向具备 contents write、pull requests write、checks/status read 权限的 GitHub App 或 fine-grained token。
+- 如果组织规则要求真人审批，不要依赖自动 approve；让 workflow 从 `pull_request_review` 的 approved 事件或手动 dispatch 进入，并使用 `--skip-approve`。
 
 ## 10. 终极迁移流程
 
@@ -2003,9 +2018,13 @@ bin/sqlserver2tidb complete-github-pr \
   --execute
 ```
 
-该命令把 GitHub PR review boundary 和 GitOps approval 文件闭成一个自动化动作。默认 dry-run，只打印将执行的 `gh pr view`、`gh pr review`、`gh pr merge`、`git pull`、`git add`、`git commit` 和 `git push` 命令，不修改 GitHub 或本地仓库。加 `--execute` 后，命令会先读取 PR 状态并要求 checks 已通过；如果 PR 仍是 `OPEN` 且还未 `APPROVED`，会执行 `gh pr review --approve`；随后按 `--merge-method squash|merge|rebase` 执行 `gh pr merge`，默认 `squash` 并删除 PR branch。merge 后命令会 `git pull --ff-only origin <base>`，再次读取最终 PR 状态，要求 PR 已 `MERGED`、review decision 是 `APPROVED`、checks 是 `PASSED`、存在 approving reviewer，且 changed files 落在当前 source cluster/project/stage 的允许范围内。通过后，它会重新计算 payload hash，写入 `approvals/<stage>-approval.yaml`（`schema` PR 对应 `ddl-approval.yaml`），并把 approval 文件 commit/push 回 `--base`，默认 `main`。
+该命令把 GitHub PR review boundary 和 GitOps approval 文件闭成一个自动化动作。默认 dry-run，只打印将执行的 `gh pr view`、`gh pr review`、`gh pr merge`、`git pull`、`git add`、`git commit` 和 `git push` 命令，不修改 GitHub 或本地仓库。dry-run 必须显式提供 `--source-cluster-id`、`--project-id` 和 `--stage`；`--execute` 模式可以从生成的 PR title/body 推断这些字段，适合 GitHub Actions workflow 只传 PR number。
 
-常用可调参数包括：`--gh-binary`、`--git-binary`、`--base`、`--merge-method`、`--skip-approve` 和 `--delete-branch=false`。如果团队希望只从已经 merge 的 PR 同步 approval 文件，不让 agent 负责 approve/merge，可以继续使用低层命令 `sync-github-pr-approval`，再由外部流水线提交 approval 文件。
+加 `--execute` 后，命令会先读取 PR 状态并要求 checks 已通过；如果 PR 仍是 `OPEN` 且还未 `APPROVED`，会执行 `gh pr review --approve`；随后按 `--merge-method squash|merge|rebase` 执行 `gh pr merge`，默认 `squash` 并删除 PR branch。merge 后命令会 `git pull --ff-only origin <base>`，再次读取最终 PR 状态，要求 PR 已 `MERGED`、review decision 是 `APPROVED`、checks 是 `PASSED`、存在 approving reviewer，且 changed files 落在当前 source cluster/project/stage 的允许范围内。通过后，它会重新计算 payload hash，写入 `approvals/<stage>-approval.yaml`（`schema` PR 对应 `ddl-approval.yaml`），并把 approval 文件 commit/push 回 `--base`，默认 `main`。
+
+approval 文件会带可选 `automation:` 审计块。`--automation-actor`、`--automation-workflow`、`--automation-run-id`、`--automation-run-url` 和 `--automation-commit` 可以显式传入；在 GitHub Actions 中默认从 `GITHUB_ACTOR`、`GITHUB_WORKFLOW`、`GITHUB_RUN_ID`、`GITHUB_SERVER_URL`、`GITHUB_REPOSITORY` 和 `GITHUB_SHA` 推断。`--merge-method` 和 `--base` 也会记录到该审计块。若 approval 文件已经对应同一个 merged/approved/green PR 和同一个 payload hash，命令会输出 `approval already current; no git commit needed`，保留原文件并跳过 `git add` / `git commit` / `git push`。
+
+常用可调参数包括：`--gh-binary`、`--git-binary`、`--base`、`--merge-method`、`--skip-approve`、`--delete-branch=false` 和上述 `--automation-*` 参数。如果团队希望只从已经 merge 的 PR 同步 approval 文件，不让 agent 负责 approve/merge，可以继续使用低层命令 `sync-github-pr-approval`，再由外部流水线提交 approval 文件。
 
 ### 16.13 compute-payload-hash
 
@@ -2524,8 +2543,8 @@ executor evidence PR 校验会拒绝负数的 `cdc_applied_changes`、`data_rows
 10. 执行 `generate-data-plans`，生成全量导出/导入计划草稿。
 11. 执行 `generate-cdc-plan` 和 `generate-validation-plan`，生成 CDC 与 validation plan 草稿，并通过 Plan/Export/Import/CDC/Validation PR review。
 12. 对 discovery/schema/plan/export/import/cdc 等阶段执行 `generate-pr-draft`，生成 PR body 草稿和建议命令。
-13. 执行 `create-pr` dry-run 检查命令，再用 `create-pr --execute` 创建 GitHub PR。
-14. 将 `schema/schema-diff.json` 通过 PR review 标成 `reviewed`，执行 `compute-payload-hash --stage ddl`，把 hash 写入 ddl approval，approval 通过后用 `worker-executor --stage ddl` dry-run 检查 DDL 执行命令。
+13. 执行 `create-pr` dry-run 检查命令，再用 `create-pr --execute` 创建 GitHub PR；PR review 和 checks 通过后，由 `github-pr-auto-complete` workflow 或 `complete-github-pr --execute` 完成 approve/merge/approval 文件写回。
+14. 将 `schema/schema-diff.json` 通过 PR review 标成 `reviewed`，让自动闭环写入 ddl approval；approval 通过后用 `worker-executor --stage ddl` dry-run 检查 DDL 执行命令。
 15. 执行 `compute-payload-hash --stage export`，把 hash 写入 export approval，approval 通过后运行 `worker-export` 写 planned export state/evidence。
 16. 执行 `compute-payload-hash --stage import`，把 hash 写入 import approval，approval 通过后运行 `worker-import` 写 planned import state/evidence。
 17. 将 `plan/cdc-plan.yaml` 通过 PR review 标成 `reviewed` 或 `approved`，执行 `compute-payload-hash --stage cdc`，把 hash 写入 cdc approval，approval 通过后运行 `worker-cdc` 写 planned CDC state/evidence。

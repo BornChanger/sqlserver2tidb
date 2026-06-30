@@ -9,16 +9,23 @@ import (
 )
 
 type GitHubPRApprovalSyncSpec struct {
-	SourceClusterID string
-	ProjectID       string
-	Stage           string
-	PRNumber        int
-	PRState         string
-	ReviewDecision  string
-	ChecksStatus    string
-	MergedAt        string
-	ApprovedBy      []string
-	ChangedFiles    []string
+	SourceClusterID    string
+	ProjectID          string
+	Stage              string
+	PRNumber           int
+	PRState            string
+	ReviewDecision     string
+	ChecksStatus       string
+	MergedAt           string
+	ApprovedBy         []string
+	ChangedFiles       []string
+	AutomationActor    string
+	AutomationWorkflow string
+	AutomationRunID    string
+	AutomationRunURL   string
+	AutomationCommit   string
+	MergeMethod        string
+	BaseBranch         string
 }
 
 type GitHubPRApprovalSyncResult struct {
@@ -82,11 +89,7 @@ func SyncGitHubPRApproval(root string, spec GitHubPRApprovalSyncSpec) (GitHubPRA
 		return GitHubPRApprovalSyncResult{}, err
 	}
 	approvalFile := filepath.ToSlash(filepath.Join("clusters", sourceClusterID, "projects", projectID, "approvals", approvalStage+"-approval.yaml"))
-	body := renderGitHubSyncedApproval(projectID, sourceClusterID, approvalStage, payloadHash, approvedBy, approvedAt, spec)
-	if err := os.WriteFile(filepath.Join(root, filepath.FromSlash(approvalFile)), []byte(body), 0o644); err != nil {
-		return GitHubPRApprovalSyncResult{}, fmt.Errorf("write approval file: %w", err)
-	}
-	return GitHubPRApprovalSyncResult{
+	result := GitHubPRApprovalSyncResult{
 		SourceClusterID: sourceClusterID,
 		ProjectID:       projectID,
 		Stage:           stage,
@@ -96,7 +99,19 @@ func SyncGitHubPRApproval(root string, spec GitHubPRApprovalSyncSpec) (GitHubPRA
 		PayloadHash:     payloadHash,
 		ApprovedBy:      approvedBy,
 		ApprovedAt:      approvedAt,
-	}, nil
+	}
+	current, err := existingGitHubSyncedApprovalCurrent(filepath.Join(root, filepath.FromSlash(approvalFile)), projectID, sourceClusterID, approvalStage, payloadHash, approvedAt, spec)
+	if err != nil {
+		return GitHubPRApprovalSyncResult{}, err
+	}
+	if current {
+		return result, nil
+	}
+	body := renderGitHubSyncedApproval(projectID, sourceClusterID, approvalStage, payloadHash, approvedBy, approvedAt, spec)
+	if err := os.WriteFile(filepath.Join(root, filepath.FromSlash(approvalFile)), []byte(body), 0o644); err != nil {
+		return GitHubPRApprovalSyncResult{}, fmt.Errorf("write approval file: %w", err)
+	}
+	return result, nil
 }
 
 func approvalStageForPRStage(stage string) string {
@@ -187,5 +202,118 @@ func renderGitHubSyncedApproval(projectID, sourceClusterID, approvalStage, paylo
 	fmt.Fprintf(&b, "  review_decision: %s\n", strings.ToUpper(strings.TrimSpace(spec.ReviewDecision)))
 	fmt.Fprintf(&b, "  checks_status: %s\n", strings.ToUpper(strings.TrimSpace(spec.ChecksStatus)))
 	fmt.Fprintf(&b, "  merged_at: %q\n", approvedAt)
+	renderGitHubSyncedApprovalAutomation(&b, spec)
 	return b.String()
+}
+
+func existingGitHubSyncedApprovalCurrent(path, projectID, sourceClusterID, approvalStage, payloadHash, approvedAt string, spec GitHubPRApprovalSyncSpec) (bool, error) {
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read existing approval file: %w", err)
+	}
+	approval, err := readApprovalMetadata(path)
+	if err != nil {
+		return false, err
+	}
+	if approval.Action != approvalStage || approval.Status != "approved" || approval.PayloadHash != payloadHash || approval.ApprovedAt != approvedAt || len(approval.ApprovedBy) == 0 {
+		return false, nil
+	}
+	topLevel, sections := parseYAMLScalarSections(string(data))
+	if topLevel["project_id"] != projectID || topLevel["source_cluster_id"] != sourceClusterID {
+		return false, nil
+	}
+	githubPR := sections["github_pr"]
+	if githubPR["number"] != fmt.Sprintf("%d", spec.PRNumber) {
+		return false, nil
+	}
+	if strings.ToUpper(githubPR["state"]) != strings.ToUpper(strings.TrimSpace(spec.PRState)) {
+		return false, nil
+	}
+	if strings.ToUpper(githubPR["review_decision"]) != strings.ToUpper(strings.TrimSpace(spec.ReviewDecision)) {
+		return false, nil
+	}
+	if strings.ToUpper(githubPR["checks_status"]) != strings.ToUpper(strings.TrimSpace(spec.ChecksStatus)) {
+		return false, nil
+	}
+	if githubPR["merged_at"] != approvedAt {
+		return false, nil
+	}
+	return true, nil
+}
+
+func parseYAMLScalarSections(content string) (map[string]string, map[string]map[string]string) {
+	topLevel := map[string]string{}
+	sections := map[string]map[string]string{}
+	currentSection := ""
+	for _, raw := range strings.Split(content, "\n") {
+		if strings.TrimSpace(raw) == "" || strings.HasPrefix(strings.TrimSpace(raw), "#") {
+			continue
+		}
+		trimmed := strings.TrimSpace(raw)
+		if strings.HasPrefix(trimmed, "- ") {
+			continue
+		}
+		parts := strings.SplitN(trimmed, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key := strings.TrimSpace(parts[0])
+		value := trimYAMLScalar(parts[1])
+		isTopLevel := strings.TrimLeft(raw, " \t") == raw
+		if isTopLevel {
+			currentSection = ""
+			if value == "" {
+				currentSection = key
+				if sections[currentSection] == nil {
+					sections[currentSection] = map[string]string{}
+				}
+				continue
+			}
+			topLevel[key] = value
+			continue
+		}
+		if currentSection == "" {
+			continue
+		}
+		if sections[currentSection] == nil {
+			sections[currentSection] = map[string]string{}
+		}
+		sections[currentSection][key] = value
+	}
+	return topLevel, sections
+}
+
+func renderGitHubSyncedApprovalAutomation(b *strings.Builder, spec GitHubPRApprovalSyncSpec) {
+	values := []struct {
+		key   string
+		value string
+		quote bool
+	}{
+		{key: "actor", value: spec.AutomationActor},
+		{key: "workflow", value: spec.AutomationWorkflow},
+		{key: "run_id", value: spec.AutomationRunID, quote: true},
+		{key: "run_url", value: spec.AutomationRunURL, quote: true},
+		{key: "workflow_sha", value: spec.AutomationCommit},
+		{key: "merge_method", value: spec.MergeMethod},
+		{key: "base_branch", value: spec.BaseBranch},
+	}
+	wroteHeader := false
+	for _, item := range values {
+		trimmed := strings.TrimSpace(item.value)
+		if trimmed == "" {
+			continue
+		}
+		if !wroteHeader {
+			b.WriteString("automation:\n")
+			wroteHeader = true
+		}
+		if item.quote {
+			fmt.Fprintf(b, "  %s: %s\n", item.key, quoteYAML(trimmed))
+			continue
+		}
+		fmt.Fprintf(b, "  %s: %s\n", item.key, trimmed)
+	}
 }
