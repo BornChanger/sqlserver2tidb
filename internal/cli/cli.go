@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -74,6 +75,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runCDCOrchestrator(args[1:], stdout, stderr)
 	case "cdc-health":
 		return runCDCHealth(args[1:], stdout, stderr)
+	case "agent":
+		return runAgent(args[1:], stdout, stderr)
 	case "generate-validation-plan":
 		return runGenerateValidationPlan(args[1:], stdout, stderr)
 	case "generate-pr-draft":
@@ -250,6 +253,985 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+type agentStatusReport struct {
+	Mode            string                       `json:"mode"`
+	SourceClusterID string                       `json:"source_cluster_id,omitempty"`
+	ProjectID       string                       `json:"project_id,omitempty"`
+	Repository      agentRepositoryStatus        `json:"repository"`
+	Reconcile       gitops.WorkerReconcileReport `json:"reconcile"`
+	NextAction      gitops.WorkerReconcileAction `json:"next_action"`
+}
+
+type agentRepositoryStatus struct {
+	Valid        bool     `json:"valid"`
+	CheckedDirs  int      `json:"checked_dirs"`
+	CheckedFiles int      `json:"checked_files"`
+	Errors       []string `json:"errors,omitempty"`
+}
+
+type agentAutoDryRunReport struct {
+	Mode            string                       `json:"mode"`
+	SourceClusterID string                       `json:"source_cluster_id,omitempty"`
+	ProjectID       string                       `json:"project_id,omitempty"`
+	Repository      agentRepositoryStatus        `json:"repository"`
+	Reconcile       gitops.WorkerReconcileReport `json:"reconcile"`
+	NextAction      agentAutoAction              `json:"next_action"`
+	StopReason      string                       `json:"stop_reason"`
+}
+
+type agentAutoAction struct {
+	Name            string `json:"name,omitempty"`
+	SourceClusterID string `json:"source_cluster_id,omitempty"`
+	ProjectID       string `json:"project_id,omitempty"`
+	Stage           string `json:"stage,omitempty"`
+	Status          string `json:"status,omitempty"`
+	Command         string `json:"command,omitempty"`
+}
+
+type agentPlanAndPRReport struct {
+	Mode            string `json:"mode"`
+	SourceClusterID string `json:"source_cluster_id"`
+	ProjectID       string `json:"project_id,omitempty"`
+	Stage           string `json:"stage"`
+	Title           string `json:"title"`
+	BranchName      string `json:"branch_name"`
+	BodyFile        string `json:"body_file"`
+	FilesToReview   int    `json:"files_to_review"`
+	Command         string `json:"command"`
+	ExecutedPR      bool   `json:"executed_pr"`
+	GitHubOutput    string `json:"github_output,omitempty"`
+}
+
+type agentExecuteApprovedReport struct {
+	Mode            string                       `json:"mode"`
+	SourceClusterID string                       `json:"source_cluster_id"`
+	ProjectID       string                       `json:"project_id"`
+	Stage           string                       `json:"stage"`
+	Action          gitops.WorkerReconcileAction `json:"action"`
+	Command         string                       `json:"command"`
+	Executed        bool                         `json:"executed"`
+	StopReason      string                       `json:"stop_reason,omitempty"`
+}
+
+type agentExecutorOptions struct {
+	ExecutorBinary            string
+	SourceConnectionStringEnv string
+	TargetConnectionStringEnv string
+	ImportBatchSize           int
+	RequireEmptyTarget        bool
+	CommandTimeout            time.Duration
+	CommandRetries            int
+	RetryBackoff              time.Duration
+	Resume                    bool
+}
+
+type agentEvidencePROptions struct {
+	Draft   bool
+	Create  bool
+	Execute bool
+}
+
+type agentCDCOpsOptions struct {
+	MaxLSN                 string
+	MinLSNs                cdcHealthMinLSNFlags
+	MaxCheckpointAge       time.Duration
+	Now                    string
+	MetricsFile            string
+	HistoryFile            string
+	FailOnWarning          bool
+	ProbeLSN               bool
+	FeishuWebhookEnv       string
+	FeishuSecretEnv        string
+	FeishuAlertMinSeverity string
+	SlackWebhookEnv        string
+	SlackAlertMinSeverity  string
+	FromLSN                string
+	PRDraft                bool
+	SkipRetentionCheck     bool
+	ApplyApproved          bool
+	CheckpointStatus       string
+	Poll                   bool
+	MaxIterations          int
+	Interval               time.Duration
+	IdleIterations         int
+	MinAppliedChanges      int
+}
+
+type agentLLMOptions struct {
+	ProviderConfigPath   string
+	ProviderID           string
+	ProviderType         string
+	BaseURL              string
+	Model                string
+	AuthMode             string
+	APIKeyEnv            string
+	TokenEnv             string
+	TokenURL             string
+	ClientIDEnv          string
+	ClientSecretEnv      string
+	RefreshTokenEnv      string
+	Scopes               string
+	ExternalCommand      string
+	AllowExternalCommand bool
+	Timeout              time.Duration
+	ExecuteLLM           bool
+}
+
+func runAgent(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("agent", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	mode := fs.String("mode", "status", "agent mode: status, auto, plan-and-pr, execute-approved, cdc-ops, or review-assist")
+	root := fs.String("root", ".", "repository root")
+	sourceClusterID := fs.String("source-cluster-id", "", "optional source cluster id to scope agent status")
+	projectID := fs.String("project-id", "", "optional project id to scope agent status")
+	stage := fs.String("stage", "", "migration stage for modes that operate on one stage")
+	jsonOutput := fs.Bool("json", false, "write agent status as JSON")
+	dryRun := fs.Bool("dry-run", false, "plan agent actions without writing files, calling GitHub, or executing database work")
+	execute := fs.Bool("execute", false, "execute approved agent action when the selected mode supports execution")
+	executePR := fs.Bool("execute-pr", false, "call gh pr create after generating a PR draft")
+	evidencePRDraft := fs.Bool("evidence-pr-draft", false, "after execute-approved executor-backed execution, generate an executor evidence PR draft")
+	createEvidencePR := fs.Bool("create-evidence-pr", false, "after execute-approved executor-backed execution, generate and preview executor evidence PR creation; default does not change git or call GitHub")
+	executeEvidencePR := fs.Bool("execute-evidence-pr", false, "after execute-approved executor-backed execution, generate and create the executor evidence PR through git and gh")
+	executorBinary := fs.String("executor-binary", "", "external executor binary for executor-backed agent actions; default is sqlserver2tidb-executor")
+	sourceConnectionStringEnv := fs.String("source-connection-string-env", "", "environment variable containing the SQL Server connection string for executor-backed agent actions")
+	targetConnectionStringEnv := fs.String("target-connection-string-env", "", "environment variable containing the TiDB/MySQL connection string for executor-backed agent actions")
+	importBatchSize := fs.Int("import-batch-size", 0, "rows to commit per executor import transaction; default is executor-defined")
+	requireEmptyTarget := fs.Bool("require-empty-target", false, "pass executor --require-empty-target to sql-insert import commands")
+	commandTimeout := fs.Duration("command-timeout", 0, "maximum runtime per external executor command; 0 disables timeout")
+	commandRetries := fs.Int("command-retries", 0, "number of retries for a failed external executor command")
+	retryBackoff := fs.Duration("retry-backoff", time.Second, "fixed backoff between external executor command retries")
+	resume := fs.Bool("resume", false, "skip matching successful executor commands from existing evidence")
+	maxLSN := fs.String("max-lsn", "", "current SQL Server CDC max LSN for cdc-ops")
+	maxCheckpointAge := fs.Duration("max-checkpoint-age", 0, "maximum allowed CDC checkpoint age for cdc-ops health checks; 0 disables age checking")
+	nowRaw := fs.String("now", "", "current time override as RFC3339 for cdc-ops health checks")
+	metricsFile := fs.String("metrics-file", "", "optional cdc-ops health metrics JSON file")
+	historyFile := fs.String("history-file", "", "optional cdc-ops health JSONL history file")
+	failOnWarning := fs.Bool("fail-on-warning", false, "return non-zero when cdc-ops health status is warning")
+	probeLSN := fs.Bool("probe-lsn", false, "probe SQL Server CDC max/min LSNs through the executor before evaluating cdc-ops health")
+	feishuWebhookEnv := fs.String("feishu-webhook-env", "SQLSERVER2TIDB_FEISHU_WEBHOOK", "environment variable containing the Feishu custom bot webhook URL for cdc-ops")
+	feishuSecretEnv := fs.String("feishu-secret-env", "SQLSERVER2TIDB_FEISHU_SECRET", "environment variable containing the optional Feishu custom bot signing secret for cdc-ops")
+	feishuAlertMinSeverity := fs.String("feishu-alert-min-severity", "critical", "minimum cdc-ops health status that sends Feishu alerts: ok, warning, critical, or none")
+	slackWebhookEnv := fs.String("slack-webhook-env", "SQLSERVER2TIDB_SLACK_WEBHOOK", "environment variable containing the Slack incoming webhook URL for cdc-ops")
+	slackAlertMinSeverity := fs.String("slack-alert-min-severity", "critical", "minimum cdc-ops health status that sends Slack alerts: ok, warning, critical, or none")
+	fromLSN := fs.String("from-lsn", "", "initial CDC from LSN for cdc-ops tables without checkpoint state")
+	prDraft := fs.Bool("pr-draft", false, "write a CDC range PR draft when cdc-ops prepares a new range")
+	skipRetentionCheck := fs.Bool("skip-retention-check", false, "skip cdc-ops per-table SQL Server CDC min LSN retention checks")
+	applyApproved := fs.Bool("apply-approved", false, "execute an already approved CDC range in cdc-ops before probing the next SQL Server max LSN")
+	checkpointStatus := fs.String("checkpoint-status", "running", "checkpoint status to write after approved CDC apply in cdc-ops: running or caught_up")
+	poll := fs.Bool("poll", false, "continue polling when cdc-ops is caught up")
+	maxIterations := fs.Int("max-iterations", 0, "maximum cdc-ops probe iterations; 0 means unlimited")
+	interval := fs.Duration("interval", 5*time.Second, "sleep interval between caught-up cdc-ops polling iterations")
+	idleIterations := fs.Int("idle-iterations", 0, "maximum consecutive caught-up polls in cdc-ops --poll mode; 0 means unlimited")
+	minAppliedChanges := fs.Int("min-applied-changes", 0, "minimum total CDC applied changes required before cdc-ops can exit successfully")
+	var minLSNs cdcHealthMinLSNFlags
+	fs.Var(&minLSNs, "min-lsn", "per-table SQL Server CDC min LSN for cdc-ops health as source.object=0x...")
+	executeLLM := fs.Bool("execute-llm", false, "call the LLM provider for review-assist; default is dry-run")
+	providerConfigPath := fs.String("provider-config", "", "optional LLM provider config file for review-assist; defaults to inline flags")
+	providerID := fs.String("provider-id", "", "LLM provider id from provider config for review-assist; defaults to config default_provider")
+	providerType := fs.String("provider-type", llm.ProviderTypeOpenAICompatible, "LLM provider type for review-assist")
+	baseURL := fs.String("base-url", "", "OpenAI-compatible base URL for review-assist, for example https://api.openai.com/v1")
+	model := fs.String("model", "", "LLM model name for review-assist")
+	authMode := fs.String("auth-mode", llm.AuthModeAPIKey, "LLM auth mode for review-assist: api_key, oauth_client_credentials, oauth_refresh_token, oauth_token_env, external_command")
+	apiKeyEnv := fs.String("api-key-env", "OPENAI_API_KEY", "API key environment variable for review-assist api_key auth")
+	tokenEnv := fs.String("token-env", "", "access token environment variable for review-assist oauth_token_env auth")
+	tokenURL := fs.String("token-url", "", "OAuth token URL for review-assist oauth_client_credentials or oauth_refresh_token auth")
+	clientIDEnv := fs.String("client-id-env", "", "OAuth client id environment variable for review-assist")
+	clientSecretEnv := fs.String("client-secret-env", "", "OAuth client secret environment variable for review-assist")
+	refreshTokenEnv := fs.String("refresh-token-env", "", "OAuth refresh token environment variable for review-assist")
+	scopes := fs.String("scopes", "", "comma-separated OAuth scopes for review-assist")
+	externalCommand := fs.String("external-command", "", "external token command for review-assist; disabled unless --allow-external-command is set")
+	allowExternalCommand := fs.Bool("allow-external-command", false, "allow review-assist external_command auth to run a local command")
+	llmTimeout := fs.Duration("timeout", 2*time.Minute, "LLM provider request timeout for review-assist")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	executorOptions := agentExecutorOptions{
+		ExecutorBinary:            strings.TrimSpace(*executorBinary),
+		SourceConnectionStringEnv: strings.TrimSpace(*sourceConnectionStringEnv),
+		TargetConnectionStringEnv: strings.TrimSpace(*targetConnectionStringEnv),
+		ImportBatchSize:           *importBatchSize,
+		RequireEmptyTarget:        *requireEmptyTarget,
+		CommandTimeout:            *commandTimeout,
+		CommandRetries:            *commandRetries,
+		RetryBackoff:              *retryBackoff,
+		Resume:                    *resume,
+	}
+	evidencePROptions := agentEvidencePROptions{
+		Draft:   *evidencePRDraft || *createEvidencePR || *executeEvidencePR,
+		Create:  *createEvidencePR || *executeEvidencePR,
+		Execute: *executeEvidencePR,
+	}
+	cdcOpsOptions := agentCDCOpsOptions{
+		MaxLSN:                 strings.TrimSpace(*maxLSN),
+		MinLSNs:                minLSNs,
+		MaxCheckpointAge:       *maxCheckpointAge,
+		Now:                    strings.TrimSpace(*nowRaw),
+		MetricsFile:            strings.TrimSpace(*metricsFile),
+		HistoryFile:            strings.TrimSpace(*historyFile),
+		FailOnWarning:          *failOnWarning,
+		ProbeLSN:               *probeLSN,
+		FeishuWebhookEnv:       strings.TrimSpace(*feishuWebhookEnv),
+		FeishuSecretEnv:        strings.TrimSpace(*feishuSecretEnv),
+		FeishuAlertMinSeverity: strings.TrimSpace(*feishuAlertMinSeverity),
+		SlackWebhookEnv:        strings.TrimSpace(*slackWebhookEnv),
+		SlackAlertMinSeverity:  strings.TrimSpace(*slackAlertMinSeverity),
+		FromLSN:                strings.TrimSpace(*fromLSN),
+		PRDraft:                *prDraft,
+		SkipRetentionCheck:     *skipRetentionCheck,
+		ApplyApproved:          *applyApproved,
+		CheckpointStatus:       strings.TrimSpace(*checkpointStatus),
+		Poll:                   *poll,
+		MaxIterations:          *maxIterations,
+		Interval:               *interval,
+		IdleIterations:         *idleIterations,
+		MinAppliedChanges:      *minAppliedChanges,
+	}
+	llmOptions := agentLLMOptions{
+		ProviderConfigPath:   strings.TrimSpace(*providerConfigPath),
+		ProviderID:           strings.TrimSpace(*providerID),
+		ProviderType:         strings.TrimSpace(*providerType),
+		BaseURL:              strings.TrimSpace(*baseURL),
+		Model:                strings.TrimSpace(*model),
+		AuthMode:             strings.TrimSpace(*authMode),
+		APIKeyEnv:            strings.TrimSpace(*apiKeyEnv),
+		TokenEnv:             strings.TrimSpace(*tokenEnv),
+		TokenURL:             strings.TrimSpace(*tokenURL),
+		ClientIDEnv:          strings.TrimSpace(*clientIDEnv),
+		ClientSecretEnv:      strings.TrimSpace(*clientSecretEnv),
+		RefreshTokenEnv:      strings.TrimSpace(*refreshTokenEnv),
+		Scopes:               strings.TrimSpace(*scopes),
+		ExternalCommand:      strings.TrimSpace(*externalCommand),
+		AllowExternalCommand: *allowExternalCommand,
+		Timeout:              *llmTimeout,
+		ExecuteLLM:           *executeLLM,
+	}
+	switch strings.TrimSpace(*mode) {
+	case "status":
+		return runAgentStatus(*root, strings.TrimSpace(*sourceClusterID), strings.TrimSpace(*projectID), *jsonOutput, stdout, stderr)
+	case "auto":
+		if !*dryRun {
+			fmt.Fprintln(stderr, "agent auto currently requires --dry-run")
+			return 2
+		}
+		return runAgentAutoDryRun(*root, strings.TrimSpace(*sourceClusterID), strings.TrimSpace(*projectID), *jsonOutput, stdout, stderr)
+	case "plan-and-pr":
+		return runAgentPlanAndPR(*root, strings.TrimSpace(*sourceClusterID), strings.TrimSpace(*projectID), strings.TrimSpace(*stage), *executePR, *jsonOutput, stdout, stderr)
+	case "execute-approved":
+		return runAgentExecuteApproved(*root, strings.TrimSpace(*sourceClusterID), strings.TrimSpace(*projectID), strings.TrimSpace(*stage), *execute, *jsonOutput, evidencePROptions, executorOptions, stdout, stderr)
+	case "cdc-ops":
+		return runAgentCDCOps(*root, strings.TrimSpace(*sourceClusterID), strings.TrimSpace(*projectID), executorOptions, cdcOpsOptions, stdout, stderr)
+	case "review-assist":
+		return runAgentReviewAssist(*root, strings.TrimSpace(*sourceClusterID), strings.TrimSpace(*projectID), strings.TrimSpace(*stage), llmOptions, stdout, stderr)
+	default:
+		fmt.Fprintf(stderr, "agent: unsupported mode %q; supported modes: status, auto, plan-and-pr, execute-approved, cdc-ops, review-assist\n", *mode)
+		return 2
+	}
+}
+
+func runAgentStatus(root, sourceClusterID, projectID string, jsonOutput bool, stdout, stderr io.Writer) int {
+	report, err := buildAgentStatusReport(root, sourceClusterID, projectID)
+	if err != nil {
+		fmt.Fprintf(stderr, "agent status: %v\n", err)
+		return 1
+	}
+	if jsonOutput {
+		encoder := json.NewEncoder(stdout)
+		encoder.SetIndent("", "  ")
+		if err := encoder.Encode(report); err != nil {
+			fmt.Fprintf(stderr, "agent status json: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+
+	fmt.Fprintln(stdout, "migration agent status")
+	fmt.Fprintf(stdout, "mode: %s\n", report.Mode)
+	if report.SourceClusterID != "" {
+		fmt.Fprintf(stdout, "source cluster: %s\n", report.SourceClusterID)
+	}
+	if report.ProjectID != "" {
+		fmt.Fprintf(stdout, "project: %s\n", report.ProjectID)
+	}
+	if report.Repository.Valid {
+		fmt.Fprintf(stdout, "repository: valid (%d dirs, %d files checked)\n", report.Repository.CheckedDirs, report.Repository.CheckedFiles)
+	} else {
+		fmt.Fprintf(stdout, "repository: invalid (%d errors)\n", len(report.Repository.Errors))
+	}
+	fmt.Fprintf(stdout, "projects: %d\n", report.Reconcile.Projects)
+	fmt.Fprintf(stdout, "ready actions: %d\n", report.Reconcile.ReadyActions)
+	fmt.Fprintf(stdout, "blocked actions: %d\n", report.Reconcile.BlockedActions)
+	if report.NextAction.Stage == "" {
+		fmt.Fprintln(stdout, "next action: none")
+		return 0
+	}
+	fmt.Fprintf(stdout, "next action: %s/%s %s\n", report.NextAction.SourceClusterID, report.NextAction.ProjectID, report.NextAction.Stage)
+	fmt.Fprintf(stdout, "command: %s\n", redact.Text(report.NextAction.Command))
+	return 0
+}
+
+func runAgentAutoDryRun(root, sourceClusterID, projectID string, jsonOutput bool, stdout, stderr io.Writer) int {
+	report, err := buildAgentAutoDryRunReport(root, sourceClusterID, projectID)
+	if err != nil {
+		fmt.Fprintf(stderr, "agent auto dry-run: %v\n", err)
+		return 1
+	}
+	if jsonOutput {
+		encoder := json.NewEncoder(stdout)
+		encoder.SetIndent("", "  ")
+		if err := encoder.Encode(report); err != nil {
+			fmt.Fprintf(stderr, "agent auto dry-run json: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+	fmt.Fprintln(stdout, "migration agent auto dry run")
+	fmt.Fprintf(stdout, "mode: %s\n", report.Mode)
+	if report.SourceClusterID != "" {
+		fmt.Fprintf(stdout, "source cluster: %s\n", report.SourceClusterID)
+	}
+	if report.ProjectID != "" {
+		fmt.Fprintf(stdout, "project: %s\n", report.ProjectID)
+	}
+	if report.Repository.Valid {
+		fmt.Fprintf(stdout, "repository: valid (%d dirs, %d files checked)\n", report.Repository.CheckedDirs, report.Repository.CheckedFiles)
+	} else {
+		fmt.Fprintf(stdout, "repository: invalid (%d errors)\n", len(report.Repository.Errors))
+	}
+	fmt.Fprintf(stdout, "projects: %d\n", report.Reconcile.Projects)
+	fmt.Fprintf(stdout, "ready actions: %d\n", report.Reconcile.ReadyActions)
+	fmt.Fprintf(stdout, "blocked actions: %d\n", report.Reconcile.BlockedActions)
+	if report.NextAction.Name == "" {
+		fmt.Fprintln(stdout, "next action: none")
+		fmt.Fprintf(stdout, "stop reason: %s\n", report.StopReason)
+		return 0
+	}
+	if report.NextAction.Name == "worker-action" {
+		fmt.Fprintf(stdout, "next action: %s/%s %s\n", report.NextAction.SourceClusterID, report.NextAction.ProjectID, report.NextAction.Stage)
+	} else {
+		fmt.Fprintf(stdout, "next action: %s\n", report.NextAction.Name)
+	}
+	fmt.Fprintf(stdout, "command: %s\n", redact.Text(report.NextAction.Command))
+	fmt.Fprintf(stdout, "stop reason: %s\n", report.StopReason)
+	return 0
+}
+
+func runAgentPlanAndPR(root, sourceClusterID, projectID, stage string, executePR, jsonOutput bool, stdout, stderr io.Writer) int {
+	report, err := buildAgentPlanAndPRReport(root, sourceClusterID, projectID, stage, executePR)
+	if err != nil {
+		fmt.Fprintf(stderr, "agent plan-and-pr: %v\n", err)
+		return 1
+	}
+	if jsonOutput {
+		encoder := json.NewEncoder(stdout)
+		encoder.SetIndent("", "  ")
+		if err := encoder.Encode(report); err != nil {
+			fmt.Fprintf(stderr, "agent plan-and-pr json: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+	fmt.Fprintln(stdout, "migration agent plan-and-pr")
+	fmt.Fprintf(stdout, "stage: %s\n", report.Stage)
+	fmt.Fprintf(stdout, "PR draft generated for %s\n", report.Stage)
+	fmt.Fprintf(stdout, "title: %s\n", report.Title)
+	fmt.Fprintf(stdout, "branch: %s\n", report.BranchName)
+	fmt.Fprintf(stdout, "body file: %s\n", report.BodyFile)
+	fmt.Fprintf(stdout, "files to review: %d\n", report.FilesToReview)
+	if !executePR {
+		fmt.Fprintln(stdout, "dry run: not calling GitHub")
+	}
+	fmt.Fprintf(stdout, "command: %s\n", redact.Text(report.Command))
+	if executePR {
+		if report.GitHubOutput != "" {
+			fmt.Fprint(stdout, report.GitHubOutput)
+			if !strings.HasSuffix(report.GitHubOutput, "\n") {
+				fmt.Fprintln(stdout)
+			}
+		}
+		fmt.Fprintln(stdout, "GitHub PR created")
+	}
+	return 0
+}
+
+func buildAgentPlanAndPRReport(root, sourceClusterID, projectID, stage string, executePR bool) (agentPlanAndPRReport, error) {
+	if strings.TrimSpace(stage) == "" {
+		return agentPlanAndPRReport{}, fmt.Errorf("agent plan-and-pr requires --stage")
+	}
+	draft, err := gitops.GeneratePRDraft(root, sourceClusterID, projectID, stage)
+	if err != nil {
+		return agentPlanAndPRReport{}, err
+	}
+	spec, err := gitops.PrepareGitHubPRCreate(root, sourceClusterID, projectID, stage)
+	if err != nil {
+		return agentPlanAndPRReport{}, err
+	}
+	var githubOutput string
+	if executePR {
+		cmd := exec.Command("gh", spec.Args...)
+		cmd.Dir = root
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			if len(output) > 0 {
+				return agentPlanAndPRReport{}, fmt.Errorf("gh pr create failed: %w: %s", err, redact.Text(string(output)))
+			}
+			return agentPlanAndPRReport{}, fmt.Errorf("gh pr create failed: %w", err)
+		}
+		githubOutput = redact.Text(string(output))
+	}
+	return agentPlanAndPRReport{
+		Mode:            "plan-and-pr",
+		SourceClusterID: draft.SourceClusterID,
+		ProjectID:       draft.ProjectID,
+		Stage:           draft.Stage,
+		Title:           draft.Title,
+		BranchName:      draft.BranchName,
+		BodyFile:        draft.BodyFile,
+		FilesToReview:   len(draft.Files),
+		Command:         spec.ShellCommand,
+		ExecutedPR:      executePR,
+		GitHubOutput:    githubOutput,
+	}, nil
+}
+
+func runAgentExecuteApproved(root, sourceClusterID, projectID, stage string, execute, jsonOutput bool, evidencePROptions agentEvidencePROptions, executorOptions agentExecutorOptions, stdout, stderr io.Writer) int {
+	report, err := buildAgentExecuteApprovedReport(root, sourceClusterID, projectID, stage, execute)
+	if err != nil {
+		fmt.Fprintf(stderr, "agent execute-approved: %v\n", err)
+		return 1
+	}
+	if hasAgentEvidencePRAction(evidencePROptions) && !execute {
+		fmt.Fprintln(stderr, "agent execute-approved: evidence PR options require --execute")
+		return 2
+	}
+	if hasAgentEvidencePRAction(evidencePROptions) && !isAgentExecutorOnlyStage(report.Stage) {
+		fmt.Fprintf(stderr, "agent execute-approved: evidence PR options are only supported for executor-backed stages; got %q\n", report.Stage)
+		return 2
+	}
+	if jsonOutput && !execute {
+		encoder := json.NewEncoder(stdout)
+		encoder.SetIndent("", "  ")
+		if err := encoder.Encode(report); err != nil {
+			fmt.Fprintf(stderr, "agent execute-approved json: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+	if !execute {
+		fmt.Fprintln(stdout, "migration agent execute-approved dry run")
+		if isAgentExecutorOnlyStage(report.Stage) {
+			return runWorkerExecutor(agentWorkerExecutorArgs(root, report.Action, executorOptions, false), stdout, stderr)
+		}
+		fmt.Fprintf(stdout, "next action: %s/%s %s\n", report.SourceClusterID, report.ProjectID, report.Stage)
+		fmt.Fprintf(stdout, "command: %s\n", redact.Text(report.Command))
+		fmt.Fprintf(stdout, "stop reason: %s\n", report.StopReason)
+		return 0
+	}
+	fmt.Fprintln(stdout, "migration agent execute-approved")
+	if code := runAgentExecuteApprovedAction(root, report.Action, executorOptions, stdout, stderr); code != 0 {
+		return code
+	}
+	if evidencePROptions.Draft {
+		if code := runGenerateExecutorEvidencePRDraft(agentExecutorEvidencePRDraftArgs(root, report.Action), stdout, stderr); code != 0 {
+			return code
+		}
+	}
+	if evidencePROptions.Create {
+		return runCreateExecutorEvidencePR(agentExecutorEvidencePRCreateArgs(root, report.Action, evidencePROptions.Execute), stdout, stderr)
+	}
+	return 0
+}
+
+func buildAgentExecuteApprovedReport(root, sourceClusterID, projectID, stage string, execute bool) (agentExecuteApprovedReport, error) {
+	if strings.TrimSpace(stage) == "" {
+		return agentExecuteApprovedReport{}, fmt.Errorf("agent execute-approved requires --stage")
+	}
+	status, err := buildAgentStatusReport(root, sourceClusterID, projectID)
+	if err != nil {
+		return agentExecuteApprovedReport{}, err
+	}
+	var selected gitops.WorkerReconcileAction
+	for _, action := range status.Reconcile.Actions {
+		if action.Stage == stage {
+			selected = action
+			break
+		}
+	}
+	if selected.Stage == "" {
+		return agentExecuteApprovedReport{}, fmt.Errorf("stage %q is not available in the selected project scope", stage)
+	}
+	if selected.Status != "ready" {
+		if selected.Reason != "" {
+			return agentExecuteApprovedReport{}, fmt.Errorf("stage %q is not ready: %s", stage, selected.Reason)
+		}
+		return agentExecuteApprovedReport{}, fmt.Errorf("stage %q is not ready", stage)
+	}
+	report := agentExecuteApprovedReport{
+		Mode:            "execute-approved",
+		SourceClusterID: selected.SourceClusterID,
+		ProjectID:       selected.ProjectID,
+		Stage:           selected.Stage,
+		Action:          selected,
+		Command:         selected.Command,
+		Executed:        execute,
+	}
+	if !execute {
+		report.StopReason = "requires --execute"
+	}
+	return report, nil
+}
+
+func runAgentExecuteApprovedAction(root string, action gitops.WorkerReconcileAction, executorOptions agentExecutorOptions, stdout, stderr io.Writer) int {
+	args := []string{
+		"--root", root,
+		"--source-cluster-id", action.SourceClusterID,
+		"--project-id", action.ProjectID,
+	}
+	switch action.Stage {
+	case "export":
+		return runWorkerExport(args, stdout, stderr)
+	case "import":
+		return runWorkerImport(args, stdout, stderr)
+	case "cdc":
+		return runWorkerCDC(args, stdout, stderr)
+	case "validation":
+		return runWorkerValidate(args, stdout, stderr)
+	case "cutover":
+		return runWorkerCutover(args, stdout, stderr)
+	case "ddl", "cdc-enable":
+		return runWorkerExecutor(agentWorkerExecutorArgs(root, action, executorOptions, true), stdout, stderr)
+	default:
+		fmt.Fprintf(stderr, "agent execute-approved: stage %q is not executable by the agent\n", action.Stage)
+		return 1
+	}
+}
+
+func isAgentExecutorOnlyStage(stage string) bool {
+	return stage == "ddl" || stage == "cdc-enable"
+}
+
+func hasAgentEvidencePRAction(options agentEvidencePROptions) bool {
+	return options.Draft || options.Create || options.Execute
+}
+
+func agentWorkerExecutorArgs(root string, action gitops.WorkerReconcileAction, options agentExecutorOptions, execute bool) []string {
+	args := []string{
+		"--root", root,
+		"--source-cluster-id", action.SourceClusterID,
+		"--project-id", action.ProjectID,
+		"--stage", action.Stage,
+	}
+	if options.ExecutorBinary != "" {
+		args = append(args, "--executor-binary", options.ExecutorBinary)
+	}
+	if options.SourceConnectionStringEnv != "" {
+		args = append(args, "--source-connection-string-env", options.SourceConnectionStringEnv)
+	}
+	if options.TargetConnectionStringEnv != "" {
+		args = append(args, "--target-connection-string-env", options.TargetConnectionStringEnv)
+	}
+	if options.ImportBatchSize != 0 {
+		args = append(args, "--import-batch-size", strconv.Itoa(options.ImportBatchSize))
+	}
+	if options.RequireEmptyTarget {
+		args = append(args, "--require-empty-target")
+	}
+	if options.CommandTimeout != 0 {
+		args = append(args, "--command-timeout", options.CommandTimeout.String())
+	}
+	if options.CommandRetries != 0 {
+		args = append(args, "--command-retries", strconv.Itoa(options.CommandRetries))
+	}
+	if options.RetryBackoff != time.Second {
+		args = append(args, "--retry-backoff", options.RetryBackoff.String())
+	}
+	if options.Resume {
+		args = append(args, "--resume")
+	}
+	if execute {
+		args = append(args, "--execute")
+	}
+	return args
+}
+
+func agentExecutorEvidencePRDraftArgs(root string, action gitops.WorkerReconcileAction) []string {
+	return []string{
+		"--root", root,
+		"--source-cluster-id", action.SourceClusterID,
+		"--project-id", action.ProjectID,
+		"--stage", action.Stage,
+	}
+}
+
+func agentExecutorEvidencePRCreateArgs(root string, action gitops.WorkerReconcileAction, execute bool) []string {
+	args := []string{
+		"--root", root,
+		"--source-cluster-id", action.SourceClusterID,
+		"--project-id", action.ProjectID,
+		"--stage", action.Stage,
+	}
+	if execute {
+		args = append(args, "--execute")
+	}
+	return args
+}
+
+func runAgentCDCOps(root, sourceClusterID, projectID string, executorOptions agentExecutorOptions, options agentCDCOpsOptions, stdout, stderr io.Writer) int {
+	fmt.Fprintln(stdout, "migration agent cdc-ops")
+	healthCode := runCDCHealth(agentCDCHealthArgs(root, sourceClusterID, projectID, executorOptions, options), stdout, stderr)
+	if healthCode != 0 {
+		return healthCode
+	}
+	return runCDCOrchestrator(agentCDCOrchestratorArgs(root, sourceClusterID, projectID, executorOptions, options), stdout, stderr)
+}
+
+func agentCDCHealthArgs(root, sourceClusterID, projectID string, executorOptions agentExecutorOptions, options agentCDCOpsOptions) []string {
+	args := []string{
+		"--root", root,
+		"--source-cluster-id", sourceClusterID,
+		"--project-id", projectID,
+	}
+	if options.MaxLSN != "" {
+		args = append(args, "--max-lsn", options.MaxLSN)
+	}
+	for _, sourceObject := range sortedCDCHealthMinLSNKeys(options.MinLSNs) {
+		args = append(args, "--min-lsn", sourceObject+"="+options.MinLSNs[sourceObject])
+	}
+	if options.MaxCheckpointAge != 0 {
+		args = append(args, "--max-checkpoint-age", options.MaxCheckpointAge.String())
+	}
+	if options.Now != "" {
+		args = append(args, "--now", options.Now)
+	}
+	if options.MetricsFile != "" {
+		args = append(args, "--metrics-file", options.MetricsFile)
+	}
+	if options.HistoryFile != "" {
+		args = append(args, "--history-file", options.HistoryFile)
+	}
+	if options.FailOnWarning {
+		args = append(args, "--fail-on-warning")
+	}
+	if options.ProbeLSN {
+		args = append(args, "--probe-lsn")
+	}
+	if executorOptions.ExecutorBinary != "" {
+		args = append(args, "--executor-binary", executorOptions.ExecutorBinary)
+	}
+	if executorOptions.SourceConnectionStringEnv != "" {
+		args = append(args, "--source-connection-string-env", executorOptions.SourceConnectionStringEnv)
+	}
+	if options.FeishuWebhookEnv != "" {
+		args = append(args, "--feishu-webhook-env", options.FeishuWebhookEnv)
+	}
+	if options.FeishuSecretEnv != "" {
+		args = append(args, "--feishu-secret-env", options.FeishuSecretEnv)
+	}
+	if options.FeishuAlertMinSeverity != "" {
+		args = append(args, "--feishu-alert-min-severity", options.FeishuAlertMinSeverity)
+	}
+	if options.SlackWebhookEnv != "" {
+		args = append(args, "--slack-webhook-env", options.SlackWebhookEnv)
+	}
+	if options.SlackAlertMinSeverity != "" {
+		args = append(args, "--slack-alert-min-severity", options.SlackAlertMinSeverity)
+	}
+	return args
+}
+
+func agentCDCOrchestratorArgs(root, sourceClusterID, projectID string, executorOptions agentExecutorOptions, options agentCDCOpsOptions) []string {
+	args := []string{
+		"--root", root,
+		"--source-cluster-id", sourceClusterID,
+		"--project-id", projectID,
+	}
+	if executorOptions.ExecutorBinary != "" {
+		args = append(args, "--executor-binary", executorOptions.ExecutorBinary)
+	}
+	if executorOptions.SourceConnectionStringEnv != "" {
+		args = append(args, "--source-connection-string-env", executorOptions.SourceConnectionStringEnv)
+	}
+	if executorOptions.TargetConnectionStringEnv != "" {
+		args = append(args, "--target-connection-string-env", executorOptions.TargetConnectionStringEnv)
+	}
+	if options.MaxLSN != "" {
+		args = append(args, "--max-lsn", options.MaxLSN)
+	}
+	if options.FromLSN != "" {
+		args = append(args, "--from-lsn", options.FromLSN)
+	}
+	if options.PRDraft {
+		args = append(args, "--pr-draft")
+	}
+	if options.SkipRetentionCheck {
+		args = append(args, "--skip-retention-check")
+	}
+	if options.ApplyApproved {
+		args = append(args, "--apply-approved")
+	}
+	if options.CheckpointStatus != "" && options.CheckpointStatus != "running" {
+		args = append(args, "--checkpoint-status", options.CheckpointStatus)
+	}
+	if executorOptions.CommandTimeout != 0 {
+		args = append(args, "--command-timeout", executorOptions.CommandTimeout.String())
+	}
+	if executorOptions.CommandRetries != 0 {
+		args = append(args, "--command-retries", strconv.Itoa(executorOptions.CommandRetries))
+	}
+	if executorOptions.RetryBackoff != time.Second {
+		args = append(args, "--retry-backoff", executorOptions.RetryBackoff.String())
+	}
+	if executorOptions.Resume {
+		args = append(args, "--resume")
+	}
+	if options.MinAppliedChanges != 0 {
+		args = append(args, "--min-applied-changes", strconv.Itoa(options.MinAppliedChanges))
+	}
+	if options.Poll {
+		args = append(args, "--poll")
+	}
+	if options.MaxIterations != 0 {
+		args = append(args, "--max-iterations", strconv.Itoa(options.MaxIterations))
+	}
+	if options.Interval != 5*time.Second {
+		args = append(args, "--interval", options.Interval.String())
+	}
+	if options.IdleIterations != 0 {
+		args = append(args, "--idle-iterations", strconv.Itoa(options.IdleIterations))
+	}
+	return args
+}
+
+func sortedCDCHealthMinLSNKeys(values cdcHealthMinLSNFlags) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func runAgentReviewAssist(root, sourceClusterID, projectID, stage string, options agentLLMOptions, stdout, stderr io.Writer) int {
+	if strings.TrimSpace(stage) == "" {
+		fmt.Fprintln(stderr, "agent review-assist requires --stage")
+		return 2
+	}
+	fmt.Fprintln(stdout, "migration agent review-assist")
+	args := agentLLMArgs(root, sourceClusterID, projectID, "", options)
+	switch stage {
+	case "compatibility":
+		return runLLMCompatibilityAdvice(agentLLMArgs(root, sourceClusterID, "", "", options), stdout, stderr)
+	case "schema":
+		return runLLMSchemaAdvice(args, stdout, stderr)
+	case "strategy", "migration-strategy", "plan":
+		return runLLMMigrationStrategy(args, stdout, stderr)
+	case "validation":
+		return runLLMProjectAdvice(args, stdout, stderr, llmValidationAnalysisCommand())
+	case "cutover":
+		return runLLMProjectAdvice(args, stdout, stderr, llmCutoverRiskCommand())
+	default:
+		fmt.Fprintf(stderr, "agent review-assist: unsupported stage %q; supported stages: compatibility, schema, strategy, validation, cutover\n", stage)
+		return 2
+	}
+}
+
+func agentLLMArgs(root, sourceClusterID, projectID, stage string, options agentLLMOptions) []string {
+	args := []string{
+		"--root", root,
+		"--source-cluster-id", sourceClusterID,
+	}
+	if projectID != "" {
+		args = append(args, "--project-id", projectID)
+	}
+	if stage != "" {
+		args = append(args, "--stage", stage)
+	}
+	if options.ProviderConfigPath != "" {
+		args = append(args, "--provider-config", options.ProviderConfigPath)
+	}
+	if options.ProviderID != "" {
+		args = append(args, "--provider-id", options.ProviderID)
+	}
+	if options.ProviderType != "" {
+		args = append(args, "--provider-type", options.ProviderType)
+	}
+	if options.BaseURL != "" {
+		args = append(args, "--base-url", options.BaseURL)
+	}
+	if options.Model != "" {
+		args = append(args, "--model", options.Model)
+	}
+	if options.AuthMode != "" {
+		args = append(args, "--auth-mode", options.AuthMode)
+	}
+	if options.APIKeyEnv != "" {
+		args = append(args, "--api-key-env", options.APIKeyEnv)
+	}
+	if options.TokenEnv != "" {
+		args = append(args, "--token-env", options.TokenEnv)
+	}
+	if options.TokenURL != "" {
+		args = append(args, "--token-url", options.TokenURL)
+	}
+	if options.ClientIDEnv != "" {
+		args = append(args, "--client-id-env", options.ClientIDEnv)
+	}
+	if options.ClientSecretEnv != "" {
+		args = append(args, "--client-secret-env", options.ClientSecretEnv)
+	}
+	if options.RefreshTokenEnv != "" {
+		args = append(args, "--refresh-token-env", options.RefreshTokenEnv)
+	}
+	if options.Scopes != "" {
+		args = append(args, "--scopes", options.Scopes)
+	}
+	if options.ExternalCommand != "" {
+		args = append(args, "--external-command", options.ExternalCommand)
+	}
+	if options.AllowExternalCommand {
+		args = append(args, "--allow-external-command")
+	}
+	if options.Timeout != 2*time.Minute {
+		args = append(args, "--timeout", options.Timeout.String())
+	}
+	if options.ExecuteLLM {
+		args = append(args, "--execute")
+	}
+	return args
+}
+
+func buildAgentStatusReport(root, sourceClusterID, projectID string) (agentStatusReport, error) {
+	repoReport, err := gitops.ValidateRepo(root)
+	if err != nil {
+		return agentStatusReport{}, fmt.Errorf("validate repo: %w", err)
+	}
+	status := agentStatusReport{
+		Mode:            "status",
+		SourceClusterID: sourceClusterID,
+		ProjectID:       projectID,
+		Repository: agentRepositoryStatus{
+			Valid:        repoReport.Valid,
+			CheckedDirs:  repoReport.CheckedDirs,
+			CheckedFiles: repoReport.CheckedFiles,
+			Errors:       repoReport.Errors,
+		},
+	}
+	if !repoReport.Valid {
+		return status, fmt.Errorf("repository validation failed with %d errors", len(repoReport.Errors))
+	}
+	reconcileReport, err := gitops.PlanWorkerReconcileWithSpec(root, gitops.WorkerReconcilePlanSpec{SourceClusterID: sourceClusterID})
+	if err != nil {
+		return agentStatusReport{}, err
+	}
+	if projectID != "" {
+		reconcileReport = filterWorkerReconcileReportByProject(reconcileReport, projectID)
+		if reconcileReport.Projects == 0 {
+			return agentStatusReport{}, fmt.Errorf("project %q does not exist in source cluster scope", projectID)
+		}
+	}
+	status.Reconcile = reconcileReport
+	for _, action := range reconcileReport.Actions {
+		if action.Status == "ready" {
+			status.NextAction = action
+			break
+		}
+	}
+	return status, nil
+}
+
+func buildAgentAutoDryRunReport(root, sourceClusterID, projectID string) (agentAutoDryRunReport, error) {
+	status, err := buildAgentStatusReport(root, sourceClusterID, projectID)
+	if err != nil {
+		return agentAutoDryRunReport{}, err
+	}
+	report := agentAutoDryRunReport{
+		Mode:            "auto",
+		SourceClusterID: sourceClusterID,
+		ProjectID:       projectID,
+		Repository:      status.Repository,
+		Reconcile:       status.Reconcile,
+		StopReason:      "completed",
+	}
+	if sourceClusterID != "" && projectID != "" {
+		schemaStatus, exists, err := readAgentSchemaDiffStatus(root, sourceClusterID, projectID)
+		if err != nil {
+			return agentAutoDryRunReport{}, err
+		}
+		if exists && schemaStatus != "reviewed" {
+			if schemaStatus == "pending" {
+				report.NextAction = agentAutoAction{
+					Name:            "generate schema draft",
+					SourceClusterID: sourceClusterID,
+					ProjectID:       projectID,
+					Stage:           "schema",
+					Status:          "ready",
+					Command:         fmt.Sprintf("sqlserver2tidb generate-schema-draft --root %s --source-cluster-id %s --project-id %s", root, sourceClusterID, projectID),
+				}
+				report.StopReason = "dry-run"
+				return report, nil
+			}
+			report.NextAction = agentAutoAction{
+				Name:            "generate schema PR",
+				SourceClusterID: sourceClusterID,
+				ProjectID:       projectID,
+				Stage:           "schema",
+				Status:          "ready",
+				Command:         fmt.Sprintf("sqlserver2tidb generate-pr-draft --root %s --source-cluster-id %s --project-id %s --stage schema", root, sourceClusterID, projectID),
+			}
+			report.StopReason = "review required"
+			return report, nil
+		}
+	}
+	if status.NextAction.Stage != "" {
+		report.NextAction = agentAutoAction{
+			Name:            "worker-action",
+			SourceClusterID: status.NextAction.SourceClusterID,
+			ProjectID:       status.NextAction.ProjectID,
+			Stage:           status.NextAction.Stage,
+			Status:          status.NextAction.Status,
+			Command:         status.NextAction.Command,
+		}
+		report.StopReason = "dry-run"
+	}
+	return report, nil
+}
+
+func readAgentSchemaDiffStatus(root, sourceClusterID, projectID string) (string, bool, error) {
+	path := filepath.Join(root, "clusters", sourceClusterID, "projects", projectID, "schema", "schema-diff.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("read schema-diff.json: %w", err)
+	}
+	var diff struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(data, &diff); err != nil {
+		return "", false, fmt.Errorf("parse schema-diff.json: %w", err)
+	}
+	return strings.TrimSpace(diff.Status), true, nil
+}
+
+func filterWorkerReconcileReportByProject(report gitops.WorkerReconcileReport, projectID string) gitops.WorkerReconcileReport {
+	var filtered gitops.WorkerReconcileReport
+	seenProjects := map[string]struct{}{}
+	for _, action := range report.Actions {
+		if action.ProjectID != projectID {
+			continue
+		}
+		filtered.Actions = append(filtered.Actions, action)
+		seenProjects[action.SourceClusterID+"/"+action.ProjectID] = struct{}{}
+		if action.Status == "ready" {
+			filtered.ReadyActions++
+		} else {
+			filtered.BlockedActions++
+		}
+	}
+	filtered.Projects = len(seenProjects)
+	return filtered
 }
 
 func runDiscoverSQLServer(args []string, stdout, stderr io.Writer) int {
@@ -4375,6 +5357,14 @@ Usage:
   sqlserver2tidb prepare-cdc-iteration --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --max-lsn 0x00000027000001f40004 --pr-draft
   sqlserver2tidb cdc-orchestrator --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --apply-approved --poll --pr-draft
   sqlserver2tidb cdc-health --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --probe-lsn --max-checkpoint-age 15m --metrics-file artifacts/cdc-health.json --history-file clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/cdc-health-history.jsonl
+  sqlserver2tidb agent --mode status --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
+  sqlserver2tidb agent --mode auto --dry-run --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
+  sqlserver2tidb agent --mode plan-and-pr --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage schema
+  sqlserver2tidb agent --mode execute-approved --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage export
+  sqlserver2tidb agent --mode execute-approved --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage ddl --target-connection-string-env SQLSERVER2TIDB_TARGET_CONNECTION_STRING
+  sqlserver2tidb agent --mode execute-approved --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage cdc-enable --source-connection-string-env SQLSERVER2TIDB_CDC_ADMIN_CONNECTION_STRING --command-timeout 5m --command-retries 2 --retry-backoff 10s --resume --execute --create-evidence-pr
+  sqlserver2tidb agent --mode cdc-ops --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --probe-lsn --history-file clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/cdc-health-history.jsonl --metrics-file artifacts/cdc-health.json --pr-draft
+  sqlserver2tidb agent --mode review-assist --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage validation --provider-config global/llm-providers.yaml --execute-llm
   sqlserver2tidb generate-validation-plan --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
   sqlserver2tidb generate-pr-draft --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage schema
   sqlserver2tidb create-pr --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage schema

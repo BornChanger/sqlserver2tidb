@@ -27,7 +27,7 @@ This MVP provides:
 - GitHub PR approval sync and closure for schema/export/import/CDC/validation/cutover PRs: after a PR is approved and green, the CLI/workflow can approve if needed, merge the PR, write the matching GitHub-file approval metadata with a freshly computed payload hash, commit it, and push it back to the base branch.
 - DDL, export, import, CDC, validation, and cutover payload hash calculation.
 - Approved metadata-only export/import/CDC/validation/cutover worker state write-back.
-- Dry-run-by-default external executor command generation for approved DDL/export/import/CDC enablement/CDC apply/validation plans, with structured executor evidence for timing, retries, CDC applied-change counts, and export/import data-volume metrics.
+- Dry-run-by-default external executor command generation for approved DDL/export/import/CDC enablement/CDC apply/validation plans, with structured executor evidence for timing, retries, CDC applied-change counts, export/import data-volume metrics, and agent-triggered executor evidence PR draft generation after approved executor-backed execution.
 - `sqlserver2tidb-executor` adapter for DDL/export/import/CDC plus row-count and query-based validation work items, including `apply-ddl --execute`, CSV `export --execute` to local file, HTTP(S), S3, GCS, or Azure Blob, CSV `import --execute` from local file, HTTP(S), S3, GCS, or Azure Blob, `validate-count --execute`, `validate-query --execute`, `cdc-lsn --execute`, `cdc-enable --execute`, and `cdc --execute` paths.
 - A `cdc-orchestrator` command that repeatedly probes SQL Server CDC max LSN through the executor, prepares the next reviewed CDC range from committed checkpoints, writes a range PR draft, and can explicitly execute already-approved CDC ranges while preserving GitHub approval gates.
 - A `cdc-health` command for long-running CDC operations that evaluates committed checkpoint freshness, lag against SQL Server max LSN, CDC retention coverage against per-table min LSNs, writes JSON metrics and JSONL history, and can send Feishu or Slack webhook alerts.
@@ -377,6 +377,118 @@ go run ./cmd/sqlserver2tidb cdc-health \
 
 `cdc-health` reads `plan/cdc-plan.yaml` and source-cluster `state/cdc-checkpoint.yaml`, optionally probes SQL Server through `sqlserver2tidb-executor cdc-lsn --execute`, and reports `ok`, `warning`, or `critical`. It raises critical alerts for failed, stale, missing, ahead-of-source, or retention-expired checkpoints, and warning alerts for tables whose checkpoint is behind the probed or supplied `max_lsn`. Operators can pass `--max-lsn` and repeated `--min-lsn source.object=0x...` values instead of `--probe-lsn`, use `--fail-on-warning` for strict scheduled runs, write the latest JSON report with `--metrics-file`, and append durable JSONL history with `--history-file`. Feishu alerts use a custom bot webhook URL from `SQLSERVER2TIDB_FEISHU_WEBHOOK` by default, optional signing secret from `SQLSERVER2TIDB_FEISHU_SECRET`, and `--feishu-alert-min-severity critical|warning|ok|none` to control when messages are sent. Slack alerts use an incoming webhook URL from `SQLSERVER2TIDB_SLACK_WEBHOOK` by default and `--slack-alert-min-severity critical|warning|ok|none` to control when messages are sent. The built-in `.github/workflows/cdc-ops-health.yml` uploads `artifacts/cdc-health.json`, appends and commits `state/cdc-health-history.jsonl` by default, and can use `SQLSERVER2TIDB_GITHUB_APP_TOKEN` when branch protection blocks `GITHUB_TOKEN` pushes.
 
+Inspect the top-level migration agent status without writing files or calling GitHub/database endpoints:
+
+```bash
+go run ./cmd/sqlserver2tidb agent \
+  --mode status \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a
+```
+
+Add `--json` for automation. This first agent slice validates the repository, reuses the same readiness logic as `worker-reconcile --dry-run`, reports the next ready action when one exists, and leaves planning/execution/PR side effects to explicit lower-level commands.
+
+Preview the next automatic agent step without writing files:
+
+```bash
+go run ./cmd/sqlserver2tidb agent \
+  --mode auto \
+  --dry-run \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a
+```
+
+In this implementation slice, `auto --dry-run` can identify a schema review boundary and suggest the `generate-pr-draft --stage schema` command, or report the next ready worker action from the same readiness logic used by `worker-reconcile`. It deliberately does not create PR drafts, call GitHub, execute workers, or touch databases.
+
+Generate a stage PR draft through the agent and preview the GitHub command:
+
+```bash
+go run ./cmd/sqlserver2tidb agent \
+  --mode plan-and-pr \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --stage schema
+```
+
+This writes the same deterministic PR body as `generate-pr-draft`, then prints the `gh pr create` command without calling GitHub. Add `--execute-pr` only when the local checkout should call `gh pr create`; successful GitHub output, such as the created PR URL, is printed back to the operator.
+
+Preview or execute an already-approved worker action through the agent:
+
+```bash
+go run ./cmd/sqlserver2tidb agent \
+  --mode execute-approved \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --stage export
+```
+
+The default is a dry-run that reports the ready action and command. Add `--execute` to run the approved metadata worker for `export`, `import`, `cdc`, `validation`, or `cutover`.
+
+For executor-backed stages, the agent routes the approved action through `worker-executor` and accepts the same execution controls:
+
+```bash
+go run ./cmd/sqlserver2tidb agent \
+  --mode execute-approved \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --stage ddl \
+  --target-connection-string-env SQLSERVER2TIDB_TARGET_CONNECTION_STRING
+
+go run ./cmd/sqlserver2tidb agent \
+  --mode execute-approved \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --stage cdc-enable \
+  --source-connection-string-env SQLSERVER2TIDB_CDC_ADMIN_CONNECTION_STRING \
+  --command-timeout 5m \
+  --command-retries 2 \
+  --retry-backoff 10s \
+  --resume \
+  --execute \
+  --create-evidence-pr
+```
+
+Use `--executor-binary` to point at a custom executor binary. The agent still uses the committed approval and payload-hash gates before any executor command is prepared. Add `--evidence-pr-draft` with `--execute` on executor-backed stages (`ddl` and `cdc-enable`) to write the matching `prs/executor-<stage>-evidence-pr.md` after successful executor evidence is recorded. Add `--create-evidence-pr` to generate the draft and preview the deterministic `git`/`gh` commands without changing git or calling GitHub. Use `--execute-evidence-pr` only when the local checkout should create the branch, commit evidence, push, and open the GitHub PR.
+
+Run CDC health and long-period CDC range orchestration through the agent:
+
+```bash
+go run ./cmd/sqlserver2tidb agent \
+  --mode cdc-ops \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --probe-lsn \
+  --history-file clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/cdc-health-history.jsonl \
+  --metrics-file artifacts/cdc-health.json \
+  --pr-draft \
+  --poll \
+  --idle-iterations 3
+```
+
+`cdc-ops` first runs `cdc-health`; if health returns critical or a requested `--fail-on-warning` warning, it stops before running the orchestrator. Otherwise it runs `cdc-orchestrator` with the same root, source cluster, project, executor, connection-env, retry, timeout, resume, polling, and PR-draft controls. Use `--apply-approved` only when already-approved CDC ranges should be applied before probing and preparing the next range. The agent does not approve CDC ranges or bypass the CDC payload hash gate.
+
+Generate advisory LLM review output through the agent:
+
+```bash
+go run ./cmd/sqlserver2tidb agent \
+  --mode review-assist \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --stage validation \
+  --provider-config global/llm-providers.yaml \
+  --execute-llm
+```
+
+`review-assist` routes to the existing `llm-*` advisory commands. Supported stages are `compatibility`, `schema`, `strategy`, `validation`, and `cutover`. The default is dry-run and does not call the provider; `--execute-llm` is required before it writes advisory Markdown and audit JSON under `ai/`. LLM output remains advisory and is not treated as approval, state, evidence, or executable plan content.
+
 Generate a project-scoped validation draft plan from the current SQL Server inventory and project metadata:
 
 ```bash
@@ -718,6 +830,7 @@ This checks approved metadata, writes `state/validation-status.yaml`, and writes
 
 - [User Manual](docs/user-manual.md): end-to-end operator guide for the target SQL Server to TiDB migration agent workflow.
 - [Design Notes](docs/design.md): control-plane, metadata, and LLM responsibility boundaries.
+- [Migration Agent Design](docs/migration-agent-design.md): top-level agent architecture, modes, state machine, LLM boundaries, and implementation phases.
 - [Delivery Guide](docs/delivery.md): release archive, container, metadata repository, worker-agent, GitHub, and LLM provider delivery instructions.
 
 ## Design Principles

@@ -5256,6 +5256,826 @@ func TestRunWorkerAgentFiltersSourceCluster(t *testing.T) {
 	}
 }
 
+func TestRunAgentStatusReportsNextReadyAction(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createCLIReadyExportProjectForCluster(t, root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a")
+	exportStateBefore := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/export-chunks.yaml")
+
+	code := Run([]string{
+		"agent",
+		"--mode", "status",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("agent status code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "migration agent status") {
+		t.Fatalf("agent status stdout = %q, want header", output)
+	}
+	if !strings.Contains(output, "repository: valid") {
+		t.Fatalf("agent status stdout = %q, want valid repository", output)
+	}
+	if !strings.Contains(output, "projects: 1") {
+		t.Fatalf("agent status stdout = %q, want one project", output)
+	}
+	if !strings.Contains(output, "ready actions: 1") {
+		t.Fatalf("agent status stdout = %q, want one ready action", output)
+	}
+	if !strings.Contains(output, "next action: prod-sqlserver-a/sales-db-to-tidb-prod-a export") {
+		t.Fatalf("agent status stdout = %q, want next export action", output)
+	}
+	if !strings.Contains(output, "command: sqlserver2tidb worker-export") {
+		t.Fatalf("agent status stdout = %q, want worker command", output)
+	}
+	exportStateAfter := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/export-chunks.yaml")
+	if exportStateAfter != exportStateBefore {
+		t.Fatal("agent status mutated export state")
+	}
+}
+
+func TestRunAgentStatusJSONReportsReconcileState(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createCLIReadyExportProjectForCluster(t, root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a")
+
+	code := Run([]string{
+		"agent",
+		"--mode", "status",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--json",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("agent status json code = %d, stderr = %s", code, stderr.String())
+	}
+	var report struct {
+		Mode       string `json:"mode"`
+		ProjectID  string `json:"project_id"`
+		Repository struct {
+			Valid bool `json:"valid"`
+		} `json:"repository"`
+		Reconcile struct {
+			Projects       int `json:"projects"`
+			ReadyActions   int `json:"ready_actions"`
+			BlockedActions int `json:"blocked_actions"`
+		} `json:"reconcile"`
+		NextAction struct {
+			SourceClusterID string `json:"source_cluster_id"`
+			ProjectID       string `json:"project_id"`
+			Stage           string `json:"stage"`
+			Status          string `json:"status"`
+			Command         string `json:"command"`
+		} `json:"next_action"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("agent status json stdout = %q, unmarshal error = %v", stdout.String(), err)
+	}
+	if report.Mode != "status" || report.ProjectID != "sales-db-to-tidb-prod-a" {
+		t.Fatalf("agent status json = %+v, want status mode and project", report)
+	}
+	if !report.Repository.Valid || report.Reconcile.Projects != 1 || report.Reconcile.ReadyActions != 1 || report.Reconcile.BlockedActions != 6 {
+		t.Fatalf("agent status json = %+v, want valid repo and 1 ready/6 blocked actions", report)
+	}
+	if report.NextAction.Stage != "export" || report.NextAction.Status != "ready" {
+		t.Fatalf("agent status json next action = %+v, want ready export", report.NextAction)
+	}
+	if !strings.Contains(report.NextAction.Command, "sqlserver2tidb worker-export") {
+		t.Fatalf("agent status json next command = %q, want worker-export", report.NextAction.Command)
+	}
+}
+
+func TestRunAgentAutoDryRunStopsAtSchemaReviewBoundary(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createProjectWithSchemaManualReview(t, root, &stdout, &stderr)
+	schemaDiffBefore := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/schema/schema-diff.json")
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"agent",
+		"--mode", "auto",
+		"--dry-run",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("agent auto dry-run code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "migration agent auto dry run") {
+		t.Fatalf("agent auto dry-run stdout = %q, want header", output)
+	}
+	if !strings.Contains(output, "next action: generate schema PR") {
+		t.Fatalf("agent auto dry-run stdout = %q, want schema PR action", output)
+	}
+	if !strings.Contains(output, "command: sqlserver2tidb generate-pr-draft") || !strings.Contains(output, "--stage schema") {
+		t.Fatalf("agent auto dry-run stdout = %q, want generate-pr-draft schema command", output)
+	}
+	if !strings.Contains(output, "stop reason: review required") {
+		t.Fatalf("agent auto dry-run stdout = %q, want review stop reason", output)
+	}
+	schemaDiffAfter := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/schema/schema-diff.json")
+	if schemaDiffAfter != schemaDiffBefore {
+		t.Fatal("agent auto dry-run mutated schema diff")
+	}
+	assertNotExists(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/prs/schema-pr.md")
+}
+
+func TestRunAgentAutoDryRunPlansReadyWorkerActionWithoutMutatingState(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createCLIReadyExportProjectForCluster(t, root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a")
+	schemaRel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/schema/schema-diff.json"
+	writeCLIFile(t, root, schemaRel, strings.Replace(readCLIRelFile(t, root, schemaRel), `"status": "pending"`, `"status": "reviewed"`, 1))
+	exportStateBefore := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/export-chunks.yaml")
+
+	code := Run([]string{
+		"agent",
+		"--mode", "auto",
+		"--dry-run",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("agent auto dry-run code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "next action: prod-sqlserver-a/sales-db-to-tidb-prod-a export") {
+		t.Fatalf("agent auto dry-run stdout = %q, want export action", output)
+	}
+	if !strings.Contains(output, "command: sqlserver2tidb worker-export") {
+		t.Fatalf("agent auto dry-run stdout = %q, want worker-export command", output)
+	}
+	if !strings.Contains(output, "stop reason: dry-run") {
+		t.Fatalf("agent auto dry-run stdout = %q, want dry-run stop reason", output)
+	}
+	exportStateAfter := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/export-chunks.yaml")
+	if exportStateAfter != exportStateBefore {
+		t.Fatal("agent auto dry-run mutated export state")
+	}
+}
+
+func TestRunAgentPlanAndPRGeneratesDraftAndDryRunCreateCommand(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createProjectWithSchemaManualReview(t, root, &stdout, &stderr)
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"agent",
+		"--mode", "plan-and-pr",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "schema",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("agent plan-and-pr code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "migration agent plan-and-pr") {
+		t.Fatalf("agent plan-and-pr stdout = %q, want header", output)
+	}
+	if !strings.Contains(output, "PR draft generated for schema") {
+		t.Fatalf("agent plan-and-pr stdout = %q, want draft message", output)
+	}
+	if !strings.Contains(output, "body file: clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/prs/schema-pr.md") {
+		t.Fatalf("agent plan-and-pr stdout = %q, want schema body file", output)
+	}
+	if !strings.Contains(output, "dry run: not calling GitHub") {
+		t.Fatalf("agent plan-and-pr stdout = %q, want dry-run GitHub boundary", output)
+	}
+	if !strings.Contains(output, "gh pr create --base main --head agent/sales-db-to-tidb-prod-a/schema") {
+		t.Fatalf("agent plan-and-pr stdout = %q, want gh pr create command", output)
+	}
+	prBody := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/prs/schema-pr.md")
+	if !strings.Contains(prBody, "# PR Draft: [schema] sales-db-to-tidb-prod-a") {
+		t.Fatalf("schema PR body = %q, want schema PR title", prBody)
+	}
+}
+
+func TestRunAgentPlanAndPRExecutePrintsGitHubOutput(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createProjectWithSchemaManualReview(t, root, &stdout, &stderr)
+
+	fakeBin := filepath.Join(root, "fake-bin")
+	if err := os.MkdirAll(fakeBin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fakeGH := filepath.Join(fakeBin, "gh")
+	if err := os.WriteFile(fakeGH, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> agent-plan-pr-gh-args.log\nprintf 'https://github.com/BornChanger/sqlserver2tidb/pull/123\\n'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"agent",
+		"--mode", "plan-and-pr",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "schema",
+		"--execute-pr",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("agent plan-and-pr execute code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "GitHub PR created") {
+		t.Fatalf("agent plan-and-pr execute stdout = %q, want created message", output)
+	}
+	if !strings.Contains(output, "https://github.com/BornChanger/sqlserver2tidb/pull/123") {
+		t.Fatalf("agent plan-and-pr execute stdout = %q, want GitHub output", output)
+	}
+	argsLog := readCLIRelFile(t, root, "agent-plan-pr-gh-args.log")
+	if !strings.Contains(argsLog, "pr create --base main --head agent/sales-db-to-tidb-prod-a/schema") {
+		t.Fatalf("agent plan-and-pr gh args = %q, want gh pr create command", argsLog)
+	}
+	if !strings.Contains(argsLog, "--body-file clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/prs/schema-pr.md") {
+		t.Fatalf("agent plan-and-pr gh args = %q, want body file", argsLog)
+	}
+}
+
+func TestRunAgentExecuteApprovedDryRunDoesNotMutateState(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createCLIReadyExportProjectForCluster(t, root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a")
+	exportStateBefore := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/export-chunks.yaml")
+
+	code := Run([]string{
+		"agent",
+		"--mode", "execute-approved",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "export",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("agent execute-approved dry-run code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "migration agent execute-approved dry run") {
+		t.Fatalf("agent execute-approved dry-run stdout = %q, want header", output)
+	}
+	if !strings.Contains(output, "next action: prod-sqlserver-a/sales-db-to-tidb-prod-a export") {
+		t.Fatalf("agent execute-approved dry-run stdout = %q, want export action", output)
+	}
+	if !strings.Contains(output, "command: sqlserver2tidb worker-export") {
+		t.Fatalf("agent execute-approved dry-run stdout = %q, want worker-export command", output)
+	}
+	if !strings.Contains(output, "stop reason: requires --execute") {
+		t.Fatalf("agent execute-approved dry-run stdout = %q, want execute gate", output)
+	}
+	exportStateAfter := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/export-chunks.yaml")
+	if exportStateAfter != exportStateBefore {
+		t.Fatal("agent execute-approved dry-run mutated export state")
+	}
+}
+
+func TestRunAgentExecuteApprovedRunsMetadataWorkerWithExecute(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createCLIReadyExportProjectForCluster(t, root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a")
+
+	code := Run([]string{
+		"agent",
+		"--mode", "execute-approved",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "export",
+		"--execute",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("agent execute-approved code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "migration agent execute-approved") {
+		t.Fatalf("agent execute-approved stdout = %q, want header", output)
+	}
+	if !strings.Contains(output, "export worker completed for sales-db-to-tidb-prod-a") {
+		t.Fatalf("agent execute-approved stdout = %q, want export worker output", output)
+	}
+	state := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/export-chunks.yaml")
+	if !strings.Contains(state, "status: planned") {
+		t.Fatalf("export state = %q, want planned status", state)
+	}
+	evidence := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/precheck.json")
+	if !strings.Contains(evidence, `"stage": "export"`) || !strings.Contains(evidence, `"status": "planned"`) {
+		t.Fatalf("export evidence = %q, want planned export evidence", evidence)
+	}
+}
+
+func TestRunAgentExecuteApprovedDDLDryRunUsesWorkerExecutor(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createCLIApprovedDDLProject(t, root, &stdout, &stderr)
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"agent",
+		"--mode", "execute-approved",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "ddl",
+		"--target-connection-string-env", "TIDB_DDL_DSN",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("agent execute-approved ddl dry-run code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "migration agent execute-approved dry run") {
+		t.Fatalf("agent execute-approved ddl dry-run stdout = %q, want agent dry-run header", output)
+	}
+	if !strings.Contains(output, "worker executor dry run") {
+		t.Fatalf("agent execute-approved ddl dry-run stdout = %q, want worker executor dry run", output)
+	}
+	if !strings.Contains(output, "stage: ddl") {
+		t.Fatalf("agent execute-approved ddl dry-run stdout = %q, want ddl stage", output)
+	}
+	if !strings.Contains(output, "sqlserver2tidb-executor apply-ddl") {
+		t.Fatalf("agent execute-approved ddl dry-run stdout = %q, want apply-ddl command", output)
+	}
+	if !strings.Contains(output, "--target-connection-string-env TIDB_DDL_DSN") {
+		t.Fatalf("agent execute-approved ddl dry-run stdout = %q, want target connection env", output)
+	}
+	if _, err := os.Stat(filepath.Join(root, "clusters", "prod-sqlserver-a", "projects", "sales-db-to-tidb-prod-a", "evidence", "executor-ddl-run.json")); !os.IsNotExist(err) {
+		t.Fatalf("agent execute-approved ddl dry-run wrote executor evidence, err = %v", err)
+	}
+}
+
+func TestRunAgentExecuteApprovedDDLExecuteUsesWorkerExecutor(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createCLIApprovedDDLProject(t, root, &stdout, &stderr)
+
+	fakeExecutor := filepath.Join(root, "fake-agent-ddl-executor")
+	if err := os.WriteFile(fakeExecutor, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> agent-ddl-executor-args.log\nprintf 'fake executor completed: %s\\n' \"$1\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"agent",
+		"--mode", "execute-approved",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "ddl",
+		"--executor-binary", "./fake-agent-ddl-executor",
+		"--target-connection-string-env", "TIDB_DDL_DSN",
+		"--command-timeout", "5s",
+		"--command-retries", "1",
+		"--retry-backoff", "1ms",
+		"--resume",
+		"--execute",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("agent execute-approved ddl execute code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "migration agent execute-approved") {
+		t.Fatalf("agent execute-approved ddl execute stdout = %q, want agent header", output)
+	}
+	if !strings.Contains(output, "worker executor completed for sales-db-to-tidb-prod-a") {
+		t.Fatalf("agent execute-approved ddl execute stdout = %q, want worker executor completion", output)
+	}
+	if !strings.Contains(output, "stage: ddl") {
+		t.Fatalf("agent execute-approved ddl execute stdout = %q, want ddl stage", output)
+	}
+	argsLog := readCLIRelFile(t, root, "agent-ddl-executor-args.log")
+	if !strings.Contains(argsLog, "apply-ddl --execute") {
+		t.Fatalf("agent ddl executor args = %q, want apply-ddl execute", argsLog)
+	}
+	if !strings.Contains(argsLog, "--target-connection-string-env TIDB_DDL_DSN") {
+		t.Fatalf("agent ddl executor args = %q, want target connection env", argsLog)
+	}
+	evidence := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-ddl-run.json")
+	if !strings.Contains(evidence, `"stage": "ddl"`) {
+		t.Fatalf("agent ddl executor evidence = %q, want ddl stage", evidence)
+	}
+	if !strings.Contains(evidence, `fake executor completed: apply-ddl`) {
+		t.Fatalf("agent ddl executor evidence = %q, want executor output", evidence)
+	}
+}
+
+func TestRunAgentExecuteApprovedDDLExecuteCanGenerateEvidencePRDraft(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createCLIApprovedDDLProject(t, root, &stdout, &stderr)
+
+	fakeExecutor := filepath.Join(root, "fake-agent-ddl-evidence-executor")
+	if err := os.WriteFile(fakeExecutor, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> agent-ddl-evidence-executor-args.log\nprintf 'fake executor completed: %s\\n' \"$1\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"agent",
+		"--mode", "execute-approved",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "ddl",
+		"--executor-binary", "./fake-agent-ddl-evidence-executor",
+		"--target-connection-string-env", "TIDB_DDL_DSN",
+		"--command-timeout", "5s",
+		"--command-retries", "1",
+		"--retry-backoff", "1ms",
+		"--resume",
+		"--execute",
+		"--evidence-pr-draft",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("agent execute-approved ddl evidence draft code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "migration agent execute-approved") {
+		t.Fatalf("agent execute-approved ddl evidence draft stdout = %q, want agent header", output)
+	}
+	if !strings.Contains(output, "worker executor completed for sales-db-to-tidb-prod-a") {
+		t.Fatalf("agent execute-approved ddl evidence draft stdout = %q, want worker executor completion", output)
+	}
+	if !strings.Contains(output, "executor evidence PR draft generated") {
+		t.Fatalf("agent execute-approved ddl evidence draft stdout = %q, want evidence PR draft message", output)
+	}
+	if !strings.Contains(output, "body file: clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/prs/executor-ddl-evidence-pr.md") {
+		t.Fatalf("agent execute-approved ddl evidence draft stdout = %q, want evidence PR body file", output)
+	}
+	evidence := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-ddl-run.json")
+	if !strings.Contains(evidence, `fake executor completed: apply-ddl`) {
+		t.Fatalf("agent ddl executor evidence = %q, want executor output", evidence)
+	}
+	prBody := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/prs/executor-ddl-evidence-pr.md")
+	if !strings.Contains(prBody, "# PR Draft: [executor-evidence:ddl] sales-db-to-tidb-prod-a") {
+		t.Fatalf("executor evidence PR body = %q, want executor evidence PR title", prBody)
+	}
+}
+
+func TestRunAgentExecuteApprovedDDLExecuteCanPreviewEvidencePRCreate(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createCLIApprovedDDLProject(t, root, &stdout, &stderr)
+
+	fakeExecutor := filepath.Join(root, "fake-agent-ddl-evidence-pr-executor")
+	if err := os.WriteFile(fakeExecutor, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> agent-ddl-evidence-pr-executor-args.log\nprintf 'fake executor completed: %s\\n' \"$1\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"agent",
+		"--mode", "execute-approved",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "ddl",
+		"--executor-binary", "./fake-agent-ddl-evidence-pr-executor",
+		"--target-connection-string-env", "TIDB_DDL_DSN",
+		"--command-timeout", "5s",
+		"--command-retries", "1",
+		"--retry-backoff", "1ms",
+		"--resume",
+		"--execute",
+		"--create-evidence-pr",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("agent execute-approved ddl evidence PR preview code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "executor evidence PR draft generated") {
+		t.Fatalf("agent execute-approved ddl evidence PR preview stdout = %q, want evidence PR draft message", output)
+	}
+	if !strings.Contains(output, "dry run: not changing git or calling GitHub") {
+		t.Fatalf("agent execute-approved ddl evidence PR preview stdout = %q, want create evidence PR dry-run", output)
+	}
+	if !strings.Contains(output, "git switch -c agent/sales-db-to-tidb-prod-a/executor-ddl-evidence") {
+		t.Fatalf("agent execute-approved ddl evidence PR preview stdout = %q, want git switch command", output)
+	}
+	if !strings.Contains(output, "gh pr create --base main --head agent/sales-db-to-tidb-prod-a/executor-ddl-evidence") {
+		t.Fatalf("agent execute-approved ddl evidence PR preview stdout = %q, want gh pr create command", output)
+	}
+	assertExists(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/prs/executor-ddl-evidence-pr.md")
+}
+
+func TestRunAgentExecuteApprovedCDCEnableDryRunUsesWorkerExecutor(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createCLIApprovedCDCEnableProject(t, root, &stdout, &stderr)
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"agent",
+		"--mode", "execute-approved",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "cdc-enable",
+		"--source-connection-string-env", "SQLSERVER_CDC_ADMIN_DSN",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("agent execute-approved cdc-enable dry-run code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "migration agent execute-approved dry run") {
+		t.Fatalf("agent execute-approved cdc-enable dry-run stdout = %q, want agent dry-run header", output)
+	}
+	if !strings.Contains(output, "worker executor dry run") {
+		t.Fatalf("agent execute-approved cdc-enable dry-run stdout = %q, want worker executor dry run", output)
+	}
+	if !strings.Contains(output, "stage: cdc-enable") {
+		t.Fatalf("agent execute-approved cdc-enable dry-run stdout = %q, want cdc-enable stage", output)
+	}
+	if !strings.Contains(output, "sqlserver2tidb-executor cdc-enable") {
+		t.Fatalf("agent execute-approved cdc-enable dry-run stdout = %q, want cdc-enable command", output)
+	}
+	if !strings.Contains(output, "--source-connection-string-env SQLSERVER_CDC_ADMIN_DSN") {
+		t.Fatalf("agent execute-approved cdc-enable dry-run stdout = %q, want source connection env", output)
+	}
+	if _, err := os.Stat(filepath.Join(root, "clusters", "prod-sqlserver-a", "projects", "sales-db-to-tidb-prod-a", "evidence", "executor-cdc-enable-run.json")); !os.IsNotExist(err) {
+		t.Fatalf("agent execute-approved cdc-enable dry-run wrote executor evidence, err = %v", err)
+	}
+}
+
+func TestRunAgentExecuteApprovedCDCEnableExecuteUsesWorkerExecutor(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createCLIApprovedCDCEnableProject(t, root, &stdout, &stderr)
+
+	fakeExecutor := filepath.Join(root, "fake-agent-cdc-enable-executor")
+	if err := os.WriteFile(fakeExecutor, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> agent-cdc-enable-executor-args.log\nprintf 'fake executor completed: %s\\n' \"$1\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"agent",
+		"--mode", "execute-approved",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "cdc-enable",
+		"--executor-binary", "./fake-agent-cdc-enable-executor",
+		"--source-connection-string-env", "SQLSERVER_CDC_ADMIN_DSN",
+		"--command-timeout", "5s",
+		"--command-retries", "1",
+		"--retry-backoff", "1ms",
+		"--resume",
+		"--execute",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("agent execute-approved cdc-enable execute code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "migration agent execute-approved") {
+		t.Fatalf("agent execute-approved cdc-enable execute stdout = %q, want agent header", output)
+	}
+	if !strings.Contains(output, "worker executor completed for sales-db-to-tidb-prod-a") {
+		t.Fatalf("agent execute-approved cdc-enable execute stdout = %q, want worker executor completion", output)
+	}
+	if !strings.Contains(output, "stage: cdc-enable") {
+		t.Fatalf("agent execute-approved cdc-enable execute stdout = %q, want cdc-enable stage", output)
+	}
+	argsLog := readCLIRelFile(t, root, "agent-cdc-enable-executor-args.log")
+	if !strings.Contains(argsLog, "cdc-enable --execute") {
+		t.Fatalf("agent cdc-enable executor args = %q, want cdc-enable execute", argsLog)
+	}
+	if !strings.Contains(argsLog, "--source-connection-string-env SQLSERVER_CDC_ADMIN_DSN") {
+		t.Fatalf("agent cdc-enable executor args = %q, want source connection env", argsLog)
+	}
+	evidence := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-cdc-enable-run.json")
+	if !strings.Contains(evidence, `"stage": "cdc-enable"`) {
+		t.Fatalf("agent cdc-enable executor evidence = %q, want cdc-enable stage", evidence)
+	}
+	if !strings.Contains(evidence, `fake executor completed: cdc-enable`) {
+		t.Fatalf("agent cdc-enable executor evidence = %q, want executor output", evidence)
+	}
+}
+
+func TestRunAgentCDCOpsRunsHealthThenOrchestrator(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createCLIProjectWithCDCPlanAndCheckpoint(t, root, &stdout, &stderr, "0x00000000000000000001", "0x00000000000000000002")
+	historyRel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/agent-cdc-health-history.jsonl"
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"agent",
+		"--mode", "cdc-ops",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--max-lsn", "0x00000000000000000003",
+		"--min-lsn", "sales.dbo.orders=0x00000000000000000001",
+		"--history-file", historyRel,
+		"--now", "2026-01-02T03:04:08Z",
+		"--skip-retention-check",
+		"--pr-draft",
+		"--max-iterations", "1",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("agent cdc-ops code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	assertCLIOutputContains(t, output, "migration agent cdc-ops")
+	assertCLIOutputContains(t, output, "cdc health")
+	assertCLIOutputContains(t, output, "cdc health: warning")
+	assertCLIOutputContains(t, output, "cdc health history appended:")
+	assertCLIOutputContains(t, output, "cdc orchestrator")
+	assertCLIOutputContains(t, output, "iteration 1: max_lsn 0x00000000000000000003")
+	assertCLIOutputContains(t, output, "status: range_prepared")
+	assertCLIOutputContains(t, output, "PR draft: clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/prs/cdc-range-pr.md")
+
+	history := readCLIRelFile(t, root, historyRel)
+	assertCLIOutputContains(t, history, `"source_cluster_id":"prod-sqlserver-a"`)
+	assertCLIOutputContains(t, history, `"project_id":"sales-db-to-tidb-prod-a"`)
+	assertCLIOutputContains(t, history, `"status":"warning"`)
+	assertCLIOutputContains(t, history, `"code":"cdc_lag"`)
+	plan := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/cdc-plan.yaml")
+	if !strings.Contains(plan, "from_lsn: 0x00000000000000000002") || !strings.Contains(plan, "to_lsn: 0x00000000000000000003") {
+		t.Fatalf("cdc plan = %q, want checkpoint-to-max range", plan)
+	}
+}
+
+func TestRunAgentCDCOpsStopsWhenHealthFails(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createCLIProjectWithCDCPlanAndCheckpoint(t, root, &stdout, &stderr, "0x00000000000000000001", "0x00000000000000000002")
+	planBefore := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/cdc-plan.yaml")
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"agent",
+		"--mode", "cdc-ops",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--max-lsn", "0x00000000000000000003",
+		"--max-checkpoint-age", "1h",
+		"--now", "2026-01-02T04:34:07Z",
+		"--skip-retention-check",
+		"--pr-draft",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("agent cdc-ops code = 0, want health failure; stdout = %s", stdout.String())
+	}
+	output := stdout.String()
+	assertCLIOutputContains(t, output, "migration agent cdc-ops")
+	assertCLIOutputContains(t, output, "cdc health: critical")
+	if strings.Contains(output, "cdc orchestrator") {
+		t.Fatalf("agent cdc-ops stdout = %q, should stop before orchestrator on health failure", output)
+	}
+	planAfter := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/cdc-plan.yaml")
+	if planAfter != planBefore {
+		t.Fatalf("agent cdc-ops mutated cdc plan after health failure\nbefore:\n%s\nafter:\n%s", planBefore, planAfter)
+	}
+}
+
+func TestRunAgentReviewAssistSchemaDryRunDoesNotCallProvider(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createProjectWithSchemaManualReview(t, root, &stdout, &stderr)
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		t.Fatalf("provider should not be called during agent review-assist dry-run")
+	}))
+	defer server.Close()
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"agent",
+		"--mode", "review-assist",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "schema",
+		"--base-url", server.URL + "/v1",
+		"--model", "migration-advisor",
+		"--auth-mode", "oauth_token_env",
+		"--token-env", "SQLSERVER2TIDB_TEST_LLM_TOKEN",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("agent review-assist schema dry-run code = %d, stderr = %s", code, stderr.String())
+	}
+	if called {
+		t.Fatal("provider was called during agent review-assist dry-run")
+	}
+	output := stdout.String()
+	assertCLIOutputContains(t, output, "migration agent review-assist")
+	assertCLIOutputContains(t, output, "LLM schema advice dry run for sales-db-to-tidb-prod-a")
+	assertCLIOutputContains(t, output, "would write clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/ai/schema-rewrite-candidates.md")
+	assertNotExists(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/ai/schema-rewrite-candidates.md")
+}
+
+func TestRunAgentReviewAssistValidationExecuteWritesAdvisoryOnly(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createProjectWithValidationAnalysisInputs(t, root, &stdout, &stderr)
+	t.Setenv("SQLSERVER2TIDB_TEST_LLM_TOKEN", "raw-provider-token")
+	planBefore := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/validation-plan.yaml")
+	stateBefore := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/validation-status.yaml")
+	var requestBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer raw-provider-token" {
+			t.Fatalf("Authorization = %q", r.Header.Get("Authorization"))
+		}
+		data, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("ReadAll() error = %v", err)
+		}
+		requestBody = string(data)
+		if strings.Contains(requestBody, "validation-raw-password") {
+			t.Fatalf("LLM request leaked secret: %s", requestBody)
+		}
+		if !strings.Contains(requestBody, "validation-plan.yaml") || !strings.Contains(requestBody, "validation-report.md") {
+			t.Fatalf("LLM request = %s, want validation inputs", requestBody)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"choices":[{"message":{"content":"# Validation Mismatch Analysis\n\n- Agent routed this advisory without changing executable state."}}],"usage":{"prompt_tokens":31,"completion_tokens":12,"total_tokens":43}}`)
+	}))
+	defer server.Close()
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"agent",
+		"--mode", "review-assist",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "validation",
+		"--base-url", server.URL + "/v1",
+		"--model", "migration-advisor",
+		"--auth-mode", "oauth_token_env",
+		"--token-env", "SQLSERVER2TIDB_TEST_LLM_TOKEN",
+		"--execute-llm",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("agent review-assist validation execute code = %d, stdout = %s, stderr = %s", code, stdout.String(), stderr.String())
+	}
+	output := stdout.String()
+	assertCLIOutputContains(t, output, "migration agent review-assist")
+	assertCLIOutputContains(t, output, "LLM validation analysis generated for sales-db-to-tidb-prod-a")
+	assertCLIOutputContains(t, output, "wrote clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/ai/validation-mismatch-analysis.md")
+	advice := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/ai/validation-mismatch-analysis.md")
+	assertCLIOutputContains(t, advice, "# Validation Mismatch Analysis")
+	assertCLIOutputContains(t, advice, "without changing executable state")
+	audit := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/ai/validation-mismatch-analysis.audit.json")
+	assertCLIOutputContains(t, audit, `"output_file": "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/ai/validation-mismatch-analysis.md"`)
+	if strings.Contains(advice, "raw-provider-token") || strings.Contains(advice, "validation-raw-password") || strings.Contains(audit, "raw-provider-token") || strings.Contains(audit, "validation-raw-password") {
+		t.Fatalf("agent review-assist leaked secret\nadvice:\n%s\naudit:\n%s", advice, audit)
+	}
+	planAfter := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/validation-plan.yaml")
+	stateAfter := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/validation-status.yaml")
+	if planAfter != planBefore {
+		t.Fatal("agent review-assist mutated validation plan")
+	}
+	if stateAfter != stateBefore {
+		t.Fatal("agent review-assist mutated validation state")
+	}
+}
+
 func TestRunExecutorEvidencePRDraftAndCreateDryRunCommands(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer
@@ -5928,6 +6748,46 @@ func createProjectWithSchemaManualReview(t *testing.T, root string, stdout, stde
 	conversionRel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/schema/conversion-report.md"
 	conversion := readCLIRelFile(t, root, conversionRel)
 	writeCLIFile(t, root, conversionRel, conversion+"\npassword=schema-raw-password\n")
+}
+
+func createCLIApprovedDDLProject(t *testing.T, root string, stdout, stderr *bytes.Buffer) {
+	t.Helper()
+	createProjectWithSchemaManualReview(t, root, stdout, stderr)
+	setCLISchemaDiffStatus(t, root, "reviewed")
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"compute-payload-hash",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "ddl",
+	}, stdout, stderr)
+	if code != 0 {
+		t.Fatalf("compute-payload-hash ddl code = %d, stderr = %s", code, stderr.String())
+	}
+	writeCLIStageApproval(t, root, "ddl", parsePayloadHash(t, stdout.String()))
+}
+
+func createCLIApprovedCDCEnableProject(t *testing.T, root string, stdout, stderr *bytes.Buffer) {
+	t.Helper()
+	createCLIProjectWithCDCPlanAndCheckpoint(t, root, stdout, stderr, "0x00000000000000000001", "0x00000000000000000002")
+	setCLIReviewPlanStatus(t, root, "cdc", "reviewed")
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"compute-payload-hash",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "cdc",
+	}, stdout, stderr)
+	if code != 0 {
+		t.Fatalf("compute-payload-hash cdc code = %d, stderr = %s", code, stderr.String())
+	}
+	writeCLIStageApproval(t, root, "cdc", parsePayloadHash(t, stdout.String()))
 }
 
 func createProjectWithMigrationStrategyInputs(t *testing.T, root string, stdout, stderr *bytes.Buffer) {
