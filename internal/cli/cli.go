@@ -416,7 +416,7 @@ func runAgent(args []string, stdout, stderr io.Writer) int {
 	executorBinary := fs.String("executor-binary", "", "external executor binary for executor-backed agent actions; default is sqlserver2tidb-executor")
 	prNumber := fs.Int("pr", 0, "GitHub pull request number for pr-close")
 	repo := fs.String("repo", "", "optional GitHub repository in owner/name form for pr-close")
-	ghBinary := fs.String("gh-binary", "gh", "GitHub CLI binary for pr-close")
+	ghBinary := fs.String("gh-binary", "gh", "GitHub CLI binary for PR-creating and PR-closing agent modes")
 	gitBinary := fs.String("git-binary", "git", "git binary for pr-close")
 	base := fs.String("base", "main", "base branch for pr-close")
 	mergeMethod := fs.String("merge-method", "squash", "GitHub PR merge method for pr-close: squash, merge, or rebase")
@@ -562,9 +562,9 @@ func runAgent(args []string, stdout, stderr io.Writer) int {
 		if *dryRun || *jsonOutput {
 			return runAgentAutoDryRun(*root, strings.TrimSpace(*sourceClusterID), strings.TrimSpace(*projectID), *jsonOutput, stdout, stderr)
 		}
-		return runAgentAuto(*root, strings.TrimSpace(*sourceClusterID), strings.TrimSpace(*projectID), *maxSteps, *executePR, stdout, stderr)
+		return runAgentAuto(*root, strings.TrimSpace(*sourceClusterID), strings.TrimSpace(*projectID), *maxSteps, *executePR, strings.TrimSpace(*ghBinary), stdout, stderr)
 	case "plan-and-pr":
-		return runAgentPlanAndPR(*root, strings.TrimSpace(*sourceClusterID), strings.TrimSpace(*projectID), strings.TrimSpace(*stage), *executePR, *jsonOutput, stdout, stderr)
+		return runAgentPlanAndPR(*root, strings.TrimSpace(*sourceClusterID), strings.TrimSpace(*projectID), strings.TrimSpace(*stage), *executePR, *jsonOutput, strings.TrimSpace(*ghBinary), stdout, stderr)
 	case "execute-approved":
 		return runAgentExecuteApproved(*root, strings.TrimSpace(*sourceClusterID), strings.TrimSpace(*projectID), strings.TrimSpace(*stage), *execute, *jsonOutput, evidencePROptions, executorOptions, stdout, stderr)
 	case "pr-close":
@@ -666,7 +666,7 @@ func runAgentAutoDryRun(root, sourceClusterID, projectID string, jsonOutput bool
 	return 0
 }
 
-func runAgentAuto(root, sourceClusterID, projectID string, maxSteps int, executePR bool, stdout, stderr io.Writer) int {
+func runAgentAuto(root, sourceClusterID, projectID string, maxSteps int, executePR bool, ghBinary string, stdout, stderr io.Writer) int {
 	if maxSteps < 1 {
 		fmt.Fprintln(stderr, "agent auto: --max-steps must be positive")
 		return 2
@@ -698,9 +698,9 @@ func runAgentAuto(root, sourceClusterID, projectID string, maxSteps int, execute
 				return 0
 			}
 		case "generate schema PR":
-			return runAgentPlanAndPR(root, sourceClusterID, projectID, "schema", executePR, false, stdout, stderr)
+			return runAgentPlanAndPR(root, sourceClusterID, projectID, "schema", executePR, false, ghBinary, stdout, stderr)
 		case "generate plan PR":
-			return runAgentPlanAndPR(root, sourceClusterID, projectID, "plan", executePR, false, stdout, stderr)
+			return runAgentPlanAndPR(root, sourceClusterID, projectID, "plan", executePR, false, ghBinary, stdout, stderr)
 		case "worker-action":
 			fmt.Fprintf(stdout, "next action: %s/%s %s\n", report.NextAction.SourceClusterID, report.NextAction.ProjectID, report.NextAction.Stage)
 			fmt.Fprintf(stdout, "command: %s\n", redact.Text(report.NextAction.Command))
@@ -714,8 +714,8 @@ func runAgentAuto(root, sourceClusterID, projectID string, maxSteps int, execute
 	return 0
 }
 
-func runAgentPlanAndPR(root, sourceClusterID, projectID, stage string, executePR, jsonOutput bool, stdout, stderr io.Writer) int {
-	report, err := buildAgentPlanAndPRReport(root, sourceClusterID, projectID, stage, executePR)
+func runAgentPlanAndPR(root, sourceClusterID, projectID, stage string, executePR, jsonOutput bool, ghBinary string, stdout, stderr io.Writer) int {
+	report, err := buildAgentPlanAndPRReport(root, sourceClusterID, projectID, stage, executePR, ghBinary)
 	if err != nil {
 		fmt.Fprintf(stderr, "agent plan-and-pr: %v\n", err)
 		return 1
@@ -752,10 +752,11 @@ func runAgentPlanAndPR(root, sourceClusterID, projectID, stage string, executePR
 	return 0
 }
 
-func buildAgentPlanAndPRReport(root, sourceClusterID, projectID, stage string, executePR bool) (agentPlanAndPRReport, error) {
+func buildAgentPlanAndPRReport(root, sourceClusterID, projectID, stage string, executePR bool, ghBinary string) (agentPlanAndPRReport, error) {
 	if strings.TrimSpace(stage) == "" {
 		return agentPlanAndPRReport{}, fmt.Errorf("agent plan-and-pr requires --stage")
 	}
+	ghBinary = normalizeAgentGHBinary(ghBinary)
 	draft, err := gitops.GeneratePRDraft(root, sourceClusterID, projectID, stage)
 	if err != nil {
 		return agentPlanAndPRReport{}, err
@@ -766,7 +767,7 @@ func buildAgentPlanAndPRReport(root, sourceClusterID, projectID, stage string, e
 	}
 	var githubOutput string
 	if executePR {
-		cmd := exec.Command("gh", spec.Args...)
+		cmd := exec.Command(ghBinary, spec.Args...)
 		cmd.Dir = root
 		output, err := cmd.CombinedOutput()
 		if err != nil {
@@ -777,6 +778,10 @@ func buildAgentPlanAndPRReport(root, sourceClusterID, projectID, stage string, e
 		}
 		githubOutput = redact.Text(string(output))
 	}
+	command := spec.ShellCommand
+	if ghBinary != "gh" {
+		command = renderArgsForGitHubPRCompletion(append([]string{ghBinary}, spec.Args...))
+	}
 	return agentPlanAndPRReport{
 		Mode:            "plan-and-pr",
 		SourceClusterID: draft.SourceClusterID,
@@ -786,10 +791,17 @@ func buildAgentPlanAndPRReport(root, sourceClusterID, projectID, stage string, e
 		BranchName:      draft.BranchName,
 		BodyFile:        draft.BodyFile,
 		FilesToReview:   len(draft.Files),
-		Command:         spec.ShellCommand,
+		Command:         command,
 		ExecutedPR:      executePR,
 		GitHubOutput:    githubOutput,
 	}, nil
+}
+
+func normalizeAgentGHBinary(binary string) string {
+	if strings.TrimSpace(binary) == "" {
+		return "gh"
+	}
+	return strings.TrimSpace(binary)
 }
 
 func runAgentPRClose(root, sourceClusterID, projectID, stage string, execute bool, options agentPRCloseOptions, stdout, stderr io.Writer) int {

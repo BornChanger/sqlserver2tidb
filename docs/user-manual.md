@@ -1618,8 +1618,8 @@ bin/sqlserver2tidb worker-agent \
 
 - `--mode status`：校验 metadata repo，读取 reconcile 结果，并展示当前第一个 ready action。
 - `--mode auto --dry-run`：只读分析下一步安全动作。加 `--json` 后输出机器可读结果。
-- `--mode auto`：执行有明确边界的安全规划动作，例如生成 schema draft、schema PR draft 或 plan PR draft。它默认最多执行 1 步，可通过 `--max-steps <n>` 放宽；遇到已存在 PR draft、需要人工 review 的状态，或 ready worker action 时会停止。
-- `--mode plan-and-pr`：为指定 stage 生成 PR draft，并默认 dry-run 展示 `gh pr create` 命令；加 `--execute-pr` 才会调用 GitHub CLI 创建 PR。
+- `--mode auto`：执行有明确边界的安全规划动作，例如生成 schema draft、schema PR draft 或 plan PR draft。它默认最多执行 1 步，可通过 `--max-steps <n>` 放宽；遇到已存在 PR draft、需要人工 review 的状态，或 ready worker action 时会停止。加 `--execute-pr` 创建 schema/plan PR 时也支持 `--gh-binary <path>`。
+- `--mode plan-and-pr`：为指定 stage 生成 PR draft，并默认 dry-run 展示 `gh pr create` 命令；加 `--execute-pr` 才会调用 GitHub CLI 创建 PR；如需使用包装过的 GitHub CLI，可以同时传 `--gh-binary <path>`。
 - `--mode execute-approved`：只执行已经通过 approval/hash gate 的 ready action。默认 dry-run；加 `--execute` 才会写 state/evidence 或调用 executor。`ddl` 和 `cdc-enable` 会强制走 executor；`export`、`import`、`cdc` 和 `validation` 可以加 `--use-executor` 走真实数据面执行路径。
 - `--mode pr-close`：包装 `complete-github-pr`，用于在 PR review/checks 通过后完成 approve、merge 和 approval 文件写回。默认 dry-run；加 `--execute` 才会调用 `gh` 和 `git`。
 - `--mode cdc-ops`：组合 `cdc-health` 和 `cdc-orchestrator`，用于 CDC 长周期健康检查、历史记录、飞书/Slack 告警和 range 编排。
@@ -2775,6 +2775,7 @@ bin/sqlserver2tidb agent \
   --project-id sales-db-to-tidb-prod-a \
   --mode plan-and-pr \
   --stage schema \
+  --gh-binary gh \
   --execute-pr
 ```
 

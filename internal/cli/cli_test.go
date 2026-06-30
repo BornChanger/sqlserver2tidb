@@ -5703,6 +5703,45 @@ func TestRunAgentPlanAndPRExecutePrintsGitHubOutput(t *testing.T) {
 	}
 }
 
+func TestRunAgentPlanAndPRExecuteUsesCustomGHBinary(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createProjectWithSchemaManualReview(t, root, &stdout, &stderr)
+
+	emptyPath := filepath.Join(root, "empty-path")
+	if err := os.MkdirAll(emptyPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", emptyPath)
+
+	customGH := filepath.Join(root, "custom-gh")
+	if err := os.WriteFile(customGH, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> custom-agent-plan-pr-gh-args.log\nprintf 'https://github.com/BornChanger/sqlserver2tidb/pull/124\\n'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"agent",
+		"--mode", "plan-and-pr",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "schema",
+		"--gh-binary", customGH,
+		"--execute-pr",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("agent plan-and-pr custom gh code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	assertCLIOutputContains(t, output, "GitHub PR created")
+	assertCLIOutputContains(t, output, "https://github.com/BornChanger/sqlserver2tidb/pull/124")
+	argsLog := readCLIRelFile(t, root, "custom-agent-plan-pr-gh-args.log")
+	assertCLIOutputContains(t, argsLog, "pr create --base main --head agent/sales-db-to-tidb-prod-a/schema")
+}
+
 func TestRunAgentPRCloseDryRunDelegatesToCompleteGitHubPR(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer
