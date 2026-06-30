@@ -17,6 +17,7 @@ This MVP provides:
 - SQL Server discovery dry-run planning without opening a database connection.
 - SQL Server catalog discovery using a connection string supplied through an environment variable.
 - Rule-based SQL Server compatibility analysis from `inventory/inventory.json`.
+- LLM-assisted compatibility advice generation that reads redacted compatibility inputs and writes advisory files under `clusters/<source_cluster_id>/ai/`.
 - Project-scoped TiDB schema draft generation from SQL Server inventory and project metadata.
 - Project-scoped full export/import plan draft generation from SQL Server inventory and project metadata.
 - Project-scoped schema drift detection against a reviewed schema baseline, with report generation, automatic draft regeneration for repairable drift, and a schema-drift PR draft.
@@ -214,6 +215,18 @@ go run ./cmd/sqlserver2tidb analyze-compatibility \
   --root . \
   --source-cluster-id prod-sqlserver-a
 ```
+
+Generate optional LLM compatibility advice from the rule-based findings:
+
+```bash
+go run ./cmd/sqlserver2tidb llm-compatibility-advice \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --provider-config global/llm-providers.yaml \
+  --execute
+```
+
+The command is dry-run by default. With `--execute`, it calls an OpenAI-compatible provider and writes `clusters/<source_cluster_id>/ai/compatibility-advice.md` plus `compatibility-advice.audit.json`. Provider auth supports API key, OAuth client credentials, OAuth refresh token, OAuth access token from environment, and explicitly allowed external token commands. LLM output is advisory only and is not read by workers as an approval, state file, or execution instruction.
 
 Create a migration project under that upstream cluster:
 

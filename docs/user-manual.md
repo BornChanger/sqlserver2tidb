@@ -147,6 +147,8 @@ LLM 用于：
 - 总结 validation mismatch。
 - 提供故障排查建议。
 
+当前已实现的 LLM 入口是 `llm-compatibility-advice`。它读取源集群目录下的 `inventory/schema-issues.yaml` 和 `inventory/compatibility-report.md`，在发送给 provider 前做日志/证据同款脱敏，然后只写回 `clusters/<source_cluster_id>/ai/compatibility-advice.md` 和 `clusters/<source_cluster_id>/ai/compatibility-advice.audit.json`。`ai/` 目录不是 `approvals/`、`state/`、`plan/` 或 `evidence/`，worker 不会把这些文件当成可执行指令或 gate 依据。
+
 LLM 不允许直接决定或执行：
 
 - DDL。
@@ -1632,6 +1634,52 @@ bin/sqlserver2tidb worker-agent \
 - 进入 PR。
 - 由人 review 后合并。
 
+### 12.4 Provider 配置
+
+`llm-compatibility-advice` 支持 OpenAI-compatible chat completions provider。provider 配置可以放在 `global/llm-providers.yaml`，也可以用命令行 flag inline 指定。没有指定 `--provider-id` 时，配置文件会使用 `default_provider`。
+
+API key 示例：
+
+```yaml
+default_provider: openai
+providers:
+  - id: openai
+    type: openai_compatible
+    base_url: https://api.openai.com/v1
+    model: gpt-4.1
+    auth:
+      mode: api_key
+      env: OPENAI_API_KEY
+      scheme: Bearer
+```
+
+OAuth client credentials 示例：
+
+```yaml
+default_provider: enterprise-gateway
+providers:
+  - id: enterprise-gateway
+    type: openai_compatible
+    base_url: https://llm-gateway.example.com/v1
+    model: migration-advisor
+    auth:
+      mode: oauth_client_credentials
+      token_url: https://idp.example.com/oauth2/token
+      client_id_env: SQLSERVER2TIDB_LLM_CLIENT_ID
+      client_secret_env: SQLSERVER2TIDB_LLM_CLIENT_SECRET
+      scopes:
+        - llm.invoke
+        - migration.read
+```
+
+还支持：
+
+- `oauth_refresh_token`：使用 `token_url`、`refresh_token_env`，可选 `client_id_env`、`client_secret_env`。
+- `oauth_token_env`：从 `token_env` 读取现成 access token。
+- `external_command`：从本地命令读取 token，但必须显式设置 `allow_external_command: true`。
+
+secret 只应通过环境变量或 secret manager 注入。provider token、API key、OAuth client secret、refresh token 和完整连接串都不能提交到迁移仓库。
+
 ## 13. 安全要求
 
 ### 13.1 Secret
@@ -1857,6 +1905,31 @@ bin/sqlserver2tidb analyze-compatibility \
 ```
 
 该命令读取 `inventory/inventory.json`，写回 `inventory/schema-issues.yaml` 和 `inventory/compatibility-report.md`。
+
+### 16.6.1 llm-compatibility-advice
+
+```bash
+bin/sqlserver2tidb llm-compatibility-advice \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --provider-config global/llm-providers.yaml \
+  --execute
+```
+
+该命令读取 `clusters/<source_cluster_id>/inventory/schema-issues.yaml` 和 `clusters/<source_cluster_id>/inventory/compatibility-report.md`，默认只做 dry-run。显式加 `--execute` 后，它会调用 provider，写回 `clusters/<source_cluster_id>/ai/compatibility-advice.md` 和 `clusters/<source_cluster_id>/ai/compatibility-advice.audit.json`。输入内容会先脱敏；输出仍只属于 advisory，不会改变 approval、plan、state 或 evidence，也不会被 worker 当成执行依据。
+
+不使用配置文件时，可以 inline 指定 provider：
+
+```bash
+bin/sqlserver2tidb llm-compatibility-advice \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --base-url https://api.openai.com/v1 \
+  --model gpt-4.1 \
+  --auth-mode api_key \
+  --api-key-env OPENAI_API_KEY \
+  --execute
+```
 
 ### 16.7 generate-schema-draft
 

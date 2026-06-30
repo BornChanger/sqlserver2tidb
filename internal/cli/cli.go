@@ -22,6 +22,7 @@ import (
 
 	"github.com/BornChanger/sqlserver2tidb/internal/buildinfo"
 	"github.com/BornChanger/sqlserver2tidb/internal/gitops"
+	"github.com/BornChanger/sqlserver2tidb/internal/llm"
 	"github.com/BornChanger/sqlserver2tidb/internal/redact"
 	sqlservercatalog "github.com/BornChanger/sqlserver2tidb/internal/sqlserver"
 )
@@ -45,6 +46,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runDiscoverSQLServer(args[1:], stdout, stderr)
 	case "analyze-compatibility":
 		return runAnalyzeCompatibility(args[1:], stdout, stderr)
+	case "llm-compatibility-advice":
+		return runLLMCompatibilityAdvice(args[1:], stdout, stderr)
 	case "generate-schema-draft":
 		return runGenerateSchemaDraft(args[1:], stdout, stderr)
 	case "generate-data-plans":
@@ -326,6 +329,325 @@ func runAnalyzeCompatibility(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "wrote %s\n", "inventory/schema-issues.yaml")
 	fmt.Fprintf(stdout, "wrote %s\n", "inventory/compatibility-report.md")
 	return 0
+}
+
+func runLLMCompatibilityAdvice(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("llm-compatibility-advice", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	root := fs.String("root", ".", "repository root")
+	sourceClusterID := fs.String("source-cluster-id", "", "upstream SQL Server cluster id")
+	providerConfigPath := fs.String("provider-config", "", "optional LLM provider config file; defaults to inline flags")
+	providerID := fs.String("provider-id", "", "LLM provider id from provider config; defaults to config default_provider")
+	providerType := fs.String("provider-type", llm.ProviderTypeOpenAICompatible, "LLM provider type")
+	baseURL := fs.String("base-url", "", "OpenAI-compatible base URL, for example https://api.openai.com/v1")
+	model := fs.String("model", "", "LLM model name")
+	authMode := fs.String("auth-mode", llm.AuthModeAPIKey, "auth mode: api_key, oauth_client_credentials, oauth_refresh_token, oauth_token_env, external_command")
+	apiKeyEnv := fs.String("api-key-env", "OPENAI_API_KEY", "API key environment variable for api_key auth")
+	tokenEnv := fs.String("token-env", "", "access token environment variable for oauth_token_env auth")
+	tokenURL := fs.String("token-url", "", "OAuth token URL for oauth_client_credentials or oauth_refresh_token auth")
+	clientIDEnv := fs.String("client-id-env", "", "OAuth client id environment variable")
+	clientSecretEnv := fs.String("client-secret-env", "", "OAuth client secret environment variable")
+	refreshTokenEnv := fs.String("refresh-token-env", "", "OAuth refresh token environment variable")
+	scopes := fs.String("scopes", "", "comma-separated OAuth scopes")
+	externalCommand := fs.String("external-command", "", "external token command; disabled unless --allow-external-command is set")
+	allowExternalCommand := fs.Bool("allow-external-command", false, "allow external_command auth to run a local command")
+	execute := fs.Bool("execute", false, "call the LLM provider and write advice files; default is dry-run")
+	timeout := fs.Duration("timeout", 2*time.Minute, "LLM provider request timeout")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	provider := llm.ProviderConfig{
+		ID:      strings.TrimSpace(*providerID),
+		Type:    strings.TrimSpace(*providerType),
+		BaseURL: strings.TrimSpace(*baseURL),
+		Model:   strings.TrimSpace(*model),
+		Auth: llm.AuthConfig{
+			Mode:                 strings.TrimSpace(*authMode),
+			Env:                  strings.TrimSpace(*apiKeyEnv),
+			TokenEnv:             strings.TrimSpace(*tokenEnv),
+			TokenURL:             strings.TrimSpace(*tokenURL),
+			ClientIDEnv:          strings.TrimSpace(*clientIDEnv),
+			ClientSecretEnv:      strings.TrimSpace(*clientSecretEnv),
+			RefreshTokenEnv:      strings.TrimSpace(*refreshTokenEnv),
+			Scopes:               splitCommaList(*scopes),
+			Command:              splitCommand(*externalCommand),
+			AllowExternalCommand: *allowExternalCommand,
+		},
+	}
+	var err error
+	provider, err = resolveLLMProviderConfig(*root, *providerConfigPath, *providerID, provider)
+	if err != nil {
+		fmt.Fprintf(stderr, "llm compatibility advice: %v\n", err)
+		return 1
+	}
+	advice, err := buildLLMCompatibilityAdviceRequest(*root, *sourceClusterID)
+	if err != nil {
+		fmt.Fprintf(stderr, "llm compatibility advice: %v\n", err)
+		return 1
+	}
+	if !*execute {
+		fmt.Fprintf(stdout, "LLM compatibility advice dry run for %s\n", advice.SourceClusterID)
+		fmt.Fprintf(stdout, "provider id: %s\n", provider.ID)
+		fmt.Fprintf(stdout, "provider type: %s\n", provider.Type)
+		fmt.Fprintf(stdout, "auth mode: %s\n", provider.Auth.Mode)
+		fmt.Fprintf(stdout, "model: %s\n", provider.Model)
+		fmt.Fprintf(stdout, "input files: %d\n", len(advice.Inputs))
+		fmt.Fprintf(stdout, "would write %s\n", advice.OutputFile)
+		fmt.Fprintf(stdout, "would write %s\n", advice.AuditFile)
+		return 0
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+	defer cancel()
+	client, err := newLLMClientFromProvider(provider)
+	if err != nil {
+		fmt.Fprintf(stderr, "llm compatibility advice: %v\n", err)
+		return 1
+	}
+	response, err := client.Generate(ctx, advice.Request)
+	if err != nil {
+		fmt.Fprintf(stderr, "llm compatibility advice: %v\n", err)
+		return 1
+	}
+	if err := writeLLMCompatibilityAdvice(*root, provider, advice, response); err != nil {
+		fmt.Fprintf(stderr, "llm compatibility advice: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "LLM compatibility advice generated for %s\n", advice.SourceClusterID)
+	fmt.Fprintf(stdout, "provider id: %s\n", provider.ID)
+	fmt.Fprintf(stdout, "auth mode: %s\n", provider.Auth.Mode)
+	fmt.Fprintf(stdout, "model: %s\n", provider.Model)
+	fmt.Fprintf(stdout, "wrote %s\n", advice.OutputFile)
+	fmt.Fprintf(stdout, "wrote %s\n", advice.AuditFile)
+	return 0
+}
+
+type llmCompatibilityAdviceRequest struct {
+	SourceClusterID string
+	Inputs          []llm.InputFile
+	Request         llm.Request
+	OutputFile      string
+	AuditFile       string
+	InputHashes     []llmAdviceInputHash
+	PromptHash      string
+}
+
+type llmAdviceInputHash struct {
+	Path   string `json:"path"`
+	SHA256 string `json:"sha256"`
+}
+
+func resolveLLMProviderConfig(root, configPath, providerID string, inline llm.ProviderConfig) (llm.ProviderConfig, error) {
+	configPath = strings.TrimSpace(configPath)
+	if configPath == "" {
+		defaultPath := filepath.Join(root, "global", "llm-providers.yaml")
+		if _, err := os.Stat(defaultPath); err == nil {
+			configPath = defaultPath
+		}
+	}
+	if configPath == "" {
+		if strings.TrimSpace(inline.ID) == "" {
+			inline.ID = "inline"
+		}
+		if strings.TrimSpace(inline.Type) == "" {
+			inline.Type = llm.ProviderTypeOpenAICompatible
+		}
+		if strings.TrimSpace(inline.Auth.Mode) == "" {
+			inline.Auth.Mode = llm.AuthModeAPIKey
+		}
+		return inline, nil
+	}
+	data, err := os.Open(configPath)
+	if err != nil {
+		return llm.ProviderConfig{}, fmt.Errorf("open provider config: %w", err)
+	}
+	defer data.Close()
+	loaded, err := llm.ParseProviderConfig(data)
+	if err != nil {
+		return llm.ProviderConfig{}, fmt.Errorf("parse provider config: %w", err)
+	}
+	provider, ok := loaded.Provider(providerID)
+	if !ok {
+		if strings.TrimSpace(providerID) == "" {
+			return llm.ProviderConfig{}, fmt.Errorf("default provider %q not found in provider config", loaded.DefaultProvider)
+		}
+		return llm.ProviderConfig{}, fmt.Errorf("provider %q not found in provider config", providerID)
+	}
+	return provider, nil
+}
+
+func newLLMClientFromProvider(provider llm.ProviderConfig) (llm.Client, error) {
+	if strings.TrimSpace(provider.Type) == "" {
+		provider.Type = llm.ProviderTypeOpenAICompatible
+	}
+	tokenSource, err := llm.NewTokenSource(provider.Auth, llm.TokenSourceOptions{})
+	if err != nil {
+		return nil, err
+	}
+	switch provider.Type {
+	case llm.ProviderTypeOpenAICompatible:
+		return llm.NewOpenAICompatibleClient(llm.OpenAICompatibleConfig{
+			BaseURL:     provider.BaseURL,
+			Model:       provider.Model,
+			TokenSource: tokenSource,
+		})
+	default:
+		return nil, fmt.Errorf("unsupported LLM provider type %q", provider.Type)
+	}
+}
+
+func buildLLMCompatibilityAdviceRequest(root, sourceClusterID string) (llmCompatibilityAdviceRequest, error) {
+	sourceClusterID = strings.TrimSpace(sourceClusterID)
+	if sourceClusterID == "" {
+		return llmCompatibilityAdviceRequest{}, fmt.Errorf("source cluster id is required")
+	}
+	baseRel := filepath.ToSlash(filepath.Join("clusters", sourceClusterID, "inventory"))
+	inputRels := []string{
+		filepath.ToSlash(filepath.Join(baseRel, "schema-issues.yaml")),
+		filepath.ToSlash(filepath.Join(baseRel, "compatibility-report.md")),
+	}
+	inputs := make([]llm.InputFile, 0, len(inputRels))
+	hashes := make([]llmAdviceInputHash, 0, len(inputRels))
+	for _, rel := range inputRels {
+		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
+		if err != nil {
+			return llmCompatibilityAdviceRequest{}, fmt.Errorf("read LLM input %s: %w", rel, err)
+		}
+		redacted := redact.Text(string(data))
+		inputs = append(inputs, llm.InputFile{Path: rel, Content: redacted})
+		hashes = append(hashes, llmAdviceInputHash{Path: rel, SHA256: sha256String(redacted)})
+	}
+	request := llm.Request{
+		Task:   "compatibility_advice",
+		System: "You are a SQL Server to TiDB migration advisor. Produce advisory text only. Do not claim that any database action was executed. Do not include secrets.",
+		Inputs: inputs,
+		OutputStyle: strings.Join([]string{
+			"Write Markdown.",
+			"Start with '# Compatibility Advice'.",
+			"Explain blockers, warnings, owner review focus, and next deterministic GitOps steps.",
+			"Do not emit approval YAML, state YAML, executor commands, or credentials.",
+		}, "\n"),
+	}
+	outputRel := filepath.ToSlash(filepath.Join("clusters", sourceClusterID, "ai", "compatibility-advice.md"))
+	auditRel := filepath.ToSlash(filepath.Join("clusters", sourceClusterID, "ai", "compatibility-advice.audit.json"))
+	return llmCompatibilityAdviceRequest{
+		SourceClusterID: sourceClusterID,
+		Inputs:          inputs,
+		Request:         request,
+		OutputFile:      outputRel,
+		AuditFile:       auditRel,
+		InputHashes:     hashes,
+		PromptHash:      sha256String(renderLLMRequestForHash(request)),
+	}, nil
+}
+
+func writeLLMCompatibilityAdvice(root string, provider llm.ProviderConfig, advice llmCompatibilityAdviceRequest, response llm.Response) error {
+	outputPath := filepath.Join(root, filepath.FromSlash(advice.OutputFile))
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
+		return fmt.Errorf("create LLM advice directory: %w", err)
+	}
+	content := redact.Text(response.Text)
+	if strings.TrimSpace(content) == "" {
+		return fmt.Errorf("LLM advice response is empty")
+	}
+	if err := os.WriteFile(outputPath, []byte(strings.TrimRight(content, "\n")+"\n"), 0o644); err != nil {
+		return fmt.Errorf("write LLM advice: %w", err)
+	}
+	audit := struct {
+		SourceClusterID string               `json:"source_cluster_id"`
+		ProviderID      string               `json:"provider_id"`
+		ProviderType    string               `json:"provider_type"`
+		AuthMode        string               `json:"auth_mode"`
+		Model           string               `json:"model"`
+		PromptSHA256    string               `json:"prompt_sha256"`
+		InputFiles      []llmAdviceInputHash `json:"input_files"`
+		OutputFile      string               `json:"output_file"`
+		Usage           llm.Usage            `json:"usage"`
+		GeneratedAt     string               `json:"generated_at"`
+	}{
+		SourceClusterID: advice.SourceClusterID,
+		ProviderID:      provider.ID,
+		ProviderType:    provider.Type,
+		AuthMode:        provider.Auth.Mode,
+		Model:           response.Model,
+		PromptSHA256:    advice.PromptHash,
+		InputFiles:      advice.InputHashes,
+		OutputFile:      advice.OutputFile,
+		Usage:           response.Usage,
+		GeneratedAt:     response.GeneratedAt,
+	}
+	if strings.TrimSpace(audit.ProviderID) == "" {
+		audit.ProviderID = "inline"
+	}
+	if strings.TrimSpace(audit.ProviderType) == "" {
+		audit.ProviderType = llm.ProviderTypeOpenAICompatible
+	}
+	if strings.TrimSpace(audit.AuthMode) == "" {
+		audit.AuthMode = llm.AuthModeAPIKey
+	}
+	if strings.TrimSpace(audit.Model) == "" {
+		audit.Model = provider.Model
+	}
+	if strings.TrimSpace(audit.GeneratedAt) == "" {
+		audit.GeneratedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	data, err := json.MarshalIndent(audit, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal LLM advice audit: %w", err)
+	}
+	data = append(data, '\n')
+	auditPath := filepath.Join(root, filepath.FromSlash(advice.AuditFile))
+	if err := os.WriteFile(auditPath, data, 0o644); err != nil {
+		return fmt.Errorf("write LLM advice audit: %w", err)
+	}
+	return nil
+}
+
+func renderLLMRequestForHash(request llm.Request) string {
+	var b strings.Builder
+	b.WriteString(request.Task)
+	b.WriteByte('\n')
+	b.WriteString(request.System)
+	b.WriteByte('\n')
+	b.WriteString(request.OutputStyle)
+	b.WriteByte('\n')
+	b.WriteString(request.JSONSchema)
+	b.WriteByte('\n')
+	for _, input := range request.Inputs {
+		b.WriteString(input.Path)
+		b.WriteByte('\n')
+		b.WriteString(input.Content)
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+func sha256String(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func splitCommaList(value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	raw := strings.Split(value, ",")
+	out := make([]string, 0, len(raw))
+	for _, item := range raw {
+		item = strings.TrimSpace(item)
+		if item != "" {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+func splitCommand(value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	return strings.Fields(value)
 }
 
 func runGenerateSchemaDraft(args []string, stdout, stderr io.Writer) int {
@@ -3208,6 +3530,7 @@ Usage:
   sqlserver2tidb discover-sqlserver --root . --source-cluster-id prod-sqlserver-a --dry-run
   sqlserver2tidb discover-sqlserver --root . --source-cluster-id prod-sqlserver-a --connection-string-env SQLSERVER2TIDB_SQLSERVER_DSN
   sqlserver2tidb analyze-compatibility --root . --source-cluster-id prod-sqlserver-a
+  sqlserver2tidb llm-compatibility-advice --root . --source-cluster-id prod-sqlserver-a --provider-config global/llm-providers.yaml --execute
   sqlserver2tidb generate-schema-draft --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
   sqlserver2tidb generate-data-plans --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --object-uri-prefix https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full --compression gzip
   sqlserver2tidb repair-schema-drift --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --object-uri-prefix https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full --apply --pr-draft

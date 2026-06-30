@@ -381,6 +381,145 @@ func TestRunAnalyzeCompatibilityReportsMissingCluster(t *testing.T) {
 	}
 }
 
+func TestRunLLMCompatibilityAdviceDryRunDoesNotCallProvider(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createClusterWithCompatibilityReport(t, root, &stdout, &stderr)
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		t.Fatalf("provider should not be called during dry-run")
+	}))
+	defer server.Close()
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"llm-compatibility-advice",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--base-url", server.URL + "/v1",
+		"--model", "migration-advisor",
+		"--auth-mode", "oauth_token_env",
+		"--token-env", "SQLSERVER2TIDB_TEST_LLM_TOKEN",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("llm-compatibility-advice dry-run code = %d, stderr = %s", code, stderr.String())
+	}
+	if called {
+		t.Fatal("provider was called during dry-run")
+	}
+	output := stdout.String()
+	assertCLIOutputContains(t, output, "LLM compatibility advice dry run for prod-sqlserver-a")
+	assertCLIOutputContains(t, output, "provider type: openai_compatible")
+	assertCLIOutputContains(t, output, "auth mode: oauth_token_env")
+	assertCLIOutputContains(t, output, "would write clusters/prod-sqlserver-a/ai/compatibility-advice.md")
+	assertNotExists(t, root, "clusters/prod-sqlserver-a/ai/compatibility-advice.md")
+}
+
+func TestRunLLMCompatibilityAdviceUsesDefaultProviderConfig(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createClusterWithCompatibilityReport(t, root, &stdout, &stderr)
+	config := `default_provider: enterprise-gateway
+providers:
+  - id: enterprise-gateway
+    type: openai_compatible
+    base_url: https://llm-gateway.example.com/v1
+    model: migration-advisor
+    auth:
+      mode: oauth_client_credentials
+      token_url: https://idp.example.com/oauth2/token
+      client_id_env: SQLSERVER2TIDB_LLM_CLIENT_ID
+      client_secret_env: SQLSERVER2TIDB_LLM_CLIENT_SECRET
+      scopes:
+        - llm.invoke
+        - migration.read
+`
+	if err := os.WriteFile(filepath.Join(root, "global", "llm-providers.yaml"), []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"llm-compatibility-advice",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("llm-compatibility-advice config dry-run code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	assertCLIOutputContains(t, output, "provider id: enterprise-gateway")
+	assertCLIOutputContains(t, output, "auth mode: oauth_client_credentials")
+	assertCLIOutputContains(t, output, "model: migration-advisor")
+}
+
+func TestRunLLMCompatibilityAdviceExecuteWritesRedactedAdvice(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createClusterWithCompatibilityReport(t, root, &stdout, &stderr)
+	t.Setenv("SQLSERVER2TIDB_TEST_LLM_TOKEN", "raw-provider-token")
+	var requestBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer raw-provider-token" {
+			t.Fatalf("Authorization = %q", r.Header.Get("Authorization"))
+		}
+		data, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("ReadAll() error = %v", err)
+		}
+		requestBody = string(data)
+		if strings.Contains(requestBody, "raw-password") {
+			t.Fatalf("LLM request leaked secret: %s", requestBody)
+		}
+		if !strings.Contains(requestBody, "<redacted>") && !strings.Contains(requestBody, `\u003credacted\u003e`) {
+			t.Fatalf("LLM request = %s, want redaction marker", requestBody)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"choices":[{"message":{"content":"# Compatibility Advice\n\n- Review XML columns before schema approval."}}],"usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":18}}`)
+	}))
+	defer server.Close()
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"llm-compatibility-advice",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--base-url", server.URL + "/v1",
+		"--model", "migration-advisor",
+		"--auth-mode", "oauth_token_env",
+		"--token-env", "SQLSERVER2TIDB_TEST_LLM_TOKEN",
+		"--execute",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("llm-compatibility-advice execute code = %d, stdout = %s, stderr = %s", code, stdout.String(), stderr.String())
+	}
+	output := stdout.String()
+	assertCLIOutputContains(t, output, "LLM compatibility advice generated for prod-sqlserver-a")
+	assertCLIOutputContains(t, output, "wrote clusters/prod-sqlserver-a/ai/compatibility-advice.md")
+	assertCLIOutputContains(t, output, "wrote clusters/prod-sqlserver-a/ai/compatibility-advice.audit.json")
+	advice := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/ai/compatibility-advice.md")
+	assertCLIOutputContains(t, advice, "# Compatibility Advice")
+	assertCLIOutputContains(t, advice, "Review XML columns")
+	if strings.Contains(advice, "raw-provider-token") || strings.Contains(advice, "raw-password") {
+		t.Fatalf("advice leaked secret:\n%s", advice)
+	}
+	audit := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/ai/compatibility-advice.audit.json")
+	assertCLIOutputContains(t, audit, `"provider_id": "inline"`)
+	assertCLIOutputContains(t, audit, `"auth_mode": "oauth_token_env"`)
+	assertCLIOutputContains(t, audit, `"model": "migration-advisor"`)
+	assertCLIOutputContains(t, audit, `"output_file": "clusters/prod-sqlserver-a/ai/compatibility-advice.md"`)
+	if strings.Contains(audit, "raw-provider-token") || strings.Contains(audit, "raw-password") {
+		t.Fatalf("audit leaked secret:\n%s", audit)
+	}
+}
+
 func TestRunGenerateSchemaDraftCommand(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer
@@ -5284,10 +5423,51 @@ func writeCLIFile(t *testing.T, root, rel, content string) {
 	}
 }
 
+func createClusterWithCompatibilityReport(t *testing.T, root string, stdout, stderr *bytes.Buffer) {
+	t.Helper()
+	if code := Run([]string{"init-repo", "--root", root}, stdout, stderr); code != 0 {
+		t.Fatalf("init-repo code = %d, stderr = %s", code, stderr.String())
+	}
+	if code := Run([]string{
+		"create-cluster",
+		"--root", root,
+		"--cluster-id", "prod-sqlserver-a",
+		"--display-name", "prod SQL Server A",
+		"--listener", "sqlserver-a.internal",
+		"--secret-ref", "vault://migration/prod-sqlserver-a/readonly",
+		"--owner", "dba-team",
+	}, stdout, stderr); code != 0 {
+		t.Fatalf("create-cluster code = %d, stderr = %s", code, stderr.String())
+	}
+	writeCLIFile(t, root, "clusters/prod-sqlserver-a/inventory/schema-issues.yaml", `findings:
+  - severity: blocker
+    code: SQLSERVER_TYPE_XML
+    object: sales.dbo.orders.payload
+    message: SQL Server xml requires manual review.
+`)
+	writeCLIFile(t, root, "clusters/prod-sqlserver-a/inventory/compatibility-report.md", `# Compatibility Report
+
+password=raw-password
+
+| Severity | Code | Object | Message | Recommendation |
+| --- | --- | --- | --- | --- |
+| blocker | SQLSERVER_TYPE_XML | sales.dbo.orders.payload | SQL Server xml requires manual review. | Rewrite payload storage before migration. |
+`)
+}
+
 func assertExists(t *testing.T, root, rel string) {
 	t.Helper()
 	if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel))); err != nil {
 		t.Fatalf("expected %s to exist: %v", rel, err)
+	}
+}
+
+func assertNotExists(t *testing.T, root, rel string) {
+	t.Helper()
+	if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel))); err == nil {
+		t.Fatalf("expected %s not to exist", rel)
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("stat %s: %v", rel, err)
 	}
 }
 
