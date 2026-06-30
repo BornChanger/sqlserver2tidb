@@ -406,6 +406,7 @@ func runAgent(args []string, stdout, stderr io.Writer) int {
 	stage := fs.String("stage", "", "migration stage for modes that operate on one stage")
 	jsonOutput := fs.Bool("json", false, "write agent status as JSON")
 	dryRun := fs.Bool("dry-run", false, "plan agent actions without writing files, calling GitHub, or executing database work")
+	maxSteps := fs.Int("max-steps", 1, "maximum safe planning steps for agent auto; must be positive")
 	execute := fs.Bool("execute", false, "execute approved agent action when the selected mode supports execution")
 	executePR := fs.Bool("execute-pr", false, "call gh pr create after generating a PR draft")
 	evidencePRDraft := fs.Bool("evidence-pr-draft", false, "after execute-approved executor-backed execution, generate an executor evidence PR draft")
@@ -561,7 +562,7 @@ func runAgent(args []string, stdout, stderr io.Writer) int {
 		if *dryRun || *jsonOutput {
 			return runAgentAutoDryRun(*root, strings.TrimSpace(*sourceClusterID), strings.TrimSpace(*projectID), *jsonOutput, stdout, stderr)
 		}
-		return runAgentAuto(*root, strings.TrimSpace(*sourceClusterID), strings.TrimSpace(*projectID), *executePR, stdout, stderr)
+		return runAgentAuto(*root, strings.TrimSpace(*sourceClusterID), strings.TrimSpace(*projectID), *maxSteps, *executePR, stdout, stderr)
 	case "plan-and-pr":
 		return runAgentPlanAndPR(*root, strings.TrimSpace(*sourceClusterID), strings.TrimSpace(*projectID), strings.TrimSpace(*stage), *executePR, *jsonOutput, stdout, stderr)
 	case "execute-approved":
@@ -665,36 +666,50 @@ func runAgentAutoDryRun(root, sourceClusterID, projectID string, jsonOutput bool
 	return 0
 }
 
-func runAgentAuto(root, sourceClusterID, projectID string, executePR bool, stdout, stderr io.Writer) int {
-	report, err := buildAgentAutoDryRunReport(root, sourceClusterID, projectID)
-	if err != nil {
-		fmt.Fprintf(stderr, "agent auto: %v\n", err)
-		return 1
+func runAgentAuto(root, sourceClusterID, projectID string, maxSteps int, executePR bool, stdout, stderr io.Writer) int {
+	if maxSteps < 1 {
+		fmt.Fprintln(stderr, "agent auto: --max-steps must be positive")
+		return 2
 	}
 	fmt.Fprintln(stdout, "migration agent auto")
-	if report.NextAction.Name == "" {
-		fmt.Fprintln(stdout, "next action: none")
-		fmt.Fprintf(stdout, "stop reason: %s\n", report.StopReason)
-		return 0
+	for step := 1; step <= maxSteps; step++ {
+		report, err := buildAgentAutoDryRunReport(root, sourceClusterID, projectID)
+		if err != nil {
+			fmt.Fprintf(stderr, "agent auto: %v\n", err)
+			return 1
+		}
+		if report.NextAction.Name == "" {
+			fmt.Fprintln(stdout, "next action: none")
+			fmt.Fprintf(stdout, "stop reason: %s\n", report.StopReason)
+			return 0
+		}
+		switch report.NextAction.Name {
+		case "generate schema draft":
+			code := runGenerateSchemaDraft([]string{
+				"--root", root,
+				"--source-cluster-id", sourceClusterID,
+				"--project-id", projectID,
+			}, stdout, stderr)
+			if code != 0 {
+				return code
+			}
+			if step == maxSteps {
+				fmt.Fprintln(stdout, "stop reason: max steps reached")
+				return 0
+			}
+		case "generate schema PR":
+			return runAgentPlanAndPR(root, sourceClusterID, projectID, "schema", executePR, false, stdout, stderr)
+		case "worker-action":
+			fmt.Fprintf(stdout, "next action: %s/%s %s\n", report.NextAction.SourceClusterID, report.NextAction.ProjectID, report.NextAction.Stage)
+			fmt.Fprintf(stdout, "command: %s\n", redact.Text(report.NextAction.Command))
+			fmt.Fprintln(stdout, "stop reason: execution requires --mode execute-approved")
+			return 0
+		default:
+			fmt.Fprintf(stderr, "agent auto: unsupported next action %q\n", report.NextAction.Name)
+			return 1
+		}
 	}
-	switch report.NextAction.Name {
-	case "generate schema draft":
-		return runGenerateSchemaDraft([]string{
-			"--root", root,
-			"--source-cluster-id", sourceClusterID,
-			"--project-id", projectID,
-		}, stdout, stderr)
-	case "generate schema PR":
-		return runAgentPlanAndPR(root, sourceClusterID, projectID, "schema", executePR, false, stdout, stderr)
-	case "worker-action":
-		fmt.Fprintf(stdout, "next action: %s/%s %s\n", report.NextAction.SourceClusterID, report.NextAction.ProjectID, report.NextAction.Stage)
-		fmt.Fprintf(stdout, "command: %s\n", redact.Text(report.NextAction.Command))
-		fmt.Fprintln(stdout, "stop reason: execution requires --mode execute-approved")
-		return 0
-	default:
-		fmt.Fprintf(stderr, "agent auto: unsupported next action %q\n", report.NextAction.Name)
-		return 1
-	}
+	return 0
 }
 
 func runAgentPlanAndPR(root, sourceClusterID, projectID, stage string, executePR, jsonOutput bool, stdout, stderr io.Writer) int {
@@ -5507,7 +5522,7 @@ Usage:
   sqlserver2tidb cdc-health --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --probe-lsn --max-checkpoint-age 15m --metrics-file artifacts/cdc-health.json --history-file clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/cdc-health-history.jsonl
   sqlserver2tidb agent --mode status --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
   sqlserver2tidb agent --mode auto --dry-run --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
-  sqlserver2tidb agent --mode auto --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
+  sqlserver2tidb agent --mode auto --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --max-steps 2
   sqlserver2tidb agent --mode plan-and-pr --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage schema
   sqlserver2tidb agent --mode execute-approved --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage export
   sqlserver2tidb agent --mode execute-approved --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage export --use-executor --source-connection-string-env SQLSERVER2TIDB_SQLSERVER_DSN --execute --evidence-pr-draft

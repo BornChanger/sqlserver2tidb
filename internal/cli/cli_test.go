@@ -5417,6 +5417,37 @@ func TestRunAgentAutoGeneratesSchemaPRDraft(t *testing.T) {
 	assertCLIOutputContains(t, prDraft, "[schema] sales-db-to-tidb-prod-a")
 }
 
+func TestRunAgentAutoMaxStepsGeneratesSchemaDraftAndPRDraft(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createProjectWithSchemaManualReview(t, root, &stdout, &stderr)
+	schemaRel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/schema/schema-diff.json"
+	writeCLIFile(t, root, schemaRel, strings.Replace(readCLIRelFile(t, root, schemaRel), `"status": "draft-generated"`, `"status": "pending"`, 1))
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"agent",
+		"--mode", "auto",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--max-steps", "2",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("agent auto max-steps code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	assertCLIOutputContains(t, output, "migration agent auto")
+	assertCLIOutputContains(t, output, "schema draft generated for sales-db-to-tidb-prod-a")
+	assertCLIOutputContains(t, output, "PR draft generated for schema")
+	schemaDiff := readCLIRelFile(t, root, schemaRel)
+	assertCLIOutputContains(t, schemaDiff, `"status": "draft-generated"`)
+	prDraft := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/prs/schema-pr.md")
+	assertCLIOutputContains(t, prDraft, "[schema] sales-db-to-tidb-prod-a")
+}
+
 func TestRunAgentAutoDryRunPlansReadyWorkerActionWithoutMutatingState(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer
