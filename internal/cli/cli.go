@@ -334,6 +334,22 @@ type agentEvidencePROptions struct {
 	Execute bool
 }
 
+type agentPRCloseOptions struct {
+	PRNumber           int
+	Repo               string
+	GHBinary           string
+	GitBinary          string
+	Base               string
+	MergeMethod        string
+	SkipApprove        bool
+	DeleteBranch       bool
+	AutomationActor    string
+	AutomationWorkflow string
+	AutomationRunID    string
+	AutomationRunURL   string
+	AutomationCommit   string
+}
+
 type agentCDCOpsOptions struct {
 	MaxLSN                 string
 	MinLSNs                cdcHealthMinLSNFlags
@@ -383,7 +399,7 @@ type agentLLMOptions struct {
 func runAgent(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("agent", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	mode := fs.String("mode", "status", "agent mode: status, auto, plan-and-pr, execute-approved, cdc-ops, or review-assist")
+	mode := fs.String("mode", "status", "agent mode: status, auto, plan-and-pr, execute-approved, pr-close, cdc-ops, or review-assist")
 	root := fs.String("root", ".", "repository root")
 	sourceClusterID := fs.String("source-cluster-id", "", "optional source cluster id to scope agent status")
 	projectID := fs.String("project-id", "", "optional project id to scope agent status")
@@ -397,6 +413,19 @@ func runAgent(args []string, stdout, stderr io.Writer) int {
 	executeEvidencePR := fs.Bool("execute-evidence-pr", false, "after execute-approved executor-backed execution, generate and create the executor evidence PR through git and gh")
 	useExecutor := fs.Bool("use-executor", false, "for execute-approved, route executor-supported stages through worker-executor instead of metadata-only workers")
 	executorBinary := fs.String("executor-binary", "", "external executor binary for executor-backed agent actions; default is sqlserver2tidb-executor")
+	prNumber := fs.Int("pr", 0, "GitHub pull request number for pr-close")
+	repo := fs.String("repo", "", "optional GitHub repository in owner/name form for pr-close")
+	ghBinary := fs.String("gh-binary", "gh", "GitHub CLI binary for pr-close")
+	gitBinary := fs.String("git-binary", "git", "git binary for pr-close")
+	base := fs.String("base", "main", "base branch for pr-close")
+	mergeMethod := fs.String("merge-method", "squash", "GitHub PR merge method for pr-close: squash, merge, or rebase")
+	skipApprove := fs.Bool("skip-approve", false, "skip automated gh pr review --approve in pr-close")
+	deleteBranch := fs.Bool("delete-branch", true, "delete the PR branch after merge in pr-close")
+	automationActor := fs.String("automation-actor", os.Getenv("GITHUB_ACTOR"), "optional actor recorded in approval automation audit metadata for pr-close")
+	automationWorkflow := fs.String("automation-workflow", os.Getenv("GITHUB_WORKFLOW"), "optional workflow name recorded in approval automation audit metadata for pr-close")
+	automationRunID := fs.String("automation-run-id", os.Getenv("GITHUB_RUN_ID"), "optional workflow run id recorded in approval automation audit metadata for pr-close")
+	automationRunURL := fs.String("automation-run-url", defaultGitHubRunURL(), "optional workflow run URL recorded in approval automation audit metadata for pr-close")
+	automationCommit := fs.String("automation-commit", os.Getenv("GITHUB_SHA"), "optional workflow commit SHA recorded in approval automation audit metadata for pr-close")
 	sourceConnectionStringEnv := fs.String("source-connection-string-env", "", "environment variable containing the SQL Server connection string for executor-backed agent actions")
 	targetConnectionStringEnv := fs.String("target-connection-string-env", "", "environment variable containing the TiDB/MySQL connection string for executor-backed agent actions")
 	importBatchSize := fs.Int("import-batch-size", 0, "rows to commit per executor import transaction; default is executor-defined")
@@ -466,6 +495,21 @@ func runAgent(args []string, stdout, stderr io.Writer) int {
 		Create:  *createEvidencePR || *executeEvidencePR,
 		Execute: *executeEvidencePR,
 	}
+	prCloseOptions := agentPRCloseOptions{
+		PRNumber:           *prNumber,
+		Repo:               strings.TrimSpace(*repo),
+		GHBinary:           strings.TrimSpace(*ghBinary),
+		GitBinary:          strings.TrimSpace(*gitBinary),
+		Base:               strings.TrimSpace(*base),
+		MergeMethod:        strings.TrimSpace(*mergeMethod),
+		SkipApprove:        *skipApprove,
+		DeleteBranch:       *deleteBranch,
+		AutomationActor:    strings.TrimSpace(*automationActor),
+		AutomationWorkflow: strings.TrimSpace(*automationWorkflow),
+		AutomationRunID:    strings.TrimSpace(*automationRunID),
+		AutomationRunURL:   strings.TrimSpace(*automationRunURL),
+		AutomationCommit:   strings.TrimSpace(*automationCommit),
+	}
 	cdcOpsOptions := agentCDCOpsOptions{
 		MaxLSN:                 strings.TrimSpace(*maxLSN),
 		MinLSNs:                minLSNs,
@@ -523,12 +567,14 @@ func runAgent(args []string, stdout, stderr io.Writer) int {
 		return runAgentPlanAndPR(*root, strings.TrimSpace(*sourceClusterID), strings.TrimSpace(*projectID), strings.TrimSpace(*stage), *executePR, *jsonOutput, stdout, stderr)
 	case "execute-approved":
 		return runAgentExecuteApproved(*root, strings.TrimSpace(*sourceClusterID), strings.TrimSpace(*projectID), strings.TrimSpace(*stage), *execute, *jsonOutput, evidencePROptions, executorOptions, stdout, stderr)
+	case "pr-close":
+		return runAgentPRClose(*root, strings.TrimSpace(*sourceClusterID), strings.TrimSpace(*projectID), strings.TrimSpace(*stage), *execute, prCloseOptions, stdout, stderr)
 	case "cdc-ops":
 		return runAgentCDCOps(*root, strings.TrimSpace(*sourceClusterID), strings.TrimSpace(*projectID), executorOptions, cdcOpsOptions, stdout, stderr)
 	case "review-assist":
 		return runAgentReviewAssist(*root, strings.TrimSpace(*sourceClusterID), strings.TrimSpace(*projectID), strings.TrimSpace(*stage), llmOptions, stdout, stderr)
 	default:
-		fmt.Fprintf(stderr, "agent: unsupported mode %q; supported modes: status, auto, plan-and-pr, execute-approved, cdc-ops, review-assist\n", *mode)
+		fmt.Fprintf(stderr, "agent: unsupported mode %q; supported modes: status, auto, plan-and-pr, execute-approved, pr-close, cdc-ops, review-assist\n", *mode)
 		return 2
 	}
 }
@@ -696,6 +742,57 @@ func buildAgentPlanAndPRReport(root, sourceClusterID, projectID, stage string, e
 		ExecutedPR:      executePR,
 		GitHubOutput:    githubOutput,
 	}, nil
+}
+
+func runAgentPRClose(root, sourceClusterID, projectID, stage string, execute bool, options agentPRCloseOptions, stdout, stderr io.Writer) int {
+	fmt.Fprintln(stdout, "migration agent pr-close")
+	return runCompleteGitHubPR(agentPRCloseArgs(root, sourceClusterID, projectID, stage, execute, options), stdout, stderr)
+}
+
+func agentPRCloseArgs(root, sourceClusterID, projectID, stage string, execute bool, options agentPRCloseOptions) []string {
+	args := []string{
+		"--root", root,
+		"--source-cluster-id", sourceClusterID,
+		"--project-id", projectID,
+		"--stage", stage,
+		"--pr", strconv.Itoa(options.PRNumber),
+		"--base", options.Base,
+		"--merge-method", options.MergeMethod,
+	}
+	if options.Repo != "" {
+		args = append(args, "--repo", options.Repo)
+	}
+	if options.GHBinary != "" {
+		args = append(args, "--gh-binary", options.GHBinary)
+	}
+	if options.GitBinary != "" {
+		args = append(args, "--git-binary", options.GitBinary)
+	}
+	if options.SkipApprove {
+		args = append(args, "--skip-approve")
+	}
+	if !options.DeleteBranch {
+		args = append(args, "--delete-branch=false")
+	}
+	if options.AutomationActor != "" {
+		args = append(args, "--automation-actor", options.AutomationActor)
+	}
+	if options.AutomationWorkflow != "" {
+		args = append(args, "--automation-workflow", options.AutomationWorkflow)
+	}
+	if options.AutomationRunID != "" {
+		args = append(args, "--automation-run-id", options.AutomationRunID)
+	}
+	if options.AutomationRunURL != "" {
+		args = append(args, "--automation-run-url", options.AutomationRunURL)
+	}
+	if options.AutomationCommit != "" {
+		args = append(args, "--automation-commit", options.AutomationCommit)
+	}
+	if execute {
+		args = append(args, "--execute")
+	}
+	return args
 }
 
 func runAgentExecuteApproved(root, sourceClusterID, projectID, stage string, execute, jsonOutput bool, evidencePROptions agentEvidencePROptions, executorOptions agentExecutorOptions, stdout, stderr io.Writer) int {
@@ -5384,6 +5481,7 @@ Usage:
   sqlserver2tidb agent --mode execute-approved --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage export --use-executor --source-connection-string-env SQLSERVER2TIDB_SQLSERVER_DSN --execute --evidence-pr-draft
   sqlserver2tidb agent --mode execute-approved --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage ddl --target-connection-string-env SQLSERVER2TIDB_TARGET_CONNECTION_STRING
   sqlserver2tidb agent --mode execute-approved --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage cdc-enable --source-connection-string-env SQLSERVER2TIDB_CDC_ADMIN_CONNECTION_STRING --command-timeout 5m --command-retries 2 --retry-backoff 10s --resume --execute --create-evidence-pr
+  sqlserver2tidb agent --mode pr-close --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage export --pr 42 --repo BornChanger/sqlserver2tidb
   sqlserver2tidb agent --mode cdc-ops --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --probe-lsn --history-file clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/cdc-health-history.jsonl --metrics-file artifacts/cdc-health.json --pr-draft
   sqlserver2tidb agent --mode review-assist --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage validation --provider-config global/llm-providers.yaml --execute-llm
   sqlserver2tidb generate-validation-plan --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a

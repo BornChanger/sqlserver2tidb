@@ -471,6 +471,21 @@ go run ./cmd/sqlserver2tidb agent \
 
 Use `--executor-binary` to point at a custom executor binary. The agent still uses the committed approval and payload-hash gates before any executor command is prepared. Add `--evidence-pr-draft` with `--execute` on executor-backed stages (`ddl`, `export`, `import`, `cdc-enable`, `cdc`, and `validation`) to write the matching `prs/executor-<stage>-evidence-pr.md` after successful executor evidence is recorded. Add `--create-evidence-pr` to generate the draft and preview the deterministic `git`/`gh` commands without changing git or calling GitHub. Use `--execute-evidence-pr` only when the local checkout should create the branch, commit evidence, push, and open the GitHub PR.
 
+Preview or execute the GitHub PR closure loop through the agent:
+
+```bash
+go run ./cmd/sqlserver2tidb agent \
+  --mode pr-close \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --stage export \
+  --pr 42 \
+  --repo BornChanger/sqlserver2tidb
+```
+
+`pr-close` is dry-run by default and reuses `complete-github-pr`. It prints the `gh pr view`, optional `gh pr review --approve`, `gh pr merge`, `git pull`, approval sync, commit, and push operations without changing GitHub or git. Add `--execute` only when the local `gh` and `git` identities should approve or merge the PR, sync the stage approval file, commit it on the base branch, and push it. Use `--skip-approve`, `--merge-method`, `--base`, `--delete-branch=false`, `--gh-binary`, and `--git-binary` for the same controls as the lower-level PR command.
+
 Run CDC health and long-period CDC range orchestration through the agent:
 
 ```bash

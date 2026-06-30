@@ -5514,6 +5514,104 @@ func TestRunAgentPlanAndPRExecutePrintsGitHubOutput(t *testing.T) {
 	}
 }
 
+func TestRunAgentPRCloseDryRunDelegatesToCompleteGitHubPR(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createCLIProjectWithOneExportChunk(t, root, &stdout, &stderr)
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"agent",
+		"--mode", "pr-close",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "export",
+		"--pr", "42",
+		"--repo", "BornChanger/sqlserver2tidb",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("agent pr-close dry-run code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	assertCLIOutputContains(t, output, "migration agent pr-close")
+	assertCLIOutputContains(t, output, "dry run: not changing GitHub or git")
+	assertCLIOutputContains(t, output, "gh pr view 42 --json title,body,state,reviewDecision,mergedAt,latestReviews,statusCheckRollup,files --repo BornChanger/sqlserver2tidb")
+	assertCLIOutputContains(t, output, "gh pr review 42 --approve --body 'sqlserver2tidb automated approval' --repo BornChanger/sqlserver2tidb")
+	assertCLIOutputContains(t, output, "gh pr merge 42 --squash --delete-branch --repo BornChanger/sqlserver2tidb")
+	assertCLIOutputContains(t, output, "git pull --ff-only origin main")
+	assertCLIOutputContains(t, output, "sync approval: clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/approvals/export-approval.yaml")
+	assertCLIOutputContains(t, output, "git push origin HEAD:main")
+}
+
+func TestRunAgentPRCloseExecuteDelegatesToCompleteGitHubPR(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	createCLIProjectWithOneExportChunk(t, root, &stdout, &stderr)
+	reviewCLIExportPlanPredicates(t, root)
+	setCLIReviewPlanStatus(t, root, "export", "reviewed")
+
+	mergedView := `{
+  "title": "[export] sales-db-to-tidb-prod-a",
+  "body": "",
+  "state": "MERGED",
+  "reviewDecision": "APPROVED",
+  "mergedAt": "2026-01-02T03:04:05Z",
+  "latestReviews": [
+    {"state": "APPROVED", "author": {"login": "alice"}}
+  ],
+  "statusCheckRollup": [
+    {"__typename": "CheckRun", "conclusion": "SUCCESS"}
+  ],
+  "files": [
+    {"path": "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/export-plan.yaml"}
+  ]
+}
+`
+	fakeGH := filepath.Join(root, "fake-gh-agent-pr-close")
+	if err := os.WriteFile(fakeGH, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> gh-args.log\ncat <<'JSON'\n"+mergedView+"JSON\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fakeGit := filepath.Join(root, "fake-git-agent-pr-close")
+	if err := os.WriteFile(fakeGit, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> git-args.log\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"agent",
+		"--mode", "pr-close",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "export",
+		"--pr", "42",
+		"--repo", "BornChanger/sqlserver2tidb",
+		"--gh-binary", "./fake-gh-agent-pr-close",
+		"--git-binary", "./fake-git-agent-pr-close",
+		"--execute",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("agent pr-close execute code = %d, stdout = %s, stderr = %s", code, stdout.String(), stderr.String())
+	}
+	output := stdout.String()
+	assertCLIOutputContains(t, output, "migration agent pr-close")
+	assertCLIOutputContains(t, output, "GitHub PR completed for export")
+	assertCLIOutputContains(t, output, "approval file: clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/approvals/export-approval.yaml")
+	approval := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/approvals/export-approval.yaml")
+	assertCLIOutputContains(t, approval, "status: approved")
+	assertCLIOutputContains(t, approval, "approved_by:\n  - alice")
+	assertCLIOutputContains(t, approval, "github_pr:\n  number: 42")
+	ghArgs := readCLIRelFile(t, root, "gh-args.log")
+	assertCLIOutputContains(t, ghArgs, "pr view 42 --json title,body,state,reviewDecision,mergedAt,latestReviews,statusCheckRollup,files --repo BornChanger/sqlserver2tidb")
+	gitArgs := readCLIRelFile(t, root, "git-args.log")
+	assertCLIOutputContains(t, gitArgs, "pull --ff-only origin main")
+	assertCLIOutputContains(t, gitArgs, "push origin HEAD:main")
+}
+
 func TestRunAgentExecuteApprovedDryRunDoesNotMutateState(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer

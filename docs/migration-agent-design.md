@@ -224,7 +224,40 @@ Forbidden behavior:
 - no execution when plan status is still `draft`
 - no mutation of approval files
 
-### 8.4 `cdc-ops`
+### 8.4 `pr-close`
+
+Close a reviewed stage PR and sync the resulting GitHub approval back to the project approval file.
+
+```bash
+sqlserver2tidb agent \
+  --mode pr-close \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --stage export \
+  --pr 42 \
+  --repo BornChanger/sqlserver2tidb \
+  --execute
+```
+
+Responsibilities:
+
+- wrap `complete-github-pr`
+- dry-run by default and print the exact GitHub/git closure operations
+- optionally approve the PR unless `--skip-approve` is set
+- merge with the selected method after GitHub state, review, checks, and file gates pass
+- run approval synchronization for the selected stage
+- commit and push the updated approval file to the base branch when execution changes it
+- record automation audit metadata when supplied by GitHub Actions environment variables or explicit flags
+
+Forbidden behavior:
+
+- no GitHub or git mutation without `--execute`
+- no bypass of branch protection, required checks, or review gates
+- no direct approval-file mutation outside the `complete-github-pr` approval sync path
+- no database execution
+
+### 8.5 `cdc-ops`
 
 Run long-period CDC operation and health workflows.
 
@@ -249,7 +282,7 @@ Responsibilities:
 - send Feishu or Slack alerts according to existing webhook flags/env vars
 - never auto-approve CDC ranges
 
-### 8.5 `review-assist`
+### 8.6 `review-assist`
 
 Generate advisory LLM outputs for human review.
 
@@ -272,7 +305,7 @@ Responsibilities:
 - redact secrets before provider calls
 - never edit executable plans, approvals, state, or evidence
 
-### 8.6 `auto`
+### 8.7 `auto`
 
 Bounded autopilot to the next review or approval boundary.
 
@@ -496,7 +529,7 @@ Initial command:
 
 ```bash
 sqlserver2tidb agent \
-  --mode status|plan-and-pr|execute-approved|cdc-ops|review-assist|auto \
+  --mode status|plan-and-pr|execute-approved|pr-close|cdc-ops|review-assist|auto \
   --root . \
   --source-cluster-id prod-sqlserver-a \
   --project-id sales-db-to-tidb-prod-a
@@ -628,7 +661,16 @@ Deliver:
 - evidence PR draft generation
 - tests for approval/hash gate pass-through and dry-run safety
 
-### Phase 5: CDC Ops Mode
+### Phase 5: PR Close Mode
+
+Deliver:
+
+- `--mode pr-close`
+- dry-run wrapper around `complete-github-pr`
+- explicit `--execute` requirement for GitHub and git mutations
+- tests for PR closure command pass-through
+
+### Phase 6: CDC Ops Mode
 
 Deliver:
 
@@ -637,7 +679,7 @@ Deliver:
 - Feishu/Slack alert flag pass-through
 - tests with dry-run/probed LSN stubs
 
-### Phase 6: Review Assist Mode
+### Phase 7: Review Assist Mode
 
 Deliver:
 
@@ -650,6 +692,7 @@ Deliver:
 
 - The agent never executes database work without `--execute`.
 - The agent never creates plan/review GitHub PRs without `--execute-pr`.
+- The agent never approves, merges, or syncs stage PR approval files without `--execute`.
 - The agent never creates executor evidence GitHub PRs without `--execute-evidence-pr`.
 - The agent never treats LLM output as approval or execution input.
 - The agent status is derived from repository files and existing readiness logic.
