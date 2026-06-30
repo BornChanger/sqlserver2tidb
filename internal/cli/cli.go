@@ -615,6 +615,8 @@ func runAgentStatus(root, sourceClusterID, projectID string, jsonOutput bool, st
 	fmt.Fprintf(stdout, "projects: %d\n", report.Reconcile.Projects)
 	fmt.Fprintf(stdout, "ready actions: %d\n", report.Reconcile.ReadyActions)
 	fmt.Fprintf(stdout, "blocked actions: %d\n", report.Reconcile.BlockedActions)
+	writeAgentStatusActionDetails(stdout, "ready action details", report.Reconcile.Actions, "ready", root)
+	writeAgentStatusActionDetails(stdout, "blocked action details", report.Reconcile.Actions, "blocked", root)
 	if report.NextAction.Stage == "" {
 		fmt.Fprintln(stdout, "next action: none")
 		return 0
@@ -622,6 +624,44 @@ func runAgentStatus(root, sourceClusterID, projectID string, jsonOutput bool, st
 	fmt.Fprintf(stdout, "next action: %s/%s %s\n", report.NextAction.SourceClusterID, report.NextAction.ProjectID, report.NextAction.Stage)
 	fmt.Fprintf(stdout, "command: %s\n", redact.Text(report.NextAction.Command))
 	return 0
+}
+
+func writeAgentStatusActionDetails(stdout io.Writer, title string, actions []gitops.WorkerReconcileAction, status, root string) {
+	var selected []gitops.WorkerReconcileAction
+	for _, action := range actions {
+		if action.Status == status {
+			selected = append(selected, action)
+		}
+	}
+	if len(selected) == 0 {
+		return
+	}
+	fmt.Fprintf(stdout, "%s:\n", title)
+	for _, action := range selected {
+		fmt.Fprintf(stdout, "- %s/%s %s: %s", action.SourceClusterID, action.ProjectID, action.Stage, action.Status)
+		if action.Reason != "" {
+			fmt.Fprintf(stdout, " - %s", redact.Text(action.Reason))
+		}
+		fmt.Fprintln(stdout)
+		if action.Command != "" {
+			fmt.Fprintf(stdout, "  command: %s\n", redact.Text(action.Command))
+		}
+		if action.Status == "ready" {
+			fmt.Fprintf(stdout, "  suggested agent command: %s\n", redact.Text(renderAgentExecuteApprovedCommand(root, action)))
+		}
+	}
+}
+
+func renderAgentExecuteApprovedCommand(root string, action gitops.WorkerReconcileAction) string {
+	return renderArgsForEvidence([]string{
+		"sqlserver2tidb",
+		"agent",
+		"--mode", "execute-approved",
+		"--root", root,
+		"--source-cluster-id", action.SourceClusterID,
+		"--project-id", action.ProjectID,
+		"--stage", action.Stage,
+	})
 }
 
 func runAgentAutoDryRun(root, sourceClusterID, projectID string, jsonOutput bool, stdout, stderr io.Writer) int {

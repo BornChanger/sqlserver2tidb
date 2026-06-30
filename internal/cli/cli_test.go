@@ -5343,6 +5343,32 @@ func TestRunAgentStatusReportsNextReadyAction(t *testing.T) {
 	}
 }
 
+func TestRunAgentStatusReportsReadyAndBlockedActionDetails(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createCLIReadyExportProjectForCluster(t, root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a")
+
+	code := Run([]string{
+		"agent",
+		"--mode", "status",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("agent status code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	assertCLIOutputContains(t, output, "ready action details:")
+	assertCLIOutputContains(t, output, "- prod-sqlserver-a/sales-db-to-tidb-prod-a export: ready")
+	assertCLIOutputContains(t, output, "command: sqlserver2tidb worker-export")
+	assertCLIOutputContains(t, output, "suggested agent command: sqlserver2tidb agent --mode execute-approved")
+	assertCLIOutputContains(t, output, "blocked action details:")
+	assertCLIOutputContains(t, output, "- prod-sqlserver-a/sales-db-to-tidb-prod-a ddl: blocked - ddl approval is not approved")
+	assertCLIOutputContains(t, output, "- prod-sqlserver-a/sales-db-to-tidb-prod-a validation: blocked - validation approval is not approved")
+}
+
 func TestRunAgentStatusJSONReportsReconcileState(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer
@@ -5621,6 +5647,102 @@ func TestRunAgentAutoGeneratesPlanPRDraftAtPlanningBoundary(t *testing.T) {
 	assertCLIOutputContains(t, output, "dry run: not calling GitHub")
 	prDraft := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/prs/plan-pr.md")
 	assertCLIOutputContains(t, prDraft, "[plan] sales-db-to-tidb-prod-a")
+}
+
+func TestRunAgentOfflineE2EPlansApprovesExecutesAndWritesEvidencePR(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createProjectWithSchemaManualReview(t, root, &stdout, &stderr)
+	schemaRel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/schema/schema-diff.json"
+	writeCLIFile(t, root, schemaRel, strings.Replace(readCLIRelFile(t, root, schemaRel), `"status": "draft-generated"`, `"status": "pending"`, 1))
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"agent",
+		"--mode", "auto",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--max-steps", "2",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("agent auto e2e code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	assertCLIOutputContains(t, output, "schema draft generated for sales-db-to-tidb-prod-a")
+	assertCLIOutputContains(t, output, "PR draft generated for schema")
+	assertExists(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/prs/schema-pr.md")
+
+	setCLISchemaDiffStatus(t, root, "reviewed")
+	stdout.Reset()
+	stderr.Reset()
+	code = Run([]string{
+		"compute-payload-hash",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "ddl",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("compute ddl hash e2e code = %d, stderr = %s", code, stderr.String())
+	}
+	writeCLIStageApproval(t, root, "ddl", parsePayloadHash(t, stdout.String()))
+
+	stdout.Reset()
+	stderr.Reset()
+	code = Run([]string{
+		"agent",
+		"--mode", "status",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("agent status e2e code = %d, stderr = %s", code, stderr.String())
+	}
+	statusOutput := stdout.String()
+	assertCLIOutputContains(t, statusOutput, "next action: prod-sqlserver-a/sales-db-to-tidb-prod-a ddl")
+	assertCLIOutputContains(t, statusOutput, "ready action details:")
+	assertCLIOutputContains(t, statusOutput, "suggested agent command: sqlserver2tidb agent --mode execute-approved")
+
+	fakeExecutor := filepath.Join(root, "fake-agent-e2e-executor")
+	if err := os.WriteFile(fakeExecutor, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> agent-e2e-executor-args.log\nprintf 'fake executor completed: %s\\n' \"$1\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = Run([]string{
+		"agent",
+		"--mode", "execute-approved",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "ddl",
+		"--executor-binary", "./fake-agent-e2e-executor",
+		"--target-connection-string-env", "TIDB_DDL_DSN",
+		"--command-timeout", "5s",
+		"--command-retries", "1",
+		"--retry-backoff", "1ms",
+		"--execute",
+		"--evidence-pr-draft",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("agent execute-approved e2e code = %d, stderr = %s", code, stderr.String())
+	}
+	executeOutput := stdout.String()
+	assertCLIOutputContains(t, executeOutput, "worker executor completed for sales-db-to-tidb-prod-a")
+	assertCLIOutputContains(t, executeOutput, "executor evidence PR draft generated")
+	argsLog := readCLIRelFile(t, root, "agent-e2e-executor-args.log")
+	assertCLIOutputContains(t, argsLog, "apply-ddl --execute")
+	assertCLIOutputContains(t, argsLog, "--target-connection-string-env TIDB_DDL_DSN")
+	evidence := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-ddl-run.json")
+	assertCLIOutputContains(t, evidence, `"stage": "ddl"`)
+	assertCLIOutputContains(t, evidence, `fake executor completed: apply-ddl`)
+	prBody := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/prs/executor-ddl-evidence-pr.md")
+	assertCLIOutputContains(t, prBody, "# PR Draft: [executor-evidence:ddl] sales-db-to-tidb-prod-a")
 }
 
 func TestRunAgentAutoDryRunStopsWhenPlanPRDraftExists(t *testing.T) {
