@@ -2852,6 +2852,8 @@ bin/sqlserver2tidb agent \
 
 `agent` 本身只做编排，不绕过任何 gate：planning 文件仍要通过 PR review；真实执行仍要满足 approval/hash/status gate；LLM 输出只落在 `ai/` 目录；PR 创建、approve、merge 和 approval 写回只有在显式传入执行类 flag 时才会调用 GitHub CLI。
 
+`agent` 入口会先执行集中化安全策略，再进入具体 mode。外部二进制参数 `--executor-binary`、`--git-binary`、`--gh-binary` 不能包含空白或控制字符；`--source-connection-string-env`、`--target-connection-string-env`、Feishu/Slack webhook/secret env 参数必须是环境变量名，不能直接传连接串或 webhook URL；`--command-timeout`、`--command-retries`、`--retry-backoff`、CDC polling 相关计数和间隔必须非负；executor evidence PR 相关参数必须配合 `--execute`，并且只能用于 executor-backed stage。策略失败时命令会在读取/修改 repo 之前以 `agent policy: ...` 返回。
+
 ## 17. 推荐落地顺序
 
 1. 使用当前 CLI 初始化 repo。

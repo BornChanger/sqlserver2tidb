@@ -590,6 +590,8 @@ GitHub Actions should run status, PR creation, approval sync, and CDC health wit
 - Database execution requires explicit `--execute`.
 - Cutover remains a file gate and cannot change production traffic directly.
 
+The CLI now centralizes agent-side policy checks before dispatching into a specific mode. This policy layer rejects unsafe external binary flag values that contain whitespace or control characters, rejects connection-string and alert webhook flags unless they are environment variable names, rejects negative retry/timeout/polling controls, and enforces executor evidence PR gates before repository mutation or mode-specific execution begins. Mode implementations still keep their deterministic approval/hash gates, but new agent entrypoints should add side-effect policy rules to the central agent policy layer instead of scattering one-off checks in each mode.
+
 ## 17. Failure Handling
 
 - Planning commands should be idempotent or fail if they would overwrite existing reviewed work.

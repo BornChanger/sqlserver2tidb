@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/BornChanger/sqlserver2tidb/internal/buildinfo"
 	"github.com/BornChanger/sqlserver2tidb/internal/gitops"
@@ -398,6 +399,20 @@ type agentLLMOptions struct {
 	ExecuteLLM           bool
 }
 
+type agentSecurityPolicy struct{}
+
+type agentSecurityPolicyRequest struct {
+	Mode              string
+	Stage             string
+	Execute           bool
+	ExecutePR         bool
+	GHBinary          string
+	GitBinary         string
+	ExecutorOptions   agentExecutorOptions
+	EvidencePROptions agentEvidencePROptions
+	CDCOpsOptions     agentCDCOpsOptions
+}
+
 func runAgent(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("agent", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -559,28 +574,142 @@ func runAgent(args []string, stdout, stderr io.Writer) int {
 		Timeout:              *llmTimeout,
 		ExecuteLLM:           *executeLLM,
 	}
-	switch strings.TrimSpace(*mode) {
-	case "status":
-		return runAgentStatus(*root, strings.TrimSpace(*sourceClusterID), strings.TrimSpace(*projectID), *jsonOutput, stdout, stderr)
-	case "auto":
-		if *dryRun || *jsonOutput {
-			return runAgentAutoDryRun(*root, strings.TrimSpace(*sourceClusterID), strings.TrimSpace(*projectID), *jsonOutput, stdout, stderr)
-		}
-		return runAgentAuto(*root, strings.TrimSpace(*sourceClusterID), strings.TrimSpace(*projectID), *maxSteps, *executePR, strings.TrimSpace(*ghBinary), stdout, stderr)
-	case "plan-and-pr":
-		return runAgentPlanAndPR(*root, strings.TrimSpace(*sourceClusterID), strings.TrimSpace(*projectID), strings.TrimSpace(*stage), *executePR, *jsonOutput, strings.TrimSpace(*ghBinary), stdout, stderr)
-	case "execute-approved":
-		return runAgentExecuteApproved(*root, strings.TrimSpace(*sourceClusterID), strings.TrimSpace(*projectID), strings.TrimSpace(*stage), *execute, *jsonOutput, evidencePROptions, executorOptions, stdout, stderr)
-	case "pr-close":
-		return runAgentPRClose(*root, strings.TrimSpace(*sourceClusterID), strings.TrimSpace(*projectID), strings.TrimSpace(*stage), *execute, prCloseOptions, stdout, stderr)
-	case "cdc-ops":
-		return runAgentCDCOps(*root, strings.TrimSpace(*sourceClusterID), strings.TrimSpace(*projectID), executorOptions, cdcOpsOptions, stdout, stderr)
-	case "review-assist":
-		return runAgentReviewAssist(*root, strings.TrimSpace(*sourceClusterID), strings.TrimSpace(*projectID), strings.TrimSpace(*stage), llmOptions, stdout, stderr)
-	default:
-		fmt.Fprintf(stderr, "agent: unsupported mode %q; supported modes: status, auto, plan-and-pr, execute-approved, pr-close, cdc-ops, review-assist\n", *mode)
+	modeValue := strings.TrimSpace(*mode)
+	stageValue := strings.TrimSpace(*stage)
+	sourceClusterIDValue := strings.TrimSpace(*sourceClusterID)
+	projectIDValue := strings.TrimSpace(*projectID)
+	ghBinaryValue := strings.TrimSpace(*ghBinary)
+	gitBinaryValue := strings.TrimSpace(*gitBinary)
+	if err := (agentSecurityPolicy{}).Validate(agentSecurityPolicyRequest{
+		Mode:              modeValue,
+		Stage:             stageValue,
+		Execute:           *execute,
+		ExecutePR:         *executePR,
+		GHBinary:          ghBinaryValue,
+		GitBinary:         gitBinaryValue,
+		ExecutorOptions:   executorOptions,
+		EvidencePROptions: evidencePROptions,
+		CDCOpsOptions:     cdcOpsOptions,
+	}); err != nil {
+		fmt.Fprintf(stderr, "agent policy: %v\n", err)
 		return 2
 	}
+	switch modeValue {
+	case "status":
+		return runAgentStatus(*root, sourceClusterIDValue, projectIDValue, *jsonOutput, stdout, stderr)
+	case "auto":
+		if *dryRun || *jsonOutput {
+			return runAgentAutoDryRun(*root, sourceClusterIDValue, projectIDValue, *jsonOutput, stdout, stderr)
+		}
+		return runAgentAuto(*root, sourceClusterIDValue, projectIDValue, *maxSteps, *executePR, ghBinaryValue, stdout, stderr)
+	case "plan-and-pr":
+		return runAgentPlanAndPR(*root, sourceClusterIDValue, projectIDValue, stageValue, *executePR, *jsonOutput, ghBinaryValue, stdout, stderr)
+	case "execute-approved":
+		return runAgentExecuteApproved(*root, sourceClusterIDValue, projectIDValue, stageValue, *execute, *jsonOutput, evidencePROptions, executorOptions, stdout, stderr)
+	case "pr-close":
+		return runAgentPRClose(*root, sourceClusterIDValue, projectIDValue, stageValue, *execute, prCloseOptions, stdout, stderr)
+	case "cdc-ops":
+		return runAgentCDCOps(*root, sourceClusterIDValue, projectIDValue, executorOptions, cdcOpsOptions, stdout, stderr)
+	case "review-assist":
+		return runAgentReviewAssist(*root, sourceClusterIDValue, projectIDValue, stageValue, llmOptions, stdout, stderr)
+	default:
+		fmt.Fprintf(stderr, "agent: unsupported mode %q; supported modes: status, auto, plan-and-pr, execute-approved, pr-close, cdc-ops, review-assist\n", modeValue)
+		return 2
+	}
+}
+
+func (agentSecurityPolicy) Validate(req agentSecurityPolicyRequest) error {
+	if err := validateAgentBinaryFlag("--executor-binary", req.ExecutorOptions.ExecutorBinary); err != nil {
+		return err
+	}
+	if err := validateAgentBinaryFlag("--gh-binary", req.GHBinary); err != nil {
+		return err
+	}
+	if err := validateAgentBinaryFlag("--git-binary", req.GitBinary); err != nil {
+		return err
+	}
+	if err := validateAgentEnvNameFlag("--source-connection-string-env", req.ExecutorOptions.SourceConnectionStringEnv); err != nil {
+		return err
+	}
+	if err := validateAgentEnvNameFlag("--target-connection-string-env", req.ExecutorOptions.TargetConnectionStringEnv); err != nil {
+		return err
+	}
+	if err := validateAgentEnvNameFlag("--feishu-webhook-env", req.CDCOpsOptions.FeishuWebhookEnv); err != nil {
+		return err
+	}
+	if err := validateAgentEnvNameFlag("--feishu-secret-env", req.CDCOpsOptions.FeishuSecretEnv); err != nil {
+		return err
+	}
+	if err := validateAgentEnvNameFlag("--slack-webhook-env", req.CDCOpsOptions.SlackWebhookEnv); err != nil {
+		return err
+	}
+	if req.ExecutorOptions.ImportBatchSize < 0 {
+		return fmt.Errorf("--import-batch-size must be non-negative")
+	}
+	if req.ExecutorOptions.CommandTimeout < 0 {
+		return fmt.Errorf("--command-timeout must be non-negative")
+	}
+	if req.ExecutorOptions.CommandRetries < 0 {
+		return fmt.Errorf("--command-retries must be non-negative")
+	}
+	if req.ExecutorOptions.RetryBackoff < 0 {
+		return fmt.Errorf("--retry-backoff must be non-negative")
+	}
+	if req.CDCOpsOptions.MaxIterations < 0 {
+		return fmt.Errorf("--max-iterations must be non-negative")
+	}
+	if req.CDCOpsOptions.Interval < 0 {
+		return fmt.Errorf("--interval must be non-negative")
+	}
+	if req.CDCOpsOptions.IdleIterations < 0 {
+		return fmt.Errorf("--idle-iterations must be non-negative")
+	}
+	if req.CDCOpsOptions.MinAppliedChanges < 0 {
+		return fmt.Errorf("--min-applied-changes must be non-negative")
+	}
+	if hasAgentEvidencePRAction(req.EvidencePROptions) && !req.Execute {
+		return fmt.Errorf("evidence PR options require --execute")
+	}
+	if hasAgentEvidencePRAction(req.EvidencePROptions) && req.Stage != "" && !shouldUseAgentWorkerExecutor(req.Stage, req.ExecutorOptions) {
+		return fmt.Errorf("evidence PR options require an executor-backed stage; use --use-executor for %q", req.Stage)
+	}
+	return nil
+}
+
+func validateAgentBinaryFlag(flagName, value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	if strings.HasPrefix(value, "-") {
+		return fmt.Errorf("%s must be a binary name or path, not an option", flagName)
+	}
+	for _, r := range value {
+		if unicode.IsSpace(r) || unicode.IsControl(r) {
+			return fmt.Errorf("%s must not contain whitespace or control characters", flagName)
+		}
+	}
+	return nil
+}
+
+func validateAgentEnvNameFlag(flagName, value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	for i, r := range value {
+		if i == 0 {
+			if r == '_' || unicode.IsLetter(r) {
+				continue
+			}
+			return fmt.Errorf("%s must be an environment variable name", flagName)
+		}
+		if r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r) {
+			continue
+		}
+		return fmt.Errorf("%s must be an environment variable name", flagName)
+	}
+	return nil
 }
 
 func runAgentStatus(root, sourceClusterID, projectID string, jsonOutput bool, stdout, stderr io.Writer) int {
@@ -911,14 +1040,6 @@ func runAgentExecuteApproved(root, sourceClusterID, projectID, stage string, exe
 	if err != nil {
 		fmt.Fprintf(stderr, "agent execute-approved: %v\n", err)
 		return 1
-	}
-	if hasAgentEvidencePRAction(evidencePROptions) && !execute {
-		fmt.Fprintln(stderr, "agent execute-approved: evidence PR options require --execute")
-		return 2
-	}
-	if hasAgentEvidencePRAction(evidencePROptions) && !shouldUseAgentWorkerExecutor(report.Stage, executorOptions) {
-		fmt.Fprintf(stderr, "agent execute-approved: evidence PR options require an executor-backed stage; use --use-executor for %q\n", report.Stage)
-		return 2
 	}
 	if jsonOutput && !execute {
 		encoder := json.NewEncoder(stdout)

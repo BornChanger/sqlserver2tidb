@@ -5369,6 +5369,94 @@ func TestRunAgentStatusReportsReadyAndBlockedActionDetails(t *testing.T) {
 	assertCLIOutputContains(t, output, "- prod-sqlserver-a/sales-db-to-tidb-prod-a validation: blocked - validation approval is not approved")
 }
 
+func TestRunAgentPolicyRejectsUnsafeExecutorBinaryBeforeModeDispatch(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"agent",
+		"--mode", "execute-approved",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "ddl",
+		"--executor-binary", "./fake executor",
+	}, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("agent unsafe executor policy code = %d, stdout = %s, stderr = %s", code, stdout.String(), stderr.String())
+	}
+	assertCLIOutputContains(t, stderr.String(), "agent policy: --executor-binary must not contain whitespace or control characters")
+	if strings.Contains(stderr.String(), "validate repo") {
+		t.Fatalf("agent unsafe executor policy stderr = %q, should fail before mode dispatch", stderr.String())
+	}
+}
+
+func TestRunAgentPolicyRejectsConnectionStringEnvLiteralBeforeModeDispatch(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"agent",
+		"--mode", "execute-approved",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "export",
+		"--use-executor",
+		"--source-connection-string-env", "Server=sql;Password=raw-secret",
+	}, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("agent unsafe env policy code = %d, stdout = %s, stderr = %s", code, stdout.String(), stderr.String())
+	}
+	assertCLIOutputContains(t, stderr.String(), "agent policy: --source-connection-string-env must be an environment variable name")
+	if strings.Contains(stderr.String(), "raw-secret") {
+		t.Fatalf("agent unsafe env policy stderr leaked secret: %q", stderr.String())
+	}
+}
+
+func TestRunAgentPolicyRejectsNegativeRetryBeforeModeDispatch(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"agent",
+		"--mode", "cdc-ops",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--command-retries", "-1",
+	}, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("agent negative retry policy code = %d, stdout = %s, stderr = %s", code, stdout.String(), stderr.String())
+	}
+	assertCLIOutputContains(t, stderr.String(), "agent policy: --command-retries must be non-negative")
+	if strings.Contains(stderr.String(), "validate repo") {
+		t.Fatalf("agent negative retry policy stderr = %q, should fail before mode dispatch", stderr.String())
+	}
+}
+
+func TestRunAgentPolicyCentralizesEvidencePRExecutionGate(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	code := Run([]string{
+		"agent",
+		"--mode", "execute-approved",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "export",
+		"--evidence-pr-draft",
+	}, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("agent evidence PR policy code = %d, stdout = %s, stderr = %s", code, stdout.String(), stderr.String())
+	}
+	assertCLIOutputContains(t, stderr.String(), "agent policy: evidence PR options require --execute")
+	if strings.Contains(stderr.String(), "validate repo") {
+		t.Fatalf("agent evidence PR policy stderr = %q, should fail before mode dispatch", stderr.String())
+	}
+}
+
 func TestRunAgentStatusJSONReportsReconcileState(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer
