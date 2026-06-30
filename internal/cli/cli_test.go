@@ -6220,6 +6220,60 @@ func TestRunAgentExecuteApprovedDDLExecuteCanPreviewEvidencePRCreate(t *testing.
 	assertExists(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/prs/executor-ddl-evidence-pr.md")
 }
 
+func TestRunAgentExecuteApprovedDDLExecuteEvidencePRUsesCustomGitAndGHBinary(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createCLIApprovedDDLProject(t, root, &stdout, &stderr)
+
+	emptyPath := filepath.Join(root, "empty-path")
+	if err := os.MkdirAll(emptyPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", emptyPath)
+
+	fakeExecutor := filepath.Join(root, "fake-agent-ddl-execute-evidence-pr-executor")
+	if err := os.WriteFile(fakeExecutor, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> agent-ddl-execute-evidence-pr-executor-args.log\nprintf 'fake executor completed: %s\\n' \"$1\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fakeGit := filepath.Join(root, "custom-git")
+	if err := os.WriteFile(fakeGit, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> agent-evidence-pr-git-args.log\nprintf 'custom git ok\\n'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fakeGH := filepath.Join(root, "custom-gh")
+	if err := os.WriteFile(fakeGH, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> agent-evidence-pr-gh-args.log\nprintf 'https://github.com/BornChanger/sqlserver2tidb/pull/125\\n'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"agent",
+		"--mode", "execute-approved",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "ddl",
+		"--executor-binary", "./fake-agent-ddl-execute-evidence-pr-executor",
+		"--target-connection-string-env", "TIDB_DDL_DSN",
+		"--execute",
+		"--execute-evidence-pr",
+		"--git-binary", fakeGit,
+		"--gh-binary", fakeGH,
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("agent execute-approved ddl execute evidence PR custom binaries code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	assertCLIOutputContains(t, output, "executor evidence PR draft generated")
+	assertCLIOutputContains(t, output, "https://github.com/BornChanger/sqlserver2tidb/pull/125")
+	gitArgs := readCLIRelFile(t, root, "agent-evidence-pr-git-args.log")
+	assertCLIOutputContains(t, gitArgs, "switch -c agent/sales-db-to-tidb-prod-a/executor-ddl-evidence")
+	assertCLIOutputContains(t, gitArgs, "push -u origin agent/sales-db-to-tidb-prod-a/executor-ddl-evidence")
+	ghArgs := readCLIRelFile(t, root, "agent-evidence-pr-gh-args.log")
+	assertCLIOutputContains(t, ghArgs, "pr create --base main --head agent/sales-db-to-tidb-prod-a/executor-ddl-evidence")
+}
+
 func TestRunAgentExecuteApprovedCDCEnableDryRunUsesWorkerExecutor(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer

@@ -329,9 +329,11 @@ type agentExecutorOptions struct {
 }
 
 type agentEvidencePROptions struct {
-	Draft   bool
-	Create  bool
-	Execute bool
+	Draft     bool
+	Create    bool
+	Execute   bool
+	GHBinary  string
+	GitBinary string
 }
 
 type agentPRCloseOptions struct {
@@ -417,7 +419,7 @@ func runAgent(args []string, stdout, stderr io.Writer) int {
 	prNumber := fs.Int("pr", 0, "GitHub pull request number for pr-close")
 	repo := fs.String("repo", "", "optional GitHub repository in owner/name form for pr-close")
 	ghBinary := fs.String("gh-binary", "gh", "GitHub CLI binary for PR-creating and PR-closing agent modes")
-	gitBinary := fs.String("git-binary", "git", "git binary for pr-close")
+	gitBinary := fs.String("git-binary", "git", "git binary for PR-closing and evidence PR creation agent modes")
 	base := fs.String("base", "main", "base branch for pr-close")
 	mergeMethod := fs.String("merge-method", "squash", "GitHub PR merge method for pr-close: squash, merge, or rebase")
 	skipApprove := fs.Bool("skip-approve", false, "skip automated gh pr review --approve in pr-close")
@@ -492,9 +494,11 @@ func runAgent(args []string, stdout, stderr io.Writer) int {
 		Resume:                    *resume,
 	}
 	evidencePROptions := agentEvidencePROptions{
-		Draft:   *evidencePRDraft || *createEvidencePR || *executeEvidencePR,
-		Create:  *createEvidencePR || *executeEvidencePR,
-		Execute: *executeEvidencePR,
+		Draft:     *evidencePRDraft || *createEvidencePR || *executeEvidencePR,
+		Create:    *createEvidencePR || *executeEvidencePR,
+		Execute:   *executeEvidencePR,
+		GHBinary:  strings.TrimSpace(*ghBinary),
+		GitBinary: strings.TrimSpace(*gitBinary),
 	}
 	prCloseOptions := agentPRCloseOptions{
 		PRNumber:           *prNumber,
@@ -804,6 +808,13 @@ func normalizeAgentGHBinary(binary string) string {
 	return strings.TrimSpace(binary)
 }
 
+func normalizeAgentGitBinary(binary string) string {
+	if strings.TrimSpace(binary) == "" {
+		return "git"
+	}
+	return strings.TrimSpace(binary)
+}
+
 func runAgentPRClose(root, sourceClusterID, projectID, stage string, execute bool, options agentPRCloseOptions, stdout, stderr io.Writer) int {
 	fmt.Fprintln(stdout, "migration agent pr-close")
 	return runCompleteGitHubPR(agentPRCloseArgs(root, sourceClusterID, projectID, stage, execute, options), stdout, stderr)
@@ -898,7 +909,7 @@ func runAgentExecuteApproved(root, sourceClusterID, projectID, stage string, exe
 		}
 	}
 	if evidencePROptions.Create {
-		return runCreateExecutorEvidencePR(agentExecutorEvidencePRCreateArgs(root, report.Action, evidencePROptions.Execute), stdout, stderr)
+		return runCreateExecutorEvidencePR(agentExecutorEvidencePRCreateArgs(root, report.Action, evidencePROptions), stdout, stderr)
 	}
 	return 0
 }
@@ -1041,14 +1052,20 @@ func agentExecutorEvidencePRDraftArgs(root string, action gitops.WorkerReconcile
 	}
 }
 
-func agentExecutorEvidencePRCreateArgs(root string, action gitops.WorkerReconcileAction, execute bool) []string {
+func agentExecutorEvidencePRCreateArgs(root string, action gitops.WorkerReconcileAction, options agentEvidencePROptions) []string {
 	args := []string{
 		"--root", root,
 		"--source-cluster-id", action.SourceClusterID,
 		"--project-id", action.ProjectID,
 		"--stage", action.Stage,
 	}
-	if execute {
+	if options.GitBinary != "" {
+		args = append(args, "--git-binary", options.GitBinary)
+	}
+	if options.GHBinary != "" {
+		args = append(args, "--gh-binary", options.GHBinary)
+	}
+	if options.Execute {
 		args = append(args, "--execute")
 	}
 	return args
@@ -4299,9 +4316,13 @@ func runCreateWorkerStatePR(args []string, stdout, stderr io.Writer) int {
 	projectID := fs.String("project-id", "", "migration project id")
 	stage := fs.String("stage", "", "worker state PR stage: export, import, cdc, validation")
 	execute := fs.Bool("execute", false, "create git branch, commit state files, and call gh pr create; default is dry-run")
+	gitBinaryFlag := fs.String("git-binary", "git", "git binary used to create and push the state PR branch")
+	ghBinaryFlag := fs.String("gh-binary", "gh", "GitHub CLI binary used to create the state PR")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
+	gitBinary := normalizeAgentGitBinary(*gitBinaryFlag)
+	ghBinary := normalizeAgentGHBinary(*ghBinaryFlag)
 	spec, err := gitops.PrepareWorkerStatePRCreate(*root, *sourceClusterID, *projectID, *stage)
 	if err != nil {
 		fmt.Fprintf(stderr, "create worker state PR: %v\n", err)
@@ -4309,9 +4330,10 @@ func runCreateWorkerStatePR(args []string, stdout, stderr io.Writer) int {
 	}
 	if !*execute {
 		fmt.Fprintln(stdout, "dry run: not changing git or calling GitHub")
-		for _, command := range spec.ShellCommands {
-			fmt.Fprintf(stdout, "command: %s\n", redact.Text(command))
+		for _, gitArgs := range spec.GitArgs {
+			fmt.Fprintf(stdout, "command: %s\n", redact.Text(renderArgsForGitHubPRCompletion(append([]string{gitBinary}, gitArgs...))))
 		}
+		fmt.Fprintf(stdout, "command: %s\n", redact.Text(renderArgsForGitHubPRCompletion(append([]string{ghBinary}, spec.GitHubArgs...))))
 		if spec.BodyFileNeedsUpdate {
 			fmt.Fprintln(stdout, "body file update: needed; execute mode refreshes it before commit")
 		} else {
@@ -4333,18 +4355,18 @@ func runCreateWorkerStatePR(args []string, stdout, stderr io.Writer) int {
 	}
 
 	for _, gitArgs := range spec.GitArgs {
-		cmd := exec.Command("git", gitArgs...)
+		cmd := exec.Command(gitBinary, gitArgs...)
 		cmd.Dir = *root
 		output, err := cmd.CombinedOutput()
 		if len(output) > 0 {
 			fmt.Fprint(stdout, redact.Text(string(output)))
 		}
 		if err != nil {
-			fmt.Fprintf(stderr, "create worker state PR: git %s failed: %v\n", strings.Join(gitArgs, " "), err)
+			fmt.Fprintf(stderr, "create worker state PR: %s %s failed: %v\n", gitBinary, strings.Join(gitArgs, " "), err)
 			return 1
 		}
 	}
-	cmd := exec.Command("gh", spec.GitHubArgs...)
+	cmd := exec.Command(ghBinary, spec.GitHubArgs...)
 	cmd.Dir = *root
 	output, err := cmd.CombinedOutput()
 	if len(output) > 0 {
@@ -4388,9 +4410,13 @@ func runCreateExecutorEvidencePR(args []string, stdout, stderr io.Writer) int {
 	projectID := fs.String("project-id", "", "migration project id")
 	stage := fs.String("stage", "", "executor evidence PR stage: ddl, export, import, cdc-enable, cdc, validation")
 	execute := fs.Bool("execute", false, "create git branch, commit executor evidence, and call gh pr create; default is dry-run")
+	gitBinaryFlag := fs.String("git-binary", "git", "git binary used to create and push the evidence PR branch")
+	ghBinaryFlag := fs.String("gh-binary", "gh", "GitHub CLI binary used to create the evidence PR")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
+	gitBinary := normalizeAgentGitBinary(*gitBinaryFlag)
+	ghBinary := normalizeAgentGHBinary(*ghBinaryFlag)
 	spec, err := gitops.PrepareExecutorEvidencePRCreate(*root, *sourceClusterID, *projectID, *stage)
 	if err != nil {
 		fmt.Fprintf(stderr, "create executor evidence PR: %v\n", err)
@@ -4398,9 +4424,10 @@ func runCreateExecutorEvidencePR(args []string, stdout, stderr io.Writer) int {
 	}
 	if !*execute {
 		fmt.Fprintln(stdout, "dry run: not changing git or calling GitHub")
-		for _, command := range spec.ShellCommands {
-			fmt.Fprintf(stdout, "command: %s\n", redact.Text(command))
+		for _, gitArgs := range spec.GitArgs {
+			fmt.Fprintf(stdout, "command: %s\n", redact.Text(renderArgsForGitHubPRCompletion(append([]string{gitBinary}, gitArgs...))))
 		}
+		fmt.Fprintf(stdout, "command: %s\n", redact.Text(renderArgsForGitHubPRCompletion(append([]string{ghBinary}, spec.GitHubArgs...))))
 		fmt.Fprintf(stdout, "title: %s\n", spec.Title)
 		fmt.Fprintf(stdout, "branch: %s\n", spec.BranchName)
 		fmt.Fprintf(stdout, "body file: %s\n", spec.BodyFile)
@@ -4409,18 +4436,18 @@ func runCreateExecutorEvidencePR(args []string, stdout, stderr io.Writer) int {
 	}
 
 	for _, gitArgs := range spec.GitArgs {
-		cmd := exec.Command("git", gitArgs...)
+		cmd := exec.Command(gitBinary, gitArgs...)
 		cmd.Dir = *root
 		output, err := cmd.CombinedOutput()
 		if len(output) > 0 {
 			fmt.Fprint(stdout, redact.Text(string(output)))
 		}
 		if err != nil {
-			fmt.Fprintf(stderr, "create executor evidence PR: git %s failed: %v\n", strings.Join(gitArgs, " "), err)
+			fmt.Fprintf(stderr, "create executor evidence PR: %s %s failed: %v\n", gitBinary, strings.Join(gitArgs, " "), err)
 			return 1
 		}
 	}
-	cmd := exec.Command("gh", spec.GitHubArgs...)
+	cmd := exec.Command(ghBinary, spec.GitHubArgs...)
 	cmd.Dir = *root
 	output, err := cmd.CombinedOutput()
 	if len(output) > 0 {
