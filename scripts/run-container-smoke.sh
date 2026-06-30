@@ -42,7 +42,16 @@ docker run --rm \
 tmpdir="$(mktemp -d "${repo_root}/.tmp-container-smoke.XXXXXX")"
 chmod 0777 "${tmpdir}"
 cleanup() {
-  rm -rf "${tmpdir}"
+  status=$?
+  if [ -d "${tmpdir}" ]; then
+    docker run --rm \
+      --user 0 \
+      -v "${tmpdir}:/workspace" \
+      --entrypoint /bin/sh \
+      "${image}" -lc 'chmod -R a+rwX /workspace' >/dev/null 2>&1 || true
+    rm -rf "${tmpdir}" || true
+  fi
+  exit "${status}"
 }
 trap cleanup EXIT
 
