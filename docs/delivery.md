@@ -91,15 +91,20 @@ cp .env.example .env
 docker compose --env-file .env -f docker-compose.yaml up
 ```
 
-The container image includes `git`, `sqlserver2tidb`, and `sqlserver2tidb-executor`. It does not include GitHub CLI. Run PR creation/merge commands from a host or CI runner that has `gh` installed, or extend the image in your own environment.
+The container image includes `git`, `gh`, `sqlserver2tidb`, and `sqlserver2tidb-executor`. With a mounted metadata repository plus `GH_TOKEN` or a mounted GitHub CLI auth config, the same image can run PR creation, approval sync, merge, worker state PR, and executor evidence PR automation.
 
 ## GitHub Permissions
 
-For local PR creation and closure commands, install and authenticate GitHub CLI on the operator host:
+For PR creation and closure commands, provide a GitHub identity either by authenticating GitHub CLI on the operator host or by passing `GH_TOKEN` into the container:
 
 ```bash
 gh auth login
 sqlserver2tidb doctor --root . --require-tools
+
+docker run --rm \
+  -e GH_TOKEN \
+  -v "$PWD:/workspace" \
+  ghcr.io/bornchanger/sqlserver2tidb:<version> doctor --root /workspace --require-tools
 ```
 
 For GitHub Actions PR closure and CDC health history commits, configure `SQLSERVER2TIDB_GITHUB_APP_TOKEN` when repository branch protection prevents the default `GITHUB_TOKEN` from pushing or approving. The token should have only the repository permissions required by the workflow: contents read/write, pull requests read/write, checks read, and metadata read.

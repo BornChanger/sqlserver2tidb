@@ -23,7 +23,7 @@ RUN CGO_ENABLED=0 go build \
 FROM debian:bookworm-slim
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates git \
+    && apt-get install -y --no-install-recommends ca-certificates git gh \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system sqlserver2tidb \
     && useradd --system --gid sqlserver2tidb --home-dir /workspace --create-home sqlserver2tidb

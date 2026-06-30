@@ -76,6 +76,7 @@ dist-check:
 dockerfile-check:
 	test -s Dockerfile
 	grep -q '^FROM golang:' Dockerfile
+	grep -q 'ca-certificates git gh' Dockerfile
 	grep -q '^USER sqlserver2tidb' Dockerfile
 
 workflow-check:
