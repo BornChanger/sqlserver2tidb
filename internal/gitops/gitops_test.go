@@ -3937,6 +3937,54 @@ func TestGenerateExecutorEvidencePRDraftIncludesDataMetrics(t *testing.T) {
 	assertContains(t, body, "| dbo.orders.000001 | 0 | 2026-01-02T03:04:05Z | 2026-01-02T03:04:06Z | 1000 | 2 | 128 | sha256:1111111111111111111111111111111111111111111111111111111111111111 | exported rows: 2 output bytes: 128 output sha256: sha256:1111111111111111111111111111111111111111111111111111111111111111 |")
 }
 
+func TestGenerateExecutorEvidencePRDraftRedactsSecretsFromLegacyEvidence(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateDataPlansOnly(root))
+	setReviewPlanStatus(t, root, "export", "reviewed")
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage(export) error = %v", err)
+	}
+	writeStageApproval(t, root, "export", hash)
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-export-run.json", `{
+  "stage": "export",
+  "status": "succeeded",
+  "project_id": "sales-db-to-tidb-prod-a",
+  "source_cluster_id": "prod-sqlserver-a",
+  "payload_hash": "`+hash+`",
+  "commands": [
+    {
+      "id": "dbo.orders.000001",
+      "args": ["sqlserver2tidb-executor", "export", "--execute"],
+      "shell_command": "sqlserver2tidb-executor export --execute",
+      "exit_code": 0,
+      "output": "password=raw-password token=raw-token sqlserver://user:raw-url-password@db.example:1433?password=raw-query-password\nexported rows: 2\noutput bytes: 128\noutput sha256: sha256:1111111111111111111111111111111111111111111111111111111111111111\n",
+      "started_at": "2026-01-02T03:04:05Z",
+      "completed_at": "2026-01-02T03:04:06Z",
+      "duration_ms": 1000,
+      "data_rows": 2,
+      "data_bytes": 128,
+      "data_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    }
+  ]
+}
+`)
+
+	draft, err := GenerateExecutorEvidencePRDraft(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "export")
+	if err != nil {
+		t.Fatalf("GenerateExecutorEvidencePRDraft() error = %v", err)
+	}
+	body := readFile(t, root, draft.BodyFile)
+	for _, secret := range []string{"raw-password", "raw-token", "raw-url-password", "raw-query-password"} {
+		if strings.Contains(body, secret) {
+			t.Fatalf("executor evidence PR body leaked %q:\n%s", secret, body)
+		}
+	}
+	assertContains(t, body, "<redacted>")
+	assertContains(t, body, "sha256:1111111111111111111111111111111111111111111111111111111111111111")
+}
+
 func TestGenerateExecutorEvidencePRDraftIncludesAttemptCount(t *testing.T) {
 	root := t.TempDir()
 	createValidationWorkerProject(t, root, dataWorkerInventory())
@@ -8804,6 +8852,56 @@ func TestRunValidationWorkerFailsWhenExecutorValidationEvidenceFailed(t *testing
 	report := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/validation-report.md")
 	assertContains(t, report, "- Status: `failed`")
 	assertContains(t, report, "executor validation evidence failed (1 of 2 commands failed: orders-bucket-1 exit_code=1 output=validation mismatch source: 10 target: 9)")
+}
+
+func TestRunValidationWorkerRedactsLegacyExecutorValidationEvidence(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateSchemaDraftOnly(root))
+	setReviewPlanStatus(t, root, "validation", "reviewed")
+	hash, err := ComputePayloadHashForStage(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "validation")
+	if err != nil {
+		t.Fatalf("ComputePayloadHashForStage() error = %v", err)
+	}
+	writeValidationApproval(t, root, hash)
+	writeFileForTest(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-validation-run.json", `{
+  "stage": "validation",
+  "status": "failed",
+  "project_id": "sales-db-to-tidb-prod-a",
+  "source_cluster_id": "prod-sqlserver-a",
+  "payload_hash": "`+hash+`",
+  "commands": [
+    {
+      "id": "orders-bucket-1",
+      "args": ["sqlserver2tidb-executor", "validate-query", "--execute"],
+      "shell_command": "sqlserver2tidb-executor validate-query --execute",
+      "exit_code": 1,
+      "output": "validation mismatch password=raw-password token=raw-token sqlserver://user:raw-url-password@db.example:1433?password=raw-query-password\n",
+      "started_at": "2026-01-02T03:04:06Z",
+      "completed_at": "2026-01-02T03:04:07Z",
+      "duration_ms": 1000
+    }
+  ]
+}
+`)
+
+	result, err := RunValidationWorker(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a")
+	if err != nil {
+		t.Fatalf("RunValidationWorker() error = %v", err)
+	}
+	if result.Passed {
+		t.Fatalf("RunValidationWorker() Passed = true, want false")
+	}
+
+	state := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/validation-status.yaml")
+	report := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/validation-report.md")
+	combined := state + "\n" + report
+	for _, secret := range []string{"raw-password", "raw-token", "raw-url-password", "raw-query-password"} {
+		if strings.Contains(combined, secret) {
+			t.Fatalf("validation worker leaked %q:\n%s", secret, combined)
+		}
+	}
+	assertContains(t, combined, "<redacted>")
 }
 
 func TestRunValidationWorkerFailsInvalidValidationPlanRowCountCheck(t *testing.T) {

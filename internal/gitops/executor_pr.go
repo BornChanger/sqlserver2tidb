@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/BornChanger/sqlserver2tidb/internal/redact"
 )
 
 type ExecutorEvidencePRDraft struct {
@@ -574,7 +576,7 @@ func renderExecutorEvidencePRDraftMarkdown(ctx executorEvidencePRContext, draft 
 
 	b.WriteString("\n## Operator Checklist\n\n")
 	b.WriteString("- [ ] Confirm the executor evidence corresponds to the approved payload hash.\n")
-	b.WriteString("- [ ] Confirm command output does not include plaintext secrets.\n")
+	b.WriteString("- [ ] Confirm command output redaction markers are expected and no plaintext secrets are visible.\n")
 	b.WriteString("- [ ] Confirm the executor status and exit codes match operational expectations.\n")
 	if ctx.stage == "ddl" {
 		b.WriteString("- [ ] Confirm the applied DDL matches the reviewed TiDB DDL files.\n")
@@ -655,7 +657,7 @@ func writeExecutorEvidenceCommandTable(b *strings.Builder, commands []executorEv
 		}
 		cells = append(cells, executorEvidenceOutputSummary(command.Output))
 		if includeError {
-			cells = append(cells, strings.TrimSpace(command.Error))
+			cells = append(cells, redact.Text(strings.TrimSpace(command.Error)))
 		}
 		if includeCDC {
 			cdcAppliedChanges := ""
@@ -706,7 +708,7 @@ func executorEvidenceTableIncludesAttempts(commands []executorEvidenceCommandSum
 
 func executorEvidenceOutputSummary(output string) string {
 	const maxSummaryLength = 240
-	summary := strings.Join(strings.Fields(output), " ")
+	summary := strings.Join(strings.Fields(redact.Text(output)), " ")
 	if summary == "" {
 		return "(empty)"
 	}

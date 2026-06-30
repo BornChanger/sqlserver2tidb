@@ -22,6 +22,7 @@ import (
 
 	"github.com/BornChanger/sqlserver2tidb/internal/buildinfo"
 	"github.com/BornChanger/sqlserver2tidb/internal/gitops"
+	"github.com/BornChanger/sqlserver2tidb/internal/redact"
 	sqlservercatalog "github.com/BornChanger/sqlserver2tidb/internal/sqlserver"
 )
 
@@ -568,7 +569,7 @@ func runCDCOrchestrator(args []string, stdout, stderr io.Writer) int {
 				SkipRetentionCheck:        *skipRetentionCheck,
 			}, stdout, stderr)
 			if err != nil {
-				fmt.Fprintf(stderr, "cdc orchestrator: %v\n", err)
+				fmt.Fprintf(stderr, "cdc orchestrator: %s\n", redact.Text(err.Error()))
 				return 1
 			}
 			if status.Applied {
@@ -578,7 +579,7 @@ func runCDCOrchestrator(args []string, stdout, stderr io.Writer) int {
 		}
 		bounds, err := cdcOrchestratorProbeLSNBounds(*root, *sourceClusterID, *projectID, *executorBinary, *sourceConnectionStringEnv, *maxLSNOverride, *skipRetentionCheck)
 		if err != nil {
-			fmt.Fprintf(stderr, "cdc orchestrator: %v\n", err)
+			fmt.Fprintf(stderr, "cdc orchestrator: %s\n", redact.Text(err.Error()))
 			return 1
 		}
 		fmt.Fprintf(stdout, "iteration %d: max_lsn %s\n", iteration, bounds.MaxLSN)
@@ -589,7 +590,7 @@ func runCDCOrchestrator(args []string, stdout, stderr io.Writer) int {
 			MinLSNs:        bounds.MinLSNs,
 		})
 		if err != nil {
-			fmt.Fprintf(stderr, "cdc orchestrator: %v\n", err)
+			fmt.Fprintf(stderr, "cdc orchestrator: %s\n", redact.Text(err.Error()))
 			return 1
 		}
 		fmt.Fprintf(stdout, "status: %s\n", result.Status)
@@ -767,7 +768,7 @@ func cdcOrchestratorMaxLSN(root, sourceClusterID, projectID, executorBinary, sou
 	cmd.Dir = root
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("cdc-lsn probe failed: %w: %s", err, strings.TrimSpace(string(output)))
+		return "", fmt.Errorf("cdc-lsn probe failed: %w: %s", err, redact.Text(strings.TrimSpace(string(output))))
 	}
 	maxLSN, err := parseCDCMaxLSNOutput(string(output))
 	if err != nil {
@@ -812,7 +813,7 @@ func cdcOrchestratorMinLSN(root, sourceClusterID, projectID, executorBinary, sou
 	cmd.Dir = root
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("cdc-lsn min probe failed for %s: %w: %s", sourceObject, err, strings.TrimSpace(string(output)))
+		return "", fmt.Errorf("cdc-lsn min probe failed for %s: %w: %s", sourceObject, err, redact.Text(strings.TrimSpace(string(output))))
 	}
 	minLSN, err := parseCDCMinLSNOutput(string(output))
 	if err != nil {
@@ -1309,7 +1310,7 @@ func runCreatePR(args []string, stdout, stderr io.Writer) int {
 	}
 	if !*execute {
 		fmt.Fprintln(stdout, "dry run: not calling GitHub")
-		fmt.Fprintf(stdout, "command: %s\n", spec.ShellCommand)
+		fmt.Fprintf(stdout, "command: %s\n", redact.Text(spec.ShellCommand))
 		fmt.Fprintf(stdout, "title: %s\n", spec.Title)
 		fmt.Fprintf(stdout, "body file: %s\n", spec.BodyFile)
 		return 0
@@ -1319,7 +1320,7 @@ func runCreatePR(args []string, stdout, stderr io.Writer) int {
 	cmd.Dir = *root
 	output, err := cmd.CombinedOutput()
 	if len(output) > 0 {
-		fmt.Fprint(stdout, string(output))
+		fmt.Fprint(stdout, redact.Text(string(output)))
 	}
 	if err != nil {
 		fmt.Fprintf(stderr, "create PR: gh pr create failed: %v\n", err)
@@ -1421,7 +1422,7 @@ func readGitHubPRStatus(root, ghBinary, repo string, prNumber int) (githubPRView
 	cmd.Dir = root
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return githubPRViewStatus{}, fmt.Errorf("gh pr view failed: %w: %s", err, strings.TrimSpace(string(output)))
+		return githubPRViewStatus{}, fmt.Errorf("gh pr view failed: %w: %s", err, redact.Text(strings.TrimSpace(string(output))))
 	}
 	var status githubPRViewStatus
 	if err := json.Unmarshal(output, &status); err != nil {
@@ -1566,7 +1567,7 @@ func runCreateWorkerStatePR(args []string, stdout, stderr io.Writer) int {
 	if !*execute {
 		fmt.Fprintln(stdout, "dry run: not changing git or calling GitHub")
 		for _, command := range spec.ShellCommands {
-			fmt.Fprintf(stdout, "command: %s\n", command)
+			fmt.Fprintf(stdout, "command: %s\n", redact.Text(command))
 		}
 		if spec.BodyFileNeedsUpdate {
 			fmt.Fprintln(stdout, "body file update: needed; execute mode refreshes it before commit")
@@ -1593,7 +1594,7 @@ func runCreateWorkerStatePR(args []string, stdout, stderr io.Writer) int {
 		cmd.Dir = *root
 		output, err := cmd.CombinedOutput()
 		if len(output) > 0 {
-			fmt.Fprint(stdout, string(output))
+			fmt.Fprint(stdout, redact.Text(string(output)))
 		}
 		if err != nil {
 			fmt.Fprintf(stderr, "create worker state PR: git %s failed: %v\n", strings.Join(gitArgs, " "), err)
@@ -1604,7 +1605,7 @@ func runCreateWorkerStatePR(args []string, stdout, stderr io.Writer) int {
 	cmd.Dir = *root
 	output, err := cmd.CombinedOutput()
 	if len(output) > 0 {
-		fmt.Fprint(stdout, string(output))
+		fmt.Fprint(stdout, redact.Text(string(output)))
 	}
 	if err != nil {
 		fmt.Fprintf(stderr, "create worker state PR: gh pr create failed: %v\n", err)
@@ -1655,7 +1656,7 @@ func runCreateExecutorEvidencePR(args []string, stdout, stderr io.Writer) int {
 	if !*execute {
 		fmt.Fprintln(stdout, "dry run: not changing git or calling GitHub")
 		for _, command := range spec.ShellCommands {
-			fmt.Fprintf(stdout, "command: %s\n", command)
+			fmt.Fprintf(stdout, "command: %s\n", redact.Text(command))
 		}
 		fmt.Fprintf(stdout, "title: %s\n", spec.Title)
 		fmt.Fprintf(stdout, "branch: %s\n", spec.BranchName)
@@ -1669,7 +1670,7 @@ func runCreateExecutorEvidencePR(args []string, stdout, stderr io.Writer) int {
 		cmd.Dir = *root
 		output, err := cmd.CombinedOutput()
 		if len(output) > 0 {
-			fmt.Fprint(stdout, string(output))
+			fmt.Fprint(stdout, redact.Text(string(output)))
 		}
 		if err != nil {
 			fmt.Fprintf(stderr, "create executor evidence PR: git %s failed: %v\n", strings.Join(gitArgs, " "), err)
@@ -1680,7 +1681,7 @@ func runCreateExecutorEvidencePR(args []string, stdout, stderr io.Writer) int {
 	cmd.Dir = *root
 	output, err := cmd.CombinedOutput()
 	if len(output) > 0 {
-		fmt.Fprint(stdout, string(output))
+		fmt.Fprint(stdout, redact.Text(string(output)))
 	}
 	if err != nil {
 		fmt.Fprintf(stderr, "create executor evidence PR: gh pr create failed: %v\n", err)
@@ -1883,7 +1884,7 @@ func runWorkerExecutor(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "payload hash: %s\n", spec.PayloadHash)
 		fmt.Fprintf(stdout, "commands: %d\n", len(spec.Commands))
 		for _, command := range spec.Commands {
-			fmt.Fprintf(stdout, "command: %s\n", command.ShellCommand)
+			fmt.Fprintf(stdout, "command: %s\n", redact.Text(command.ShellCommand))
 		}
 		return 0
 	}
@@ -1931,8 +1932,10 @@ func runWorkerExecutor(args []string, stdout, stderr io.Writer) int {
 			if cancel != nil {
 				cancel()
 			}
+			rawOutput := string(output)
+			redactedOutput := redact.Text(rawOutput)
 			if len(output) > 0 {
-				fmt.Fprint(stdout, string(output))
+				fmt.Fprint(stdout, redactedOutput)
 			}
 			commandEvidenceError := ""
 			if timedOut {
@@ -1941,29 +1944,30 @@ func runWorkerExecutor(args []string, stdout, stderr io.Writer) int {
 			attemptEvidence := workerExecutorRunCommandAttemptEvidence{
 				Attempt:     attempt,
 				ExitCode:    exitCodeForCommandError(err),
-				Output:      string(output),
-				Error:       commandEvidenceError,
+				Output:      redactedOutput,
+				Error:       redact.Text(commandEvidenceError),
 				StartedAt:   startedAt.Format(time.RFC3339Nano),
 				CompletedAt: completedAt.Format(time.RFC3339Nano),
 				DurationMs:  completedAt.Sub(startedAt).Milliseconds(),
 			}
 			attempts = append(attempts, attemptEvidence)
-			cdcAppliedChanges, errParse := workerExecutorCDCAppliedChanges(spec.Stage, string(output))
-			dataRows, dataBytes, errDataMetrics := workerExecutorDataMetrics(spec.Stage, string(output))
+			cdcAppliedChanges, errParse := workerExecutorCDCAppliedChanges(spec.Stage, rawOutput)
+			dataRows, dataBytes, errDataMetrics := workerExecutorDataMetrics(spec.Stage, rawOutput)
 			if errParse == nil {
 				errParse = errDataMetrics
 			}
-			dataSHA256, errDataSHA256 := workerExecutorDataSHA256(spec.Stage, string(output))
+			dataSHA256, errDataSHA256 := workerExecutorDataSHA256(spec.Stage, rawOutput)
 			if errParse == nil {
 				errParse = errDataSHA256
 			}
 			if errParse == nil {
 				errParse = workerExecutorRequiredDataAuditError(spec.Stage, args, dataRows, dataBytes, dataSHA256)
 			}
+			redactedArgs := redact.Args(args)
 			commandEvidence = workerExecutorRunCommandEvidence{
 				ID:                command.ID,
-				Args:              args,
-				ShellCommand:      renderArgsForEvidence(args),
+				Args:              redactedArgs,
+				ShellCommand:      renderArgsForEvidence(redactedArgs),
 				ExitCode:          attemptEvidence.ExitCode,
 				Output:            attemptEvidence.Output,
 				Error:             attemptEvidence.Error,
@@ -2011,11 +2015,11 @@ func runWorkerExecutor(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		if parseErr != nil {
-			results[len(results)-1].Error = parseErr.Error()
+			results[len(results)-1].Error = redact.Text(parseErr.Error())
 			if _, evidenceErr := writeWorkerExecutorRunEvidence(*root, spec, "failed", results); evidenceErr != nil {
 				fmt.Fprintf(stderr, "worker executor: %v\n", evidenceErr)
 			}
-			fmt.Fprintf(stderr, "worker executor: command %s: %v\n", command.ID, parseErr)
+			fmt.Fprintf(stderr, "worker executor: command %s: %s\n", command.ID, redact.Text(parseErr.Error()))
 			return 1
 		}
 	}
@@ -2074,10 +2078,11 @@ func isReusableWorkerExecutorCommandEvidence(stage string, command workerExecuto
 	if command.ExitCode != 0 || strings.TrimSpace(command.Error) != "" {
 		return false
 	}
-	if !stringSlicesEqual(command.Args, expectedArgs) {
+	expectedRedactedArgs := redact.Args(expectedArgs)
+	if !stringSlicesEqual(command.Args, expectedArgs) && !stringSlicesEqual(command.Args, expectedRedactedArgs) {
 		return false
 	}
-	if command.ShellCommand != renderArgsForEvidence(expectedArgs) {
+	if command.ShellCommand != renderArgsForEvidence(expectedArgs) && command.ShellCommand != renderArgsForEvidence(expectedRedactedArgs) {
 		return false
 	}
 	if stage == "cdc" && command.CDCAppliedChanges == nil {
@@ -2190,7 +2195,7 @@ func normalizeWorkerExecutorCommandEvidence(command workerExecutorRunCommandEvid
 			command.AttemptCount = 1
 		}
 	}
-	return command
+	return redactWorkerExecutorCommandEvidence(command)
 }
 
 func stringSlicesEqual(left, right []string) bool {
@@ -2245,13 +2250,17 @@ type workerExecutorRunEvidence struct {
 
 func writeWorkerExecutorRunEvidence(root string, spec gitops.WorkerExecutorSpec, status string, commands []workerExecutorRunCommandEvidence) (string, error) {
 	rel := workerExecutorRunEvidenceRel(spec)
+	redactedCommands := make([]workerExecutorRunCommandEvidence, 0, len(commands))
+	for _, command := range commands {
+		redactedCommands = append(redactedCommands, redactWorkerExecutorCommandEvidence(command))
+	}
 	evidence := workerExecutorRunEvidence{
 		Stage:           spec.Stage,
 		Status:          status,
 		ProjectID:       spec.ProjectID,
 		SourceClusterID: spec.SourceClusterID,
 		PayloadHash:     spec.PayloadHash,
-		Commands:        commands,
+		Commands:        redactedCommands,
 		GeneratedAt:     time.Now().UTC().Format(time.RFC3339),
 	}
 	data, err := json.MarshalIndent(evidence, "", "  ")
@@ -2263,6 +2272,22 @@ func writeWorkerExecutorRunEvidence(root string, spec gitops.WorkerExecutorSpec,
 		return "", fmt.Errorf("write executor evidence: %w", err)
 	}
 	return filepath.ToSlash(filepath.Join("evidence", "executor-"+spec.Stage+"-run.json")), nil
+}
+
+func redactWorkerExecutorCommandEvidence(command workerExecutorRunCommandEvidence) workerExecutorRunCommandEvidence {
+	command.Args = redact.Args(command.Args)
+	if len(command.Args) > 0 {
+		command.ShellCommand = renderArgsForEvidence(command.Args)
+	} else {
+		command.ShellCommand = redact.Text(command.ShellCommand)
+	}
+	command.Output = redact.Text(command.Output)
+	command.Error = redact.Text(command.Error)
+	for i := range command.Attempts {
+		command.Attempts[i].Output = redact.Text(command.Attempts[i].Output)
+		command.Attempts[i].Error = redact.Text(command.Attempts[i].Error)
+	}
+	return command
 }
 
 func workerExecutorRunEvidenceRel(spec gitops.WorkerExecutorSpec) string {
@@ -2547,7 +2572,7 @@ func runWorkerReconcile(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stdout, "  reason: %s\n", action.Reason)
 		}
 		if action.Status == "ready" {
-			fmt.Fprintf(stdout, "  command: %s\n", action.Command)
+			fmt.Fprintf(stdout, "  command: %s\n", redact.Text(action.Command))
 		}
 	}
 	return 0

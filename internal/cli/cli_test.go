@@ -1353,6 +1353,81 @@ func TestRunWorkerExecutorExecuteRecordsDataMetricsInEvidence(t *testing.T) {
 	}
 }
 
+func TestRunWorkerExecutorExecuteRedactsSecretsFromLogsAndEvidence(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createCLIProjectWithOneExportChunk(t, root, &stdout, &stderr)
+	reviewCLIExportPlanPredicates(t, root)
+	setCLIReviewPlanStatus(t, root, "export", "reviewed")
+
+	planRel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/export-plan.yaml"
+	plan := readCLIRelFile(t, root, planRel)
+	plan = strings.ReplaceAll(plan,
+		"file:///tmp/sqlserver2tidb-test/full/dbo.orders.000001.csv",
+		"https://object-store.example/full/orders.csv?sig=raw-sas-signature&token=raw-url-token",
+	)
+	if err := os.WriteFile(filepath.Join(root, filepath.FromSlash(planRel)), []byte(plan), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"compute-payload-hash",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "export",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("compute-payload-hash export code = %d, stderr = %s", code, stderr.String())
+	}
+	writeCLIStageApproval(t, root, "export", parsePayloadHash(t, stdout.String()))
+
+	fakeExecutor := filepath.Join(root, "fake-executor-secret-output")
+	if err := os.WriteFile(fakeExecutor, []byte("#!/bin/sh\nprintf 'executor password=raw-password token=raw-token AWS_SECRET_ACCESS_KEY=raw-aws-secret\\n'\nprintf 'connection sqlserver://user:raw-url-password@db.example:1433?password=raw-query-password\\n'\nprintf 'exported rows: 2\\n'\nprintf 'output bytes: 128\\n'\nprintf 'output sha256: sha256:1111111111111111111111111111111111111111111111111111111111111111\\n'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = Run([]string{
+		"worker-executor",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "export",
+		"--executor-binary", "./fake-executor-secret-output",
+		"--execute",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("worker-executor execute code = %d, stderr = %s", code, stderr.String())
+	}
+
+	evidence := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-export-run.json")
+	combined := stdout.String() + "\n" + evidence
+	for _, secret := range []string{
+		"raw-password",
+		"raw-token",
+		"raw-aws-secret",
+		"raw-url-password",
+		"raw-query-password",
+		"raw-sas-signature",
+		"raw-url-token",
+	} {
+		if strings.Contains(combined, secret) {
+			t.Fatalf("worker executor output/evidence leaked %q:\n%s", secret, combined)
+		}
+	}
+	if !strings.Contains(combined, "<redacted>") {
+		t.Fatalf("worker executor output/evidence = %q, want redaction marker", combined)
+	}
+	if !strings.Contains(evidence, `"data_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111"`) {
+		t.Fatalf("executor evidence = %q, want data SHA256 preserved", evidence)
+	}
+}
+
 func TestRunWorkerExecutorExecuteRejectsMissingRequiredDataAudit(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer
@@ -2599,6 +2674,39 @@ func TestRunCDCOrchestratorProbesMaxLSNAndWritesRangePRDraft(t *testing.T) {
 	plan := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/cdc-plan.yaml")
 	if !strings.Contains(plan, "from_lsn: 0x00000000000000000002") || !strings.Contains(plan, "to_lsn: 0x00000000000000000003") {
 		t.Fatalf("cdc plan = %q, want checkpoint-to-max range", plan)
+	}
+}
+
+func TestRunCDCOrchestratorRedactsFailedLSNProbeOutput(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	createCLIProjectWithCDCPlanAndCheckpoint(t, root, &stdout, &stderr, "0x00000000000000000001", "0x00000000000000000002")
+
+	fakeExecutor := filepath.Join(root, "fake-cdc-lsn-secret-failure")
+	if err := os.WriteFile(fakeExecutor, []byte("#!/bin/sh\nprintf 'cdc-lsn failed password=raw-password token=raw-token sqlserver://user:raw-url-password@db.example:1433?password=raw-query-password\\n'\nexit 17\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"cdc-orchestrator",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--executor-binary", "./fake-cdc-lsn-secret-failure",
+		"--max-iterations", "1",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("cdc-orchestrator code = 0, want failed cdc-lsn probe")
+	}
+	for _, secret := range []string{"raw-password", "raw-token", "raw-url-password", "raw-query-password"} {
+		if strings.Contains(stderr.String(), secret) {
+			t.Fatalf("cdc-orchestrator stderr leaked %q:\n%s", secret, stderr.String())
+		}
+	}
+	if !strings.Contains(stderr.String(), "<redacted>") {
+		t.Fatalf("cdc-orchestrator stderr = %q, want redaction marker", stderr.String())
 	}
 }
 

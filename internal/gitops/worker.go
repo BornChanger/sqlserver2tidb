@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/BornChanger/sqlserver2tidb/internal/redact"
 )
 
 type ValidationWorkerResult struct {
@@ -224,7 +226,7 @@ func summarizeFailedExecutorEvidenceCommands(commands []executorEvidenceCommandS
 }
 
 func compactExecutorEvidenceOutput(output string) string {
-	compacted := strings.Join(strings.Fields(output), " ")
+	compacted := strings.Join(strings.Fields(redact.Text(output)), " ")
 	if len(compacted) <= 160 {
 		return compacted
 	}
@@ -527,7 +529,7 @@ func (result *ValidationWorkerResult) addCheck(name string, passed bool, message
 	result.Checks = append(result.Checks, ValidationCheckResult{
 		Name:    name,
 		Status:  status,
-		Message: message,
+		Message: redact.Text(message),
 	})
 }
 
