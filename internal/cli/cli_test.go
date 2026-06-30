@@ -520,6 +520,108 @@ func TestRunLLMCompatibilityAdviceExecuteWritesRedactedAdvice(t *testing.T) {
 	}
 }
 
+func TestRunLLMSchemaAdviceDryRunDoesNotCallProvider(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createProjectWithSchemaManualReview(t, root, &stdout, &stderr)
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		t.Fatalf("provider should not be called during dry-run")
+	}))
+	defer server.Close()
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"llm-schema-advice",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--base-url", server.URL + "/v1",
+		"--model", "migration-advisor",
+		"--auth-mode", "oauth_token_env",
+		"--token-env", "SQLSERVER2TIDB_TEST_LLM_TOKEN",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("llm-schema-advice dry-run code = %d, stderr = %s", code, stderr.String())
+	}
+	if called {
+		t.Fatal("provider was called during dry-run")
+	}
+	output := stdout.String()
+	assertCLIOutputContains(t, output, "LLM schema advice dry run for sales-db-to-tidb-prod-a")
+	assertCLIOutputContains(t, output, "provider type: openai_compatible")
+	assertCLIOutputContains(t, output, "auth mode: oauth_token_env")
+	assertCLIOutputContains(t, output, "would write clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/ai/schema-rewrite-candidates.md")
+	assertNotExists(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/ai/schema-rewrite-candidates.md")
+}
+
+func TestRunLLMSchemaAdviceExecuteWritesRedactedCandidates(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createProjectWithSchemaManualReview(t, root, &stdout, &stderr)
+	t.Setenv("SQLSERVER2TIDB_TEST_LLM_TOKEN", "raw-provider-token")
+	var requestBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer raw-provider-token" {
+			t.Fatalf("Authorization = %q", r.Header.Get("Authorization"))
+		}
+		data, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("ReadAll() error = %v", err)
+		}
+		requestBody = string(data)
+		if strings.Contains(requestBody, "schema-raw-password") {
+			t.Fatalf("LLM request leaked secret: %s", requestBody)
+		}
+		if !strings.Contains(requestBody, "schema-diff.json") || !strings.Contains(requestBody, "conversion-report.md") {
+			t.Fatalf("LLM request = %s, want schema inputs", requestBody)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"choices":[{"message":{"content":"# Schema Rewrite Candidates\n\n- Consider TEXT or JSON for payload before schema approval."}}],"usage":{"prompt_tokens":17,"completion_tokens":9,"total_tokens":26}}`)
+	}))
+	defer server.Close()
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"llm-schema-advice",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--base-url", server.URL + "/v1",
+		"--model", "migration-advisor",
+		"--auth-mode", "oauth_token_env",
+		"--token-env", "SQLSERVER2TIDB_TEST_LLM_TOKEN",
+		"--execute",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("llm-schema-advice execute code = %d, stdout = %s, stderr = %s", code, stdout.String(), stderr.String())
+	}
+	output := stdout.String()
+	assertCLIOutputContains(t, output, "LLM schema advice generated for sales-db-to-tidb-prod-a")
+	assertCLIOutputContains(t, output, "wrote clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/ai/schema-rewrite-candidates.md")
+	assertCLIOutputContains(t, output, "wrote clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/ai/schema-rewrite-candidates.audit.json")
+	advice := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/ai/schema-rewrite-candidates.md")
+	assertCLIOutputContains(t, advice, "# Schema Rewrite Candidates")
+	assertCLIOutputContains(t, advice, "TEXT or JSON")
+	if strings.Contains(advice, "raw-provider-token") || strings.Contains(advice, "schema-raw-password") {
+		t.Fatalf("schema advice leaked secret:\n%s", advice)
+	}
+	audit := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/ai/schema-rewrite-candidates.audit.json")
+	assertCLIOutputContains(t, audit, `"project_id": "sales-db-to-tidb-prod-a"`)
+	assertCLIOutputContains(t, audit, `"provider_id": "inline"`)
+	assertCLIOutputContains(t, audit, `"auth_mode": "oauth_token_env"`)
+	assertCLIOutputContains(t, audit, `"model": "migration-advisor"`)
+	assertCLIOutputContains(t, audit, `"output_file": "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/ai/schema-rewrite-candidates.md"`)
+	if strings.Contains(audit, "raw-provider-token") || strings.Contains(audit, "schema-raw-password") {
+		t.Fatalf("schema advice audit leaked secret:\n%s", audit)
+	}
+}
+
 func TestRunGenerateSchemaDraftCommand(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer
@@ -5453,6 +5555,73 @@ password=raw-password
 | --- | --- | --- | --- | --- |
 | blocker | SQLSERVER_TYPE_XML | sales.dbo.orders.payload | SQL Server xml requires manual review. | Rewrite payload storage before migration. |
 `)
+}
+
+func createProjectWithSchemaManualReview(t *testing.T, root string, stdout, stderr *bytes.Buffer) {
+	t.Helper()
+	if code := Run([]string{"init-repo", "--root", root}, stdout, stderr); code != 0 {
+		t.Fatalf("init-repo code = %d, stderr = %s", code, stderr.String())
+	}
+	if code := Run([]string{
+		"create-cluster",
+		"--root", root,
+		"--cluster-id", "prod-sqlserver-a",
+		"--display-name", "prod SQL Server A",
+		"--listener", "sqlserver-a.internal",
+		"--secret-ref", "vault://migration/prod-sqlserver-a/readonly",
+		"--owner", "dba-team",
+	}, stdout, stderr); code != 0 {
+		t.Fatalf("create-cluster code = %d, stderr = %s", code, stderr.String())
+	}
+	if code := Run([]string{
+		"create-project",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--display-name", "sales DB to TiDB prod A",
+		"--source-database", "sales",
+		"--source-schema", "dbo",
+		"--target-name", "tidb-prod-a",
+		"--target-database", "app",
+		"--target-secret-ref", "vault://migration/tidb-prod-a/migrate-user",
+		"--owner", "dba-team",
+	}, stdout, stderr); code != 0 {
+		t.Fatalf("create-project code = %d, stderr = %s", code, stderr.String())
+	}
+	writeCLIFile(t, root, "clusters/prod-sqlserver-a/inventory/inventory.json", `{
+  "status": "discovered",
+  "databases": [
+    {
+      "name": "sales",
+      "schemas": [
+        {
+          "name": "dbo",
+          "tables": [
+            {
+              "name": "orders",
+              "columns": [
+                {"name": "id", "type": "int"},
+                {"name": "payload", "type": "xml"}
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+`)
+	if code := Run([]string{
+		"generate-schema-draft",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+	}, stdout, stderr); code != 0 {
+		t.Fatalf("generate-schema-draft code = %d, stderr = %s", code, stderr.String())
+	}
+	conversionRel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/schema/conversion-report.md"
+	conversion := readCLIRelFile(t, root, conversionRel)
+	writeCLIFile(t, root, conversionRel, conversion+"\npassword=schema-raw-password\n")
 }
 
 func assertExists(t *testing.T, root, rel string) {

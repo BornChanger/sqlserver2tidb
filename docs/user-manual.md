@@ -1636,7 +1636,7 @@ bin/sqlserver2tidb worker-agent \
 
 ### 12.4 Provider 配置
 
-`llm-compatibility-advice` 支持 OpenAI-compatible chat completions provider。provider 配置可以放在 `global/llm-providers.yaml`，也可以用命令行 flag inline 指定。没有指定 `--provider-id` 时，配置文件会使用 `default_provider`。
+`llm-compatibility-advice` 和 `llm-schema-advice` 都支持 OpenAI-compatible chat completions provider。provider 配置可以放在 `global/llm-providers.yaml`，也可以用命令行 flag inline 指定。没有指定 `--provider-id` 时，配置文件会使用 `default_provider`。
 
 API key 示例：
 
@@ -1941,6 +1941,19 @@ bin/sqlserver2tidb generate-schema-draft \
 ```
 
 该命令读取源集群 inventory 和项目 metadata，写回项目目录下的 `schema/tidb-ddl/`、`schema/conversion-report.md` 和 `schema/schema-diff.json`。它只生成草稿，不连接 TiDB，不执行 DDL。
+
+### 16.7.1 llm-schema-advice
+
+```bash
+bin/sqlserver2tidb llm-schema-advice \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --provider-config global/llm-providers.yaml \
+  --execute
+```
+
+该命令读取项目目录下的 `schema/schema-diff.json`、`schema/conversion-report.md` 和 `schema/tidb-ddl/*.sql`，默认只做 dry-run。显式加 `--execute` 后，它会调用 provider，写回 `clusters/<source_cluster_id>/projects/<project_id>/ai/schema-rewrite-candidates.md` 和 `schema-rewrite-candidates.audit.json`。这些内容只用于人工 review schema 灰区和候选改写，不会覆盖 `schema/tidb-ddl/`，不会改变 `schema/schema-diff.json`，也不会改变 approval、plan、state 或 evidence。
 
 ### 16.8 generate-data-plans
 

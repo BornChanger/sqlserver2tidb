@@ -17,7 +17,7 @@ This MVP provides:
 - SQL Server discovery dry-run planning without opening a database connection.
 - SQL Server catalog discovery using a connection string supplied through an environment variable.
 - Rule-based SQL Server compatibility analysis from `inventory/inventory.json`.
-- LLM-assisted compatibility advice generation that reads redacted compatibility inputs and writes advisory files under `clusters/<source_cluster_id>/ai/`.
+- LLM-assisted compatibility and schema rewrite candidate generation that reads redacted deterministic inputs and writes advisory files under `clusters/<source_cluster_id>/ai/` or project `ai/` directories.
 - Project-scoped TiDB schema draft generation from SQL Server inventory and project metadata.
 - Project-scoped full export/import plan draft generation from SQL Server inventory and project metadata.
 - Project-scoped schema drift detection against a reviewed schema baseline, with report generation, automatic draft regeneration for repairable drift, and a schema-drift PR draft.
@@ -256,6 +256,19 @@ go run ./cmd/sqlserver2tidb generate-schema-draft \
 ```
 
 This writes `schema/tidb-ddl/`, `schema/conversion-report.md`, and `schema/schema-diff.json` under the project. Manual-review mappings are marked in both the DDL comments and schema diff.
+
+Generate optional LLM schema rewrite candidates from those schema draft artifacts:
+
+```bash
+go run ./cmd/sqlserver2tidb llm-schema-advice \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --provider-config global/llm-providers.yaml \
+  --execute
+```
+
+This reads `schema/schema-diff.json`, `schema/conversion-report.md`, and generated `schema/tidb-ddl/*.sql`, then writes advisory candidates under `clusters/<source_cluster_id>/projects/<project_id>/ai/`. It does not modify reviewed DDL, plans, approvals, state, or executor evidence.
 
 Generate project-scoped full export/import draft plans from the current SQL Server inventory and project metadata:
 
