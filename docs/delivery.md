@@ -9,6 +9,7 @@ Supported delivery artifacts are:
 - Release archives from GitHub Releases, containing `sqlserver2tidb`, `sqlserver2tidb-executor`, docs, scripts, examples, and integration-test assets.
 - Container images published to `ghcr.io/bornchanger/sqlserver2tidb:<version>` and `ghcr.io/bornchanger/sqlserver2tidb:latest`.
 - A metadata repository initialized by `sqlserver2tidb init-repo`, where every source SQL Server cluster owns one directory under `clusters/<source_cluster_id>/`.
+- Optional top-level migration agent runtime templates under `examples/agent-runtime/`.
 - Optional worker-agent deployment examples under `examples/worker-agent/`.
 - Optional LLM provider configuration examples under `examples/llm-providers.yaml`.
 
@@ -92,6 +93,37 @@ docker compose --env-file .env -f docker-compose.yaml up
 ```
 
 The container image includes `git`, `gh`, `sqlserver2tidb`, and `sqlserver2tidb-executor`. With a mounted metadata repository plus `GH_TOKEN` or a mounted GitHub CLI auth config, the same image can run PR creation, approval sync, merge, worker state PR, and executor evidence PR automation.
+
+## Run The Migration Agent
+
+Runtime templates for the top-level orchestration agent are included under
+`examples/agent-runtime/`:
+
+```text
+examples/agent-runtime/
+  github-actions/migration-agent.yml
+  kubernetes/migration-agent-cronjob.yaml
+  systemd/sqlserver2tidb-agent-status.service
+  systemd/sqlserver2tidb-agent-status.timer
+  systemd/sqlserver2tidb-agent-cdc-ops.service
+  systemd/sqlserver2tidb-agent-cdc-ops.timer
+```
+
+Use the GitHub Actions template for manually triggered repository operations
+such as `agent status`, bounded `agent auto`, PR draft/creation, approved
+execution, CDC operations, and LLM review assist. Copy it into
+`.github/workflows/migration-agent.yml` in the metadata repository and adjust
+the workflow inputs and environment protection rules before enabling execution.
+
+Use the Kubernetes CronJob template when a platform team owns a mounted
+metadata-repository volume and wants periodic status or CDC health checks from
+the published container image. Use the systemd timers when the metadata
+repository lives on a long-running host.
+
+All templates default to safe read-only/status behavior. PR creation, database
+execution, and LLM provider calls require explicit inputs or environment
+variables and remain subject to `global/policies/agent-policy.yaml` plus the
+normal approval/hash gates.
 
 ## GitHub Permissions
 

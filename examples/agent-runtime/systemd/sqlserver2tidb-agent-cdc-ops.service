@@ -1,0 +1,30 @@
+[Unit]
+Description=sqlserver2tidb migration agent CDC operations
+Documentation=https://github.com/BornChanger/sqlserver2tidb
+
+[Service]
+Type=oneshot
+User=sqlserver2tidb
+Group=sqlserver2tidb
+WorkingDirectory=/srv/sqlserver2tidb-metadata
+Environment=SQLSERVER2TIDB_SOURCE_CLUSTER_ID=prod-sqlserver-a
+Environment=SQLSERVER2TIDB_PROJECT_ID=sales-db-to-tidb-prod-a
+Environment=SQLSERVER2TIDB_CDC_HISTORY_FILE=clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/cdc-health-history.jsonl
+EnvironmentFile=-/etc/sqlserver2tidb/agent.env
+ExecStart=/usr/local/bin/sqlserver2tidb agent \
+  --root /srv/sqlserver2tidb-metadata \
+  --mode cdc-ops \
+  --source-cluster-id ${SQLSERVER2TIDB_SOURCE_CLUSTER_ID} \
+  --project-id ${SQLSERVER2TIDB_PROJECT_ID} \
+  --history-file ${SQLSERVER2TIDB_CDC_HISTORY_FILE} \
+  --source-connection-string-env SQLSERVER2TIDB_SOURCE_CONNECTION_STRING \
+  --target-connection-string-env SQLSERVER2TIDB_TARGET_CONNECTION_STRING \
+  --feishu-webhook-env SQLSERVER2TIDB_FEISHU_WEBHOOK \
+  --feishu-secret-env SQLSERVER2TIDB_FEISHU_SECRET \
+  --slack-webhook-env SQLSERVER2TIDB_SLACK_WEBHOOK
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/sqlserver2tidb-metadata

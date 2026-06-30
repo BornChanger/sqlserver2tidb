@@ -65,6 +65,13 @@ dist-check:
 	tar -tzf "$$archive" "sqlserver2tidb_$(VERSION)_linux_amd64/docs/delivery.md" >/dev/null; \
 	tar -tzf "$$archive" "sqlserver2tidb_$(VERSION)_linux_amd64/examples/quickstart/inventory.json" >/dev/null; \
 	tar -tzf "$$archive" "sqlserver2tidb_$(VERSION)_linux_amd64/examples/llm-providers.yaml" >/dev/null; \
+	tar -tzf "$$archive" "sqlserver2tidb_$(VERSION)_linux_amd64/examples/agent-runtime/README.md" >/dev/null; \
+	tar -tzf "$$archive" "sqlserver2tidb_$(VERSION)_linux_amd64/examples/agent-runtime/github-actions/migration-agent.yml" >/dev/null; \
+	tar -tzf "$$archive" "sqlserver2tidb_$(VERSION)_linux_amd64/examples/agent-runtime/kubernetes/migration-agent-cronjob.yaml" >/dev/null; \
+	tar -tzf "$$archive" "sqlserver2tidb_$(VERSION)_linux_amd64/examples/agent-runtime/systemd/sqlserver2tidb-agent-status.service" >/dev/null; \
+	tar -tzf "$$archive" "sqlserver2tidb_$(VERSION)_linux_amd64/examples/agent-runtime/systemd/sqlserver2tidb-agent-status.timer" >/dev/null; \
+	tar -tzf "$$archive" "sqlserver2tidb_$(VERSION)_linux_amd64/examples/agent-runtime/systemd/sqlserver2tidb-agent-cdc-ops.service" >/dev/null; \
+	tar -tzf "$$archive" "sqlserver2tidb_$(VERSION)_linux_amd64/examples/agent-runtime/systemd/sqlserver2tidb-agent-cdc-ops.timer" >/dev/null; \
 	tar -tzf "$$archive" "sqlserver2tidb_$(VERSION)_linux_amd64/examples/worker-agent/.env.example" >/dev/null; \
 	tar -tzf "$$archive" "sqlserver2tidb_$(VERSION)_linux_amd64/examples/worker-agent/docker-compose.yaml" >/dev/null; \
 	tar -tzf "$$archive" "sqlserver2tidb_$(VERSION)_linux_amd64/examples/worker-agent/systemd/sqlserver2tidb-worker-agent.service" >/dev/null; \

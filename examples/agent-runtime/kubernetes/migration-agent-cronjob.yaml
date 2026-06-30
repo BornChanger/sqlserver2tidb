@@ -1,0 +1,142 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: sqlserver2tidb-agent-status
+  namespace: migrations
+spec:
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        spec:
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 999
+            runAsGroup: 999
+            fsGroup: 999
+          containers:
+            - name: migration-agent
+              image: ghcr.io/bornchanger/sqlserver2tidb:latest
+              imagePullPolicy: IfNotPresent
+              command:
+                - /bin/bash
+                - -lc
+              args:
+                - |
+                  set -euo pipefail
+                  args=(
+                    agent
+                    --root /workspace
+                    --mode "${SQLSERVER2TIDB_AGENT_MODE:-status}"
+                    --source-cluster-id "${SQLSERVER2TIDB_SOURCE_CLUSTER_ID:?set SQLSERVER2TIDB_SOURCE_CLUSTER_ID}"
+                    --project-id "${SQLSERVER2TIDB_PROJECT_ID:?set SQLSERVER2TIDB_PROJECT_ID}"
+                  )
+                  if [ -n "${SQLSERVER2TIDB_STAGE:-}" ]; then
+                    args+=(--stage "${SQLSERVER2TIDB_STAGE}")
+                  fi
+                  if [ "${SQLSERVER2TIDB_AGENT_MODE:-status}" = "auto" ]; then
+                    args+=(--max-steps "${SQLSERVER2TIDB_MAX_STEPS:-1}")
+                    if [ "${SQLSERVER2TIDB_EXECUTE_PR:-false}" = "true" ]; then
+                      args+=(--execute-pr)
+                    fi
+                  fi
+                  if [ "${SQLSERVER2TIDB_AGENT_MODE:-status}" = "execute-approved" ]; then
+                    if [ "${SQLSERVER2TIDB_EXECUTE:-false}" = "true" ]; then
+                      args+=(--execute)
+                    fi
+                    if [ "${SQLSERVER2TIDB_USE_EXECUTOR:-false}" = "true" ]; then
+                      args+=(
+                        --use-executor
+                        --source-connection-string-env SQLSERVER2TIDB_SOURCE_CONNECTION_STRING
+                        --target-connection-string-env SQLSERVER2TIDB_TARGET_CONNECTION_STRING
+                      )
+                    fi
+                  fi
+                  if [ "${SQLSERVER2TIDB_AGENT_MODE:-status}" = "cdc-ops" ]; then
+                    args+=(
+                      --source-connection-string-env SQLSERVER2TIDB_SOURCE_CONNECTION_STRING
+                      --target-connection-string-env SQLSERVER2TIDB_TARGET_CONNECTION_STRING
+                      --feishu-webhook-env SQLSERVER2TIDB_FEISHU_WEBHOOK
+                      --feishu-secret-env SQLSERVER2TIDB_FEISHU_SECRET
+                      --slack-webhook-env SQLSERVER2TIDB_SLACK_WEBHOOK
+                    )
+                    if [ -n "${SQLSERVER2TIDB_CDC_HISTORY_FILE:-}" ]; then
+                      args+=(--history-file "${SQLSERVER2TIDB_CDC_HISTORY_FILE}")
+                    fi
+                    if [ "${SQLSERVER2TIDB_FAIL_ON_WARNING:-false}" = "true" ]; then
+                      args+=(--fail-on-warning)
+                    fi
+                  fi
+                  if [ "${SQLSERVER2TIDB_AGENT_MODE:-status}" = "review-assist" ]; then
+                    args+=(--provider-config "${SQLSERVER2TIDB_PROVIDER_CONFIG:-global/llm-providers.yaml}")
+                    if [ -n "${SQLSERVER2TIDB_PROVIDER_ID:-}" ]; then
+                      args+=(--provider-id "${SQLSERVER2TIDB_PROVIDER_ID}")
+                    fi
+                    if [ "${SQLSERVER2TIDB_EXECUTE_LLM:-false}" = "true" ]; then
+                      args+=(--execute-llm)
+                    fi
+                  fi
+                  sqlserver2tidb "${args[@]}"
+              env:
+                - name: SQLSERVER2TIDB_AGENT_MODE
+                  value: status
+                - name: SQLSERVER2TIDB_SOURCE_CLUSTER_ID
+                  value: prod-sqlserver-a
+                - name: SQLSERVER2TIDB_PROJECT_ID
+                  value: sales-db-to-tidb-prod-a
+                - name: SQLSERVER2TIDB_CDC_HISTORY_FILE
+                  value: clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/cdc-health-history.jsonl
+                - name: GH_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: sqlserver2tidb-agent
+                      key: github-token
+                      optional: true
+                - name: SQLSERVER2TIDB_SOURCE_CONNECTION_STRING
+                  valueFrom:
+                    secretKeyRef:
+                      name: sqlserver2tidb-agent
+                      key: source-connection-string
+                      optional: true
+                - name: SQLSERVER2TIDB_TARGET_CONNECTION_STRING
+                  valueFrom:
+                    secretKeyRef:
+                      name: sqlserver2tidb-agent
+                      key: target-connection-string
+                      optional: true
+                - name: SQLSERVER2TIDB_FEISHU_WEBHOOK
+                  valueFrom:
+                    secretKeyRef:
+                      name: sqlserver2tidb-agent
+                      key: feishu-webhook
+                      optional: true
+                - name: SQLSERVER2TIDB_FEISHU_SECRET
+                  valueFrom:
+                    secretKeyRef:
+                      name: sqlserver2tidb-agent
+                      key: feishu-secret
+                      optional: true
+                - name: SQLSERVER2TIDB_SLACK_WEBHOOK
+                  valueFrom:
+                    secretKeyRef:
+                      name: sqlserver2tidb-agent
+                      key: slack-webhook
+                      optional: true
+                - name: OPENAI_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: sqlserver2tidb-agent
+                      key: openai-api-key
+                      optional: true
+              volumeMounts:
+                - name: metadata-repo
+                  mountPath: /workspace
+          volumes:
+            - name: metadata-repo
+              persistentVolumeClaim:
+                claimName: sqlserver2tidb-metadata-repo

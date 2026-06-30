@@ -272,7 +272,7 @@ docker run --rm \
     --state-pr-draft
 ```
 
-仓库和 release archive 都包含 `examples/worker-agent/`，里面有 Docker Compose、`.env.example` 和 systemd unit 模板，可作为本地/容器部署起点。
+仓库和 release archive 都包含 `examples/agent-runtime/` 与 `examples/worker-agent/`。`examples/agent-runtime/` 提供顶层 `agent` 的 GitHub Actions 手动触发 workflow、Kubernetes CronJob、systemd status timer 和 CDC ops timer 模板；`examples/worker-agent/` 提供 metadata-only worker-agent 的 Docker Compose、`.env.example` 和 systemd unit 模板。所有 agent runtime 模板默认只做 status/read-only 行为，PR 创建、数据库执行和 LLM 调用都需要显式开关，并继续受 `global/policies/agent-policy.yaml` 与 approval/hash gate 限制。
 
 镜像内包含 `git`、`gh`、`sqlserver2tidb` 和 `sqlserver2tidb-executor`，默认使用非 root 的 `sqlserver2tidb` 用户运行。挂载 metadata repo，并通过 `GH_TOKEN` 或已认证的 GitHub CLI 配置提供 GitHub 身份后，同一个镜像即可执行 `create-pr --execute`、`complete-github-pr --execute`、`sync-github-pr-approval`、`create-worker-state-pr --execute` 和 `create-executor-evidence-pr --execute` 等 GitHub PR 自动化命令。
 

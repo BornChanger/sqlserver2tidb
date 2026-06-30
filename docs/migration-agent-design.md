@@ -556,6 +556,15 @@ The agent should run inside the same image with mounted metadata repo and enviro
 
 GitHub Actions should run status, PR creation, approval sync, and CDC health with scoped tokens. Database execution should remain opt-in and environment-protected.
 
+The repository ships runtime templates under `examples/agent-runtime/`:
+
+- `github-actions/migration-agent.yml` for manual `workflow_dispatch` orchestration.
+- `kubernetes/migration-agent-cronjob.yaml` for periodic containerized status or CDC operations.
+- `systemd/sqlserver2tidb-agent-status.*` for host-level status polling.
+- `systemd/sqlserver2tidb-agent-cdc-ops.*` for host-level CDC health/orchestration polling.
+
+These templates must keep status/read-only behavior as the default. PR creation, database execution, and LLM provider calls stay behind explicit runtime switches and the repository policy file.
+
 ## 16. Security Model
 
 - Secrets are passed by environment variable names or secret references.

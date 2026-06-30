@@ -1,0 +1,22 @@
+[Unit]
+Description=sqlserver2tidb migration agent status
+Documentation=https://github.com/BornChanger/sqlserver2tidb
+
+[Service]
+Type=oneshot
+User=sqlserver2tidb
+Group=sqlserver2tidb
+WorkingDirectory=/srv/sqlserver2tidb-metadata
+Environment=SQLSERVER2TIDB_SOURCE_CLUSTER_ID=prod-sqlserver-a
+Environment=SQLSERVER2TIDB_PROJECT_ID=sales-db-to-tidb-prod-a
+ExecStart=/usr/local/bin/sqlserver2tidb agent \
+  --root /srv/sqlserver2tidb-metadata \
+  --mode status \
+  --source-cluster-id ${SQLSERVER2TIDB_SOURCE_CLUSTER_ID} \
+  --project-id ${SQLSERVER2TIDB_PROJECT_ID}
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/sqlserver2tidb-metadata

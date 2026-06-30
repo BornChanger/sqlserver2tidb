@@ -1,0 +1,12 @@
+[Unit]
+Description=Run sqlserver2tidb migration agent status every five minutes
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Persistent=true
+Unit=sqlserver2tidb-agent-status.service
+
+[Install]
+WantedBy=timers.target

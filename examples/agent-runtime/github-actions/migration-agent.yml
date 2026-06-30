@@ -1,0 +1,208 @@
+name: sqlserver2tidb-migration-agent
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Agent mode to run"
+        required: true
+        default: "status"
+        type: choice
+        options:
+          - status
+          - auto
+          - plan-and-pr
+          - execute-approved
+          - cdc-ops
+          - review-assist
+      source_cluster_id:
+        description: "Source SQL Server cluster id"
+        required: true
+      project_id:
+        description: "Migration project id"
+        required: true
+      stage:
+        description: "Stage for plan-and-pr, execute-approved, or review-assist"
+        required: false
+      image:
+        description: "Container image"
+        required: true
+        default: "ghcr.io/bornchanger/sqlserver2tidb:latest"
+      max_steps:
+        description: "Maximum steps for agent auto"
+        required: true
+        default: "1"
+      execute_pr:
+        description: "Create GitHub PRs for plan-and-pr or auto"
+        required: true
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+      execute:
+        description: "Execute approved worker action"
+        required: true
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+      use_executor:
+        description: "Route supported execute-approved stages through sqlserver2tidb-executor"
+        required: true
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+      execute_llm:
+        description: "Call configured LLM provider for review-assist"
+        required: true
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+      provider_config:
+        description: "LLM provider config path inside the metadata repo"
+        required: false
+        default: "global/llm-providers.yaml"
+      provider_id:
+        description: "Optional LLM provider id"
+        required: false
+      cdc_history_file:
+        description: "CDC health history path inside the metadata repo"
+        required: false
+      fail_on_warning:
+        description: "Return non-zero for CDC warning status"
+        required: true
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+permissions:
+  contents: write
+  pull-requests: write
+  checks: read
+  statuses: read
+
+concurrency:
+  group: sqlserver2tidb-agent-${{ inputs.source_cluster_id }}-${{ inputs.project_id }}-${{ inputs.mode }}
+  cancel-in-progress: false
+
+jobs:
+  migration-agent:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ secrets.SQLSERVER2TIDB_GITHUB_APP_TOKEN || github.token }}
+      SQLSERVER2TIDB_SOURCE_CONNECTION_STRING: ${{ secrets.SQLSERVER2TIDB_SOURCE_CONNECTION_STRING }}
+      SQLSERVER2TIDB_TARGET_CONNECTION_STRING: ${{ secrets.SQLSERVER2TIDB_TARGET_CONNECTION_STRING }}
+      SQLSERVER2TIDB_FEISHU_WEBHOOK: ${{ secrets.SQLSERVER2TIDB_FEISHU_WEBHOOK }}
+      SQLSERVER2TIDB_FEISHU_SECRET: ${{ secrets.SQLSERVER2TIDB_FEISHU_SECRET }}
+      SQLSERVER2TIDB_SLACK_WEBHOOK: ${{ secrets.SQLSERVER2TIDB_SLACK_WEBHOOK }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+
+    steps:
+      - name: Check out metadata repository
+        uses: actions/checkout@v7
+        with:
+          token: ${{ secrets.SQLSERVER2TIDB_GITHUB_APP_TOKEN || github.token }}
+
+      - name: Run migration agent
+        env:
+          AGENT_MODE: ${{ inputs.mode }}
+          SOURCE_CLUSTER_ID: ${{ inputs.source_cluster_id }}
+          PROJECT_ID: ${{ inputs.project_id }}
+          STAGE: ${{ inputs.stage }}
+          MAX_STEPS: ${{ inputs.max_steps }}
+          EXECUTE_PR: ${{ inputs.execute_pr }}
+          EXECUTE: ${{ inputs.execute }}
+          USE_EXECUTOR: ${{ inputs.use_executor }}
+          EXECUTE_LLM: ${{ inputs.execute_llm }}
+          PROVIDER_CONFIG: ${{ inputs.provider_config }}
+          PROVIDER_ID: ${{ inputs.provider_id }}
+          CDC_HISTORY_FILE: ${{ inputs.cdc_history_file }}
+          FAIL_ON_WARNING: ${{ inputs.fail_on_warning }}
+          IMAGE: ${{ inputs.image }}
+        run: |
+          set -euo pipefail
+          git config user.name "sqlserver2tidb[bot]"
+          git config user.email "sqlserver2tidb[bot]@users.noreply.github.com"
+
+          args=(
+            agent
+            --root /workspace
+            --mode "${AGENT_MODE}"
+            --source-cluster-id "${SOURCE_CLUSTER_ID}"
+            --project-id "${PROJECT_ID}"
+          )
+          if [ -n "${STAGE}" ]; then
+            args+=(--stage "${STAGE}")
+          fi
+
+          case "${AGENT_MODE}" in
+            auto)
+              args+=(--max-steps "${MAX_STEPS}")
+              if [ "${EXECUTE_PR}" = "true" ]; then
+                args+=(--execute-pr)
+              fi
+              ;;
+            plan-and-pr)
+              if [ "${EXECUTE_PR}" = "true" ]; then
+                args+=(--execute-pr)
+              fi
+              ;;
+            execute-approved)
+              if [ "${EXECUTE}" = "true" ]; then
+                args+=(--execute)
+              fi
+              if [ "${USE_EXECUTOR}" = "true" ]; then
+                args+=(
+                  --use-executor
+                  --source-connection-string-env SQLSERVER2TIDB_SOURCE_CONNECTION_STRING
+                  --target-connection-string-env SQLSERVER2TIDB_TARGET_CONNECTION_STRING
+                )
+              fi
+              ;;
+            cdc-ops)
+              args+=(
+                --source-connection-string-env SQLSERVER2TIDB_SOURCE_CONNECTION_STRING
+                --target-connection-string-env SQLSERVER2TIDB_TARGET_CONNECTION_STRING
+                --feishu-webhook-env SQLSERVER2TIDB_FEISHU_WEBHOOK
+                --feishu-secret-env SQLSERVER2TIDB_FEISHU_SECRET
+                --slack-webhook-env SQLSERVER2TIDB_SLACK_WEBHOOK
+              )
+              if [ -n "${CDC_HISTORY_FILE}" ]; then
+                args+=(--history-file "${CDC_HISTORY_FILE}")
+              fi
+              if [ "${FAIL_ON_WARNING}" = "true" ]; then
+                args+=(--fail-on-warning)
+              fi
+              ;;
+            review-assist)
+              args+=(--provider-config "${PROVIDER_CONFIG}")
+              if [ -n "${PROVIDER_ID}" ]; then
+                args+=(--provider-id "${PROVIDER_ID}")
+              fi
+              if [ "${EXECUTE_LLM}" = "true" ]; then
+                args+=(--execute-llm)
+              fi
+              ;;
+          esac
+
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e GH_TOKEN \
+            -e SQLSERVER2TIDB_SOURCE_CONNECTION_STRING \
+            -e SQLSERVER2TIDB_TARGET_CONNECTION_STRING \
+            -e SQLSERVER2TIDB_FEISHU_WEBHOOK \
+            -e SQLSERVER2TIDB_FEISHU_SECRET \
+            -e SQLSERVER2TIDB_SLACK_WEBHOOK \
+            -e OPENAI_API_KEY \
+            -v "${GITHUB_WORKSPACE}:/workspace" \
+            "${IMAGE}" "${args[@]}"

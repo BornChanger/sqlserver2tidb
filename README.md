@@ -99,7 +99,7 @@ Build local release archives under `dist/`:
 make dist VERSION=v0.1.0
 ```
 
-Each archive includes both binaries, `README.md`, `LICENSE`, core documents under `docs/`, quickstart and worker-agent examples, the LLM provider configuration template, helper scripts, and optional integration-test assets.
+Each archive includes both binaries, `README.md`, `LICENSE`, core documents under `docs/`, quickstart examples, migration agent runtime templates, worker-agent examples, the LLM provider configuration template, helper scripts, and optional integration-test assets.
 
 Limit local release builds to selected `GOOS/GOARCH` targets:
 
@@ -128,6 +128,8 @@ docker run --rm \
 ```
 
 The image includes `git`, `gh`, `sqlserver2tidb`, and `sqlserver2tidb-executor`, and runs as a non-root `sqlserver2tidb` user. With a mounted metadata repository plus `GH_TOKEN` or a mounted GitHub CLI auth config, the same image can run PR automation commands such as `create-pr --execute`, `complete-github-pr --execute`, `sync-github-pr-approval`, `create-worker-state-pr --execute`, and `create-executor-evidence-pr --execute`.
+
+Runtime templates for the top-level migration agent are under `examples/agent-runtime/`, including a manual GitHub Actions workflow, a Kubernetes CronJob, and systemd timers for periodic status and CDC operations.
 
 ## Test
 
@@ -874,7 +876,7 @@ This checks approved metadata, writes `state/validation-status.yaml`, and writes
 - [User Manual](docs/user-manual.md): end-to-end operator guide for the target SQL Server to TiDB migration agent workflow.
 - [Design Notes](docs/design.md): control-plane, metadata, and LLM responsibility boundaries.
 - [Migration Agent Design](docs/migration-agent-design.md): top-level agent architecture, modes, state machine, LLM boundaries, and implementation phases.
-- [Delivery Guide](docs/delivery.md): release archive, container, metadata repository, worker-agent, GitHub, and LLM provider delivery instructions.
+- [Delivery Guide](docs/delivery.md): release archive, container, metadata repository, migration agent runtime templates, worker-agent, GitHub, and LLM provider delivery instructions.
 
 ## Design Principles
 
