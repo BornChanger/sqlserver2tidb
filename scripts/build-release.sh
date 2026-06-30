@@ -57,7 +57,7 @@ for target in "${targets[@]}"; do
   mkdir -p "${outdir}/examples" "${outdir}/scripts"
   cp -R examples/quickstart examples/worker-agent "${outdir}/examples/"
   cp examples/llm-providers.yaml "${outdir}/examples/"
-  cp scripts/run-quickstart-example.sh scripts/run-integration-tests.sh scripts/run-cdc-soak-tests.sh "${outdir}/scripts/"
+  cp scripts/run-quickstart-example.sh scripts/run-integration-tests.sh scripts/run-cdc-soak-tests.sh scripts/run-container-smoke.sh "${outdir}/scripts/"
   mkdir -p "${outdir}/tests"
   cp -R tests/integration "${outdir}/tests/"
 

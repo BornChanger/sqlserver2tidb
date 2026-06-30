@@ -127,7 +127,7 @@ docker run --rm \
   sqlserver2tidb:dev doctor --root /workspace
 ```
 
-The image includes `git`, `sqlserver2tidb`, and `sqlserver2tidb-executor`, and runs as a non-root `sqlserver2tidb` user. It does not include GitHub CLI; use the host CLI or extend the image when `create-pr --execute`, `complete-github-pr --execute`, `sync-github-pr-approval`, `create-worker-state-pr --execute`, or `create-executor-evidence-pr --execute` must call `gh`.
+The image includes `git`, `gh`, `sqlserver2tidb`, and `sqlserver2tidb-executor`, and runs as a non-root `sqlserver2tidb` user. With a mounted metadata repository plus `GH_TOKEN` or a mounted GitHub CLI auth config, the same image can run PR automation commands such as `create-pr --execute`, `complete-github-pr --execute`, `sync-github-pr-approval`, `create-worker-state-pr --execute`, and `create-executor-evidence-pr --execute`.
 
 ## Test
 
@@ -139,6 +139,12 @@ Run the same gate used by GitHub Actions:
 
 ```bash
 make ci
+```
+
+Run the container build and PR automation smoke used by GitHub Actions:
+
+```bash
+make container-smoke
 ```
 
 Run the offline quickstart example:

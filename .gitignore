@@ -2,3 +2,4 @@ bin/
 dist/
 *.test
 coverage.out
+.tmp-container-smoke.*
