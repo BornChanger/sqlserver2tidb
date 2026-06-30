@@ -551,7 +551,7 @@ Common flags:
 - `--poll`
 - `--interval <duration>`
 
-The first code slice implements `--mode status` and `--mode auto --dry-run`. Current implementation also allows bounded safe non-dry-run `auto` planning steps: schema draft generation, schema PR draft generation, and optional schema PR creation with `--execute-pr`. Database/object-storage execution remains behind `execute-approved`.
+The first code slice implements `--mode status` and `--mode auto --dry-run`. Current implementation also allows bounded safe non-dry-run `auto` planning steps: schema draft generation, schema PR draft generation, plan PR draft generation, and optional schema/plan PR creation with `--execute-pr`. Database/object-storage execution remains behind `execute-approved`.
 
 ## 15. Delivery Model
 
@@ -641,7 +641,8 @@ Deliver:
 - tests for schema PR boundary and approved executor boundary
 - non-dry-run schema draft / schema PR draft generation
 - `--max-steps` bounded planning loop
-- optional schema PR creation with `--execute-pr`
+- plan PR draft generation at the post-schema planning boundary
+- optional schema/plan PR creation with `--execute-pr`
 
 No database or object-storage side effects. GitHub PR creation is allowed only when `--execute-pr` is explicitly set.
 

@@ -413,7 +413,7 @@ go run ./cmd/sqlserver2tidb agent \
   --max-steps 2
 ```
 
-Without `--dry-run`, `auto` executes only deterministic non-database planning work. `--max-steps` defaults to `1`; increase it when the agent should chain safe planning actions, such as generating a schema draft and then the schema PR draft in one invocation. Add `--execute-pr` only when the agent should also call `gh pr create` for that generated schema PR. If the next action is an approved worker stage, `auto` stops and prints the `execute-approved` boundary instead of mutating state or running database/object-storage work.
+Without `--dry-run`, `auto` executes only deterministic non-database planning work. `--max-steps` defaults to `1`; increase it when the agent should chain safe planning actions, such as generating a schema draft and then the schema PR draft in one invocation. After schema review, if no worker action is ready and `prs/plan-pr.md` has not been generated yet, `auto` can generate the plan PR draft. Add `--execute-pr` only when the agent should also call `gh pr create` for a generated schema or plan PR. If the next action is an approved worker stage, `auto` stops and prints the `execute-approved` boundary instead of mutating state or running database/object-storage work.
 
 Generate a stage PR draft through the agent and preview the GitHub command:
 

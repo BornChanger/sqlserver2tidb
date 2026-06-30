@@ -699,6 +699,8 @@ func runAgentAuto(root, sourceClusterID, projectID string, maxSteps int, execute
 			}
 		case "generate schema PR":
 			return runAgentPlanAndPR(root, sourceClusterID, projectID, "schema", executePR, false, stdout, stderr)
+		case "generate plan PR":
+			return runAgentPlanAndPR(root, sourceClusterID, projectID, "plan", executePR, false, stdout, stderr)
 		case "worker-action":
 			fmt.Fprintf(stdout, "next action: %s/%s %s\n", report.NextAction.SourceClusterID, report.NextAction.ProjectID, report.NextAction.Stage)
 			fmt.Fprintf(stdout, "command: %s\n", redact.Text(report.NextAction.Command))
@@ -1357,7 +1359,23 @@ func buildAgentAutoDryRunReport(root, sourceClusterID, projectID string) (agentA
 		}
 		report.StopReason = "dry-run"
 	}
+	if report.NextAction.Name == "" && sourceClusterID != "" && projectID != "" && agentProjectFileExists(root, sourceClusterID, projectID, "plan/migration-plan.yaml") && !agentProjectFileExists(root, sourceClusterID, projectID, "prs/plan-pr.md") {
+		report.NextAction = agentAutoAction{
+			Name:            "generate plan PR",
+			SourceClusterID: sourceClusterID,
+			ProjectID:       projectID,
+			Stage:           "plan",
+			Status:          "ready",
+			Command:         fmt.Sprintf("sqlserver2tidb generate-pr-draft --root %s --source-cluster-id %s --project-id %s --stage plan", root, sourceClusterID, projectID),
+		}
+		report.StopReason = "review required"
+	}
 	return report, nil
+}
+
+func agentProjectFileExists(root, sourceClusterID, projectID, rel string) bool {
+	info, err := os.Stat(filepath.Join(root, "clusters", sourceClusterID, "projects", projectID, filepath.FromSlash(rel)))
+	return err == nil && !info.IsDir()
 }
 
 func readAgentSchemaDiffStatus(root, sourceClusterID, projectID string) (string, bool, error) {

@@ -5514,6 +5514,34 @@ func TestRunAgentAutoStopsAtWorkerActionWithoutMutatingState(t *testing.T) {
 	}
 }
 
+func TestRunAgentAutoGeneratesPlanPRDraftAtPlanningBoundary(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createCLIProjectWithOneExportChunk(t, root, &stdout, &stderr)
+	schemaRel := "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/schema/schema-diff.json"
+	writeCLIFile(t, root, schemaRel, strings.Replace(readCLIRelFile(t, root, schemaRel), `"status": "pending"`, `"status": "reviewed"`, 1))
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"agent",
+		"--mode", "auto",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("agent auto plan boundary code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	assertCLIOutputContains(t, output, "migration agent auto")
+	assertCLIOutputContains(t, output, "PR draft generated for plan")
+	assertCLIOutputContains(t, output, "dry run: not calling GitHub")
+	prDraft := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/prs/plan-pr.md")
+	assertCLIOutputContains(t, prDraft, "[plan] sales-db-to-tidb-prod-a")
+}
+
 func TestRunAgentPlanAndPRGeneratesDraftAndDryRunCreateCommand(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer
