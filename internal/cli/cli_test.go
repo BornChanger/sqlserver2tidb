@@ -5586,6 +5586,113 @@ func TestRunAgentExecuteApprovedRunsMetadataWorkerWithExecute(t *testing.T) {
 	}
 }
 
+func TestRunAgentExecuteApprovedExportDryRunCanUseWorkerExecutor(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createCLIReadyExportProjectForCluster(t, root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a")
+
+	code := Run([]string{
+		"agent",
+		"--mode", "execute-approved",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "export",
+		"--use-executor",
+		"--source-connection-string-env", "SQLSERVER_EXPORT_DSN",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("agent execute-approved export executor dry-run code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "migration agent execute-approved dry run") {
+		t.Fatalf("agent execute-approved export executor dry-run stdout = %q, want agent dry-run header", output)
+	}
+	if !strings.Contains(output, "worker executor dry run") {
+		t.Fatalf("agent execute-approved export executor dry-run stdout = %q, want worker executor dry-run", output)
+	}
+	if !strings.Contains(output, "stage: export") {
+		t.Fatalf("agent execute-approved export executor dry-run stdout = %q, want export stage", output)
+	}
+	if !strings.Contains(output, "sqlserver2tidb-executor export") {
+		t.Fatalf("agent execute-approved export executor dry-run stdout = %q, want executor export command", output)
+	}
+	if !strings.Contains(output, "--source-connection-string-env SQLSERVER_EXPORT_DSN") {
+		t.Fatalf("agent execute-approved export executor dry-run stdout = %q, want source connection env", output)
+	}
+	if _, err := os.Stat(filepath.Join(root, "clusters", "prod-sqlserver-a", "projects", "sales-db-to-tidb-prod-a", "evidence", "executor-export-run.json")); !os.IsNotExist(err) {
+		t.Fatalf("agent execute-approved export executor dry-run wrote executor evidence, err = %v", err)
+	}
+}
+
+func TestRunAgentExecuteApprovedExportExecuteCanUseWorkerExecutorAndEvidencePRDraft(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createCLIReadyExportProjectForCluster(t, root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a")
+
+	fakeExecutor := filepath.Join(root, "fake-agent-export-executor")
+	if err := os.WriteFile(fakeExecutor, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> agent-export-executor-args.log\nprintf 'fake executor completed: %s\\n' \"$1\"\nprintf 'exported rows: 2\\n'\nprintf 'output bytes: 128\\n'\nprintf 'output sha256: sha256:1111111111111111111111111111111111111111111111111111111111111111\\n'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	code := Run([]string{
+		"agent",
+		"--mode", "execute-approved",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "export",
+		"--use-executor",
+		"--executor-binary", "./fake-agent-export-executor",
+		"--source-connection-string-env", "SQLSERVER_EXPORT_DSN",
+		"--command-timeout", "5s",
+		"--command-retries", "1",
+		"--retry-backoff", "1ms",
+		"--resume",
+		"--execute",
+		"--evidence-pr-draft",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("agent execute-approved export executor execute code = %d, stderr = %s", code, stderr.String())
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "migration agent execute-approved") {
+		t.Fatalf("agent execute-approved export executor execute stdout = %q, want agent header", output)
+	}
+	if !strings.Contains(output, "worker executor completed for sales-db-to-tidb-prod-a") {
+		t.Fatalf("agent execute-approved export executor execute stdout = %q, want worker executor completion", output)
+	}
+	if !strings.Contains(output, "executor evidence PR draft generated") {
+		t.Fatalf("agent execute-approved export executor execute stdout = %q, want evidence PR draft", output)
+	}
+	if !strings.Contains(output, "body file: clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/prs/executor-export-evidence-pr.md") {
+		t.Fatalf("agent execute-approved export executor execute stdout = %q, want export evidence PR body file", output)
+	}
+	argsLog := readCLIRelFile(t, root, "agent-export-executor-args.log")
+	if !strings.Contains(argsLog, "export --execute") {
+		t.Fatalf("agent export executor args = %q, want export execute", argsLog)
+	}
+	if !strings.Contains(argsLog, "--source-connection-string-env SQLSERVER_EXPORT_DSN") {
+		t.Fatalf("agent export executor args = %q, want source connection env", argsLog)
+	}
+	evidence := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/executor-export-run.json")
+	if !strings.Contains(evidence, `"stage": "export"`) {
+		t.Fatalf("agent export executor evidence = %q, want export stage", evidence)
+	}
+	if !strings.Contains(evidence, `"status": "succeeded"`) {
+		t.Fatalf("agent export executor evidence = %q, want succeeded status", evidence)
+	}
+	if !strings.Contains(evidence, `fake executor completed: export`) {
+		t.Fatalf("agent export executor evidence = %q, want executor output", evidence)
+	}
+	prBody := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/prs/executor-export-evidence-pr.md")
+	if !strings.Contains(prBody, "# PR Draft: [executor-evidence:export] sales-db-to-tidb-prod-a") {
+		t.Fatalf("executor export evidence PR body = %q, want executor evidence PR title", prBody)
+	}
+}
+
 func TestRunAgentExecuteApprovedDDLDryRunUsesWorkerExecutor(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer

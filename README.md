@@ -428,6 +428,21 @@ go run ./cmd/sqlserver2tidb agent \
 
 The default is a dry-run that reports the ready action and command. Add `--execute` to run the approved metadata worker for `export`, `import`, `cdc`, `validation`, or `cutover`.
 
+For real data movement, CDC apply, or validation execution, add `--use-executor`. In dry-run mode this previews the `worker-executor` command list; with `--execute` it runs the approved executor path and writes `evidence/executor-<stage>-run.json`:
+
+```bash
+go run ./cmd/sqlserver2tidb agent \
+  --mode execute-approved \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --stage export \
+  --use-executor \
+  --source-connection-string-env SQLSERVER2TIDB_SQLSERVER_DSN \
+  --execute \
+  --evidence-pr-draft
+```
+
 For executor-backed stages, the agent routes the approved action through `worker-executor` and accepts the same execution controls:
 
 ```bash
@@ -454,7 +469,7 @@ go run ./cmd/sqlserver2tidb agent \
   --create-evidence-pr
 ```
 
-Use `--executor-binary` to point at a custom executor binary. The agent still uses the committed approval and payload-hash gates before any executor command is prepared. Add `--evidence-pr-draft` with `--execute` on executor-backed stages (`ddl` and `cdc-enable`) to write the matching `prs/executor-<stage>-evidence-pr.md` after successful executor evidence is recorded. Add `--create-evidence-pr` to generate the draft and preview the deterministic `git`/`gh` commands without changing git or calling GitHub. Use `--execute-evidence-pr` only when the local checkout should create the branch, commit evidence, push, and open the GitHub PR.
+Use `--executor-binary` to point at a custom executor binary. The agent still uses the committed approval and payload-hash gates before any executor command is prepared. Add `--evidence-pr-draft` with `--execute` on executor-backed stages (`ddl`, `export`, `import`, `cdc-enable`, `cdc`, and `validation`) to write the matching `prs/executor-<stage>-evidence-pr.md` after successful executor evidence is recorded. Add `--create-evidence-pr` to generate the draft and preview the deterministic `git`/`gh` commands without changing git or calling GitHub. Use `--execute-evidence-pr` only when the local checkout should create the branch, commit evidence, push, and open the GitHub PR.
 
 Run CDC health and long-period CDC range orchestration through the agent:
 

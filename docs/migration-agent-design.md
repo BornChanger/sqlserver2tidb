@@ -200,8 +200,9 @@ sqlserver2tidb agent \
   --root . \
   --source-cluster-id prod-sqlserver-a \
   --project-id sales-db-to-tidb-prod-a \
-  --stage ddl \
-  --target-connection-string-env SQLSERVER2TIDB_TARGET_CONNECTION_STRING \
+  --stage export \
+  --use-executor \
+  --source-connection-string-env SQLSERVER2TIDB_SQLSERVER_DSN \
   --execute \
   --create-evidence-pr
 ```
@@ -209,7 +210,8 @@ sqlserver2tidb agent \
 Responsibilities:
 
 - require explicit `--execute`
-- call `worker-executor --stage <stage> --execute` for executor stages
+- call `worker-executor --stage <stage> --execute` for always-executor stages (`ddl`, `cdc-enable`)
+- call `worker-executor --stage <stage> --execute` for executor-supported worker stages (`export`, `import`, `cdc`, `validation`) when `--use-executor` is set
 - call metadata-only workers when appropriate
 - support `--resume`, `--command-timeout`, `--command-retries`, and `--retry-backoff`
 - generate evidence PR draft after executor-backed execution when `--evidence-pr-draft` is set

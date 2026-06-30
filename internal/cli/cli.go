@@ -316,6 +316,7 @@ type agentExecuteApprovedReport struct {
 }
 
 type agentExecutorOptions struct {
+	UseExecutor               bool
 	ExecutorBinary            string
 	SourceConnectionStringEnv string
 	TargetConnectionStringEnv string
@@ -394,6 +395,7 @@ func runAgent(args []string, stdout, stderr io.Writer) int {
 	evidencePRDraft := fs.Bool("evidence-pr-draft", false, "after execute-approved executor-backed execution, generate an executor evidence PR draft")
 	createEvidencePR := fs.Bool("create-evidence-pr", false, "after execute-approved executor-backed execution, generate and preview executor evidence PR creation; default does not change git or call GitHub")
 	executeEvidencePR := fs.Bool("execute-evidence-pr", false, "after execute-approved executor-backed execution, generate and create the executor evidence PR through git and gh")
+	useExecutor := fs.Bool("use-executor", false, "for execute-approved, route executor-supported stages through worker-executor instead of metadata-only workers")
 	executorBinary := fs.String("executor-binary", "", "external executor binary for executor-backed agent actions; default is sqlserver2tidb-executor")
 	sourceConnectionStringEnv := fs.String("source-connection-string-env", "", "environment variable containing the SQL Server connection string for executor-backed agent actions")
 	targetConnectionStringEnv := fs.String("target-connection-string-env", "", "environment variable containing the TiDB/MySQL connection string for executor-backed agent actions")
@@ -448,6 +450,7 @@ func runAgent(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	executorOptions := agentExecutorOptions{
+		UseExecutor:               *useExecutor,
 		ExecutorBinary:            strings.TrimSpace(*executorBinary),
 		SourceConnectionStringEnv: strings.TrimSpace(*sourceConnectionStringEnv),
 		TargetConnectionStringEnv: strings.TrimSpace(*targetConnectionStringEnv),
@@ -705,8 +708,8 @@ func runAgentExecuteApproved(root, sourceClusterID, projectID, stage string, exe
 		fmt.Fprintln(stderr, "agent execute-approved: evidence PR options require --execute")
 		return 2
 	}
-	if hasAgentEvidencePRAction(evidencePROptions) && !isAgentExecutorOnlyStage(report.Stage) {
-		fmt.Fprintf(stderr, "agent execute-approved: evidence PR options are only supported for executor-backed stages; got %q\n", report.Stage)
+	if hasAgentEvidencePRAction(evidencePROptions) && !shouldUseAgentWorkerExecutor(report.Stage, executorOptions) {
+		fmt.Fprintf(stderr, "agent execute-approved: evidence PR options require an executor-backed stage; use --use-executor for %q\n", report.Stage)
 		return 2
 	}
 	if jsonOutput && !execute {
@@ -720,7 +723,7 @@ func runAgentExecuteApproved(root, sourceClusterID, projectID, stage string, exe
 	}
 	if !execute {
 		fmt.Fprintln(stdout, "migration agent execute-approved dry run")
-		if isAgentExecutorOnlyStage(report.Stage) {
+		if shouldUseAgentWorkerExecutor(report.Stage, executorOptions) {
 			return runWorkerExecutor(agentWorkerExecutorArgs(root, report.Action, executorOptions, false), stdout, stderr)
 		}
 		fmt.Fprintf(stdout, "next action: %s/%s %s\n", report.SourceClusterID, report.ProjectID, report.Stage)
@@ -788,6 +791,9 @@ func runAgentExecuteApprovedAction(root string, action gitops.WorkerReconcileAct
 		"--source-cluster-id", action.SourceClusterID,
 		"--project-id", action.ProjectID,
 	}
+	if shouldUseAgentWorkerExecutor(action.Stage, executorOptions) {
+		return runWorkerExecutor(agentWorkerExecutorArgs(root, action, executorOptions, true), stdout, stderr)
+	}
 	switch action.Stage {
 	case "export":
 		return runWorkerExport(args, stdout, stderr)
@@ -799,16 +805,30 @@ func runAgentExecuteApprovedAction(root string, action gitops.WorkerReconcileAct
 		return runWorkerValidate(args, stdout, stderr)
 	case "cutover":
 		return runWorkerCutover(args, stdout, stderr)
-	case "ddl", "cdc-enable":
-		return runWorkerExecutor(agentWorkerExecutorArgs(root, action, executorOptions, true), stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "agent execute-approved: stage %q is not executable by the agent\n", action.Stage)
 		return 1
 	}
 }
 
+func shouldUseAgentWorkerExecutor(stage string, options agentExecutorOptions) bool {
+	if isAgentExecutorOnlyStage(stage) {
+		return true
+	}
+	return options.UseExecutor && isAgentExecutorSupportedStage(stage)
+}
+
 func isAgentExecutorOnlyStage(stage string) bool {
 	return stage == "ddl" || stage == "cdc-enable"
+}
+
+func isAgentExecutorSupportedStage(stage string) bool {
+	switch stage {
+	case "ddl", "export", "import", "cdc-enable", "cdc", "validation":
+		return true
+	default:
+		return false
+	}
 }
 
 func hasAgentEvidencePRAction(options agentEvidencePROptions) bool {
@@ -5361,6 +5381,7 @@ Usage:
   sqlserver2tidb agent --mode auto --dry-run --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
   sqlserver2tidb agent --mode plan-and-pr --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage schema
   sqlserver2tidb agent --mode execute-approved --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage export
+  sqlserver2tidb agent --mode execute-approved --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage export --use-executor --source-connection-string-env SQLSERVER2TIDB_SQLSERVER_DSN --execute --evidence-pr-draft
   sqlserver2tidb agent --mode execute-approved --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage ddl --target-connection-string-env SQLSERVER2TIDB_TARGET_CONNECTION_STRING
   sqlserver2tidb agent --mode execute-approved --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage cdc-enable --source-connection-string-env SQLSERVER2TIDB_CDC_ADMIN_CONNECTION_STRING --command-timeout 5m --command-retries 2 --retry-backoff 10s --resume --execute --create-evidence-pr
   sqlserver2tidb agent --mode cdc-ops --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --probe-lsn --history-file clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/cdc-health-history.jsonl --metrics-file artifacts/cdc-health.json --pr-draft
