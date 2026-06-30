@@ -815,7 +815,7 @@ go run ./cmd/sqlserver2tidb create-pr \
   --stage schema
 ```
 
-This is a dry-run by default. Add `--execute` to call `gh pr create`.
+This is a dry-run by default. Add `--execute` to call `gh pr create`; use `--gh-binary <path>` when the command should run through a wrapped GitHub CLI.
 
 After the GitHub PR is reviewed and green, complete the PR closure loop in one command:
 

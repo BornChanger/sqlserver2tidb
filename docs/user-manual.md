@@ -2189,10 +2189,11 @@ bin/sqlserver2tidb create-pr \
   --source-cluster-id prod-sqlserver-a \
   --project-id sales-db-to-tidb-prod-a \
   --stage schema \
+  --gh-binary gh \
   --execute
 ```
 
-该命令要求对应 PR draft 已存在。默认 dry-run，只打印将执行的 `gh pr create`。只有加 `--execute` 才会调用本地 GitHub CLI。
+该命令要求对应 PR draft 已存在。默认 dry-run，只打印将执行的 `gh pr create`。只有加 `--execute` 才会调用本地 GitHub CLI；需要包装过的 GitHub CLI 时传 `--gh-binary <path>`。
 
 ### 16.12 complete-github-pr
 

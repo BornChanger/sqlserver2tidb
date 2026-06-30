@@ -3726,30 +3726,36 @@ func runCreatePR(args []string, stdout, stderr io.Writer) int {
 	projectID := fs.String("project-id", "", "migration project id; omit for cluster-level stages such as discovery")
 	stage := fs.String("stage", "", "PR stage: discovery, schema, schema-drift, plan, export, import, cdc, validation, cutover")
 	execute := fs.Bool("execute", false, "call gh pr create; default is dry-run")
+	ghBinaryFlag := fs.String("gh-binary", "gh", "GitHub CLI binary used to create the PR")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
+	ghBinary := normalizeAgentGHBinary(*ghBinaryFlag)
 	spec, err := gitops.PrepareGitHubPRCreate(*root, *sourceClusterID, *projectID, *stage)
 	if err != nil {
 		fmt.Fprintf(stderr, "create PR: %v\n", err)
 		return 1
 	}
+	command := spec.ShellCommand
+	if ghBinary != "gh" {
+		command = renderArgsForGitHubPRCompletion(append([]string{ghBinary}, spec.Args...))
+	}
 	if !*execute {
 		fmt.Fprintln(stdout, "dry run: not calling GitHub")
-		fmt.Fprintf(stdout, "command: %s\n", redact.Text(spec.ShellCommand))
+		fmt.Fprintf(stdout, "command: %s\n", redact.Text(command))
 		fmt.Fprintf(stdout, "title: %s\n", spec.Title)
 		fmt.Fprintf(stdout, "body file: %s\n", spec.BodyFile)
 		return 0
 	}
 
-	cmd := exec.Command("gh", spec.Args...)
+	cmd := exec.Command(ghBinary, spec.Args...)
 	cmd.Dir = *root
 	output, err := cmd.CombinedOutput()
 	if len(output) > 0 {
 		fmt.Fprint(stdout, redact.Text(string(output)))
 	}
 	if err != nil {
-		fmt.Fprintf(stderr, "create PR: gh pr create failed: %v\n", err)
+		fmt.Fprintf(stderr, "create PR: %s pr create failed: %v\n", ghBinary, err)
 		return 1
 	}
 	return 0

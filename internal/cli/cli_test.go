@@ -1310,6 +1310,51 @@ func TestRunCreatePRDryRunCommand(t *testing.T) {
 	}
 }
 
+func TestRunCreatePRExecuteUsesCustomGHBinary(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createProjectWithSchemaManualReview(t, root, &stdout, &stderr)
+	if code := Run([]string{
+		"generate-pr-draft",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "schema",
+	}, &stdout, &stderr); code != 0 {
+		t.Fatalf("generate-pr-draft code = %d, stderr = %s", code, stderr.String())
+	}
+
+	emptyPath := filepath.Join(root, "empty-path")
+	if err := os.MkdirAll(emptyPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", emptyPath)
+
+	customGH := filepath.Join(root, "custom-create-pr-gh")
+	if err := os.WriteFile(customGH, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> create-pr-gh-args.log\nprintf 'https://github.com/BornChanger/sqlserver2tidb/pull/126\\n'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"create-pr",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--stage", "schema",
+		"--gh-binary", customGH,
+		"--execute",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("create-pr custom gh code = %d, stderr = %s", code, stderr.String())
+	}
+	assertCLIOutputContains(t, stdout.String(), "https://github.com/BornChanger/sqlserver2tidb/pull/126")
+	argsLog := readCLIRelFile(t, root, "create-pr-gh-args.log")
+	assertCLIOutputContains(t, argsLog, "pr create --base main --head agent/sales-db-to-tidb-prod-a/schema")
+}
+
 func TestRunSyncGitHubPRApprovalUsesPRStatusAndWritesApproval(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer
