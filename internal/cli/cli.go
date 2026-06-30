@@ -49,6 +49,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runGenerateSchemaDraft(args[1:], stdout, stderr)
 	case "generate-data-plans":
 		return runGenerateDataPlans(args[1:], stdout, stderr)
+	case "repair-schema-drift":
+		return runRepairSchemaDrift(args[1:], stdout, stderr)
 	case "generate-cdc-plan":
 		return runGenerateCDCPlan(args[1:], stdout, stderr)
 	case "prepare-cdc-range":
@@ -383,6 +385,75 @@ func runGenerateDataPlans(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "import jobs: %d\n", result.ImportJobs)
 	fmt.Fprintf(stdout, "wrote %s\n", "plan/export-plan.yaml")
 	fmt.Fprintf(stdout, "wrote %s\n", "plan/import-plan.yaml")
+	return 0
+}
+
+func runRepairSchemaDrift(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("repair-schema-drift", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	root := fs.String("root", ".", "repository root")
+	sourceClusterID := fs.String("source-cluster-id", "", "upstream SQL Server cluster id")
+	projectID := fs.String("project-id", "", "migration project id")
+	apply := fs.Bool("apply", false, "regenerate schema/data/CDC/validation draft files when drift is auto-repairable")
+	prDraft := fs.Bool("pr-draft", false, "write a schema drift repair PR draft")
+	objectURIPrefix := fs.String("object-uri-prefix", "", "CSV output URI prefix used when --apply regenerates export/import plans")
+	chunkSizeRows := fs.Int64("chunk-size-rows", 1000000, "estimated rows per export chunk when --apply regenerates export/import plans")
+	exportFormat := fs.String("export-format", "csv", "export file format")
+	importEngine := fs.String("import-engine", "sql-insert", "TiDB import engine: sql-insert, tidb-import-into, or tidb-lightning")
+	compression := fs.String("compression", "none", "export/import compression: none or gzip")
+	cdcMode := fs.String("cdc-mode", "sqlserver-cdc", "CDC mode used when --apply regenerates cdc-plan.yaml")
+	retentionHoursRequired := fs.Int("retention-hours-required", 168, "SQL Server CDC retention hours required when --apply regenerates cdc-plan.yaml")
+	cdcApplyBatchSize := fs.Int("cdc-apply-batch-size", 1000, "CDC apply batch size when --apply regenerates cdc-plan.yaml")
+	cdcRoleName := fs.String("cdc-role-name", "", "SQL Server CDC role_name when --apply regenerates cdc-plan.yaml")
+	cdcSupportsNetChanges := fs.Bool("cdc-supports-net-changes", false, "set supports_net_changes when --apply regenerates cdc-plan.yaml")
+	includeChecksum := fs.Bool("include-checksum", false, "include scalar-query checksum checks when --apply regenerates validation-plan.yaml")
+	includeSampledHash := fs.Bool("include-sampled-hash", false, "include scalar-query sampled_hash checks when --apply regenerates validation-plan.yaml")
+	includeBucketedCount := fs.Bool("include-bucketed-count", false, "include scalar-query bucketed_count checks when --apply regenerates validation-plan.yaml")
+	sampleModulo := fs.Int("sample-modulo", 100, "modulo used by sampled_hash checks")
+	bucketCount := fs.Int("bucket-count", 16, "bucket count used by bucketed_count checks")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	result, err := gitops.RepairSchemaDrift(*root, *sourceClusterID, *projectID, gitops.SchemaDriftRepairSpec{
+		Apply:        *apply,
+		WritePRDraft: *prDraft,
+		DataPlan: gitops.DataMovementPlanSpec{
+			ObjectURIPrefix: *objectURIPrefix,
+			ChunkSizeRows:   *chunkSizeRows,
+			ExportFormat:    *exportFormat,
+			ImportEngine:    *importEngine,
+			Compression:     *compression,
+		},
+		CDCPlan: gitops.CDCPlanSpec{
+			Mode:                   *cdcMode,
+			RetentionHoursRequired: *retentionHoursRequired,
+			ApplyBatchSize:         *cdcApplyBatchSize,
+			RoleName:               *cdcRoleName,
+			SupportsNetChanges:     *cdcSupportsNetChanges,
+		},
+		ValidationPlan: gitops.ValidationPlanSpec{
+			IncludeChecksum:      *includeChecksum,
+			IncludeSampledHash:   *includeSampledHash,
+			IncludeBucketedCount: *includeBucketedCount,
+			SampleModulo:         *sampleModulo,
+			BucketCount:          *bucketCount,
+		},
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "repair schema drift: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "schema drift repair completed for %s\n", result.ProjectID)
+	fmt.Fprintf(stdout, "drift issues: %d\n", len(result.Issues))
+	fmt.Fprintf(stdout, "drift detected: %t\n", result.DriftDetected)
+	fmt.Fprintf(stdout, "applied: %t\n", result.Applied)
+	fmt.Fprintf(stdout, "report file: %s\n", result.ReportFile)
+	if result.PRDraftFile != "" {
+		fmt.Fprintf(stdout, "PR draft: %s\n", result.PRDraftFile)
+	}
+	if len(result.UpdatedFiles) > 0 {
+		fmt.Fprintf(stdout, "updated files: %d\n", len(result.UpdatedFiles))
+	}
 	return 0
 }
 
@@ -1277,7 +1348,7 @@ func runGeneratePRDraft(args []string, stdout, stderr io.Writer) int {
 	root := fs.String("root", ".", "repository root")
 	sourceClusterID := fs.String("source-cluster-id", "", "upstream SQL Server cluster id")
 	projectID := fs.String("project-id", "", "migration project id; omit for cluster-level stages such as discovery")
-	stage := fs.String("stage", "", "PR stage: discovery, schema, plan, export, import, cdc, validation, cutover")
+	stage := fs.String("stage", "", "PR stage: discovery, schema, schema-drift, plan, export, import, cdc, validation, cutover")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -1300,7 +1371,7 @@ func runCreatePR(args []string, stdout, stderr io.Writer) int {
 	root := fs.String("root", ".", "repository root")
 	sourceClusterID := fs.String("source-cluster-id", "", "upstream SQL Server cluster id")
 	projectID := fs.String("project-id", "", "migration project id; omit for cluster-level stages such as discovery")
-	stage := fs.String("stage", "", "PR stage: discovery, schema, plan, export, import, cdc, validation, cutover")
+	stage := fs.String("stage", "", "PR stage: discovery, schema, schema-drift, plan, export, import, cdc, validation, cutover")
 	execute := fs.Bool("execute", false, "call gh pr create; default is dry-run")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -3139,6 +3210,7 @@ Usage:
   sqlserver2tidb analyze-compatibility --root . --source-cluster-id prod-sqlserver-a
   sqlserver2tidb generate-schema-draft --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
   sqlserver2tidb generate-data-plans --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --object-uri-prefix https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full --compression gzip
+  sqlserver2tidb repair-schema-drift --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --object-uri-prefix https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full --apply --pr-draft
   sqlserver2tidb generate-cdc-plan --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
   sqlserver2tidb prepare-cdc-range --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --to-lsn 0x00000027000001f40003
   sqlserver2tidb prepare-cdc-iteration --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --max-lsn 0x00000027000001f40004 --pr-draft

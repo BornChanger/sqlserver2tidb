@@ -75,6 +75,27 @@ var prStageDefinitions = map[string]prStageDefinition{
 			"Confirm no plaintext secrets are included.",
 		},
 	},
+	"schema-drift": {
+		Stage:           "schema-drift",
+		Scope:           "project",
+		RequiresProject: true,
+		Reviewers:       []string{"DBA", "SRE", "App Owner"},
+		ProjectFiles: []string{
+			"schema/tidb-ddl/",
+			"schema/conversion-report.md",
+			"schema/schema-diff.json",
+			"plan/export-plan.yaml",
+			"plan/import-plan.yaml",
+			"plan/cdc-plan.yaml",
+			"plan/validation-plan.yaml",
+			"evidence/schema-drift-report.md",
+		},
+		Checklist: []string{
+			"Confirm drift classification and regenerated drafts match the current SQL Server inventory.",
+			"Confirm downstream stage approvals are recomputed only after review.",
+			"Confirm no plaintext secrets are included.",
+		},
+	},
 	"plan": {
 		Stage:           "plan",
 		Scope:           "project",

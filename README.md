@@ -19,6 +19,7 @@ This MVP provides:
 - Rule-based SQL Server compatibility analysis from `inventory/inventory.json`.
 - Project-scoped TiDB schema draft generation from SQL Server inventory and project metadata.
 - Project-scoped full export/import plan draft generation from SQL Server inventory and project metadata.
+- Project-scoped schema drift detection against a reviewed schema baseline, with report generation, automatic draft regeneration for repairable drift, and a schema-drift PR draft.
 - Project-scoped CDC plan draft generation from SQL Server inventory and project metadata.
 - Project-scoped row-count validation plan draft generation from SQL Server inventory and project metadata, with optional exact-numeric scalar-query checksum, sampled-hash, and bucketed-count draft checks.
 - PR draft generation and a dry-run-by-default GitHub PR creation wrapper.
@@ -255,6 +256,21 @@ go run ./cmd/sqlserver2tidb generate-data-plans \
 ```
 
 This writes `plan/export-plan.yaml` and `plan/import-plan.yaml` under the project. The command estimates chunks from inventory `row_count`; single-chunk tables get a reviewed-safe `1 = 1` predicate, while multi-chunk tables still get `TODO` split predicates that must be reviewed before export execution. It generates executor-supported CSV plans with `sql-insert` imports over local `file://`, `http://`, `https://`, `s3://`, `gs://`, or `azblob://` URI prefixes by default; HTTP(S) prefixes must include a host, S3/GCS prefixes must include a bucket, and Azure Blob prefixes use the container as the URI host. `--compression gzip` records `compression: gzip` in both plans and generates `.csv.gz` object names; the worker executor then passes `--compression gzip` to export and import commands. If `--import-engine tidb-import-into` is used, the executable URI prefix must be a local absolute `file://` path, `s3://`, or `gs://`; S3/GCS prefixes must include a bucket, and compression must stay `none`. If `--import-engine tidb-lightning` is used, the executable URI prefix must be local `file://`, `s3://`, `gs://`, or `azblob://`; generated export files are named from TiDB target objects, the export plan records `null_encoding: backslash-n`, and the import plan records a top-level `data_source_uri` so one Lightning command can load the whole data directory. Only `tidb-import-into` import jobs get a `fields` list derived from inventory columns plus `@sqlserver2tidb_null_bitmap` so object-storage imports can skip the internal CSV tail column; `sql-insert` and `tidb-lightning` jobs do not carry `fields`. It does not connect to SQL Server or TiDB and does not move data.
+
+Detect reviewed source schema drift and prepare a repair PR:
+
+```bash
+go run ./cmd/sqlserver2tidb repair-schema-drift \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --object-uri-prefix https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full \
+  --include-checksum \
+  --apply \
+  --pr-draft
+```
+
+This compares the reviewed `schema/schema-diff.json` baseline with the current `clusters/<source_cluster_id>/inventory/inventory.json`. It writes `evidence/schema-drift-report.md`; with `--apply`, auto-repairable table/column drift regenerates schema, export/import, CDC, and validation drafts back to `draft`/reviewable state; with `--pr-draft`, it writes `prs/schema-drift-pr.md` for review. Missing reviewed tables are classified as `manual_required` and block automatic repair. The command never recomputes approval hashes, never approves/merges PRs, and never executes database or object-storage work.
 
 Generate a project-scoped CDC draft plan from the current SQL Server inventory and project metadata:
 

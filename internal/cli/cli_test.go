@@ -584,6 +584,63 @@ func TestRunGenerateDataPlansCommand(t *testing.T) {
 	}
 }
 
+func TestRunRepairSchemaDriftCommandAppliesRepairAndWritesPRDraft(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	createCLIProjectWithOneExportChunk(t, root, &stdout, &stderr)
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := Run([]string{
+		"generate-schema-draft",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+	}, &stdout, &stderr); code != 0 {
+		t.Fatalf("generate-schema-draft code = %d, stderr = %s", code, stderr.String())
+	}
+	setCLISchemaDiffStatus(t, root, "reviewed")
+	inventoryPath := filepath.Join(root, "clusters", "prod-sqlserver-a", "inventory", "inventory.json")
+	inventory, err := os.ReadFile(inventoryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updatedInventory := strings.Replace(string(inventory), `{"name": "id", "type": "int"}`, `{"name": "id", "type": "int"},
+                {"name": "customer_name", "type": "nvarchar"}`, 1)
+	if err := os.WriteFile(inventoryPath, []byte(updatedInventory), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code := Run([]string{
+		"repair-schema-drift",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+		"--object-uri-prefix", "file:///tmp/sqlserver2tidb-test/full",
+		"--chunk-size-rows", "1000",
+		"--include-checksum",
+		"--apply",
+		"--pr-draft",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("repair-schema-drift code = %d, stdout = %s, stderr = %s", code, stdout.String(), stderr.String())
+	}
+	output := stdout.String()
+	assertCLIOutputContains(t, output, "schema drift repair completed for sales-db-to-tidb-prod-a")
+	assertCLIOutputContains(t, output, "drift issues: 1")
+	assertCLIOutputContains(t, output, "applied: true")
+	assertCLIOutputContains(t, output, "report file: clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/schema-drift-report.md")
+	assertCLIOutputContains(t, output, "PR draft: clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/prs/schema-drift-pr.md")
+	report := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/schema-drift-report.md")
+	assertCLIOutputContains(t, report, "customer_name:nvarchar")
+	diff := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/schema/schema-diff.json")
+	assertCLIOutputContains(t, diff, `"source_column": "customer_name"`)
+	prBody := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/prs/schema-drift-pr.md")
+	assertCLIOutputContains(t, prBody, "# PR Draft: [schema-drift] sales-db-to-tidb-prod-a")
+}
+
 func TestRunGeneratePRDraftCommand(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer

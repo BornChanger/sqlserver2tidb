@@ -3522,6 +3522,54 @@ func TestGeneratePRDraftWritesSchemaProjectPRBody(t *testing.T) {
 	assertContains(t, body, "Confirm no plaintext secrets are included.")
 }
 
+func TestGeneratePRDraftWritesSchemaDriftProjectPRBody(t *testing.T) {
+	root := t.TempDir()
+	must(t, InitRepo(root))
+	must(t, CreateCluster(root, ClusterSpec{
+		ClusterID:              "prod-sqlserver-a",
+		DisplayName:            "prod SQL Server A",
+		Listener:               "sqlserver-a.internal",
+		Port:                   1433,
+		SecretRef:              "vault://migration/prod-sqlserver-a/readonly",
+		CDCMode:                "sqlserver-cdc",
+		RetentionHoursRequired: 168,
+		Owners:                 []string{"dba-team"},
+	}))
+	must(t, CreateProject(root, ProjectSpec{
+		SourceClusterID: "prod-sqlserver-a",
+		ProjectID:       "sales-db-to-tidb-prod-a",
+		DisplayName:     "sales DB to TiDB prod A",
+		SourceDatabase:  "sales",
+		SourceSchemas:   []string{"dbo"},
+		TargetName:      "tidb-prod-a",
+		TargetDatabase:  "app",
+		TargetSecretRef: "vault://migration/tidb-prod-a/migrate-user",
+		Mode:            "short-downtime",
+		Owners:          []string{"dba-team"},
+	}))
+
+	result, err := GeneratePRDraft(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", "schema-drift")
+	if err != nil {
+		t.Fatalf("GeneratePRDraft(schema-drift) error = %v", err)
+	}
+	if result.Title != "[schema-drift] sales-db-to-tidb-prod-a" {
+		t.Fatalf("Title = %q, want schema-drift project title", result.Title)
+	}
+	if result.BranchName != "agent/sales-db-to-tidb-prod-a/schema-drift" {
+		t.Fatalf("BranchName = %q, want project schema-drift branch", result.BranchName)
+	}
+	assertStringSliceContains(t, result.Reviewers, "SRE")
+	assertStringSliceContains(t, result.Files, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/schema-drift-report.md")
+	assertStringSliceContains(t, result.Files, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/validation-plan.yaml")
+
+	body := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/prs/schema-drift-pr.md")
+	assertContains(t, body, "# PR Draft: [schema-drift] sales-db-to-tidb-prod-a")
+	assertContains(t, body, "Branch: `agent/sales-db-to-tidb-prod-a/schema-drift`")
+	assertContains(t, body, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/schema-drift-report.md")
+	assertContains(t, body, "Confirm drift classification and regenerated drafts match the current SQL Server inventory.")
+	assertContains(t, body, "gh pr create --base main --head agent/sales-db-to-tidb-prod-a/schema-drift")
+}
+
 func TestGeneratePRDraftWritesDiscoveryClusterPRBody(t *testing.T) {
 	root := t.TempDir()
 	must(t, InitRepo(root))
@@ -6048,6 +6096,77 @@ func TestPrepareWorkerExecutorRejectsExportReviewedSchemaColumnDrift(t *testing.
 	}
 	assertContains(t, err.Error(), "source schema drift")
 	assertContains(t, err.Error(), "customer_full_name")
+}
+
+func TestRepairSchemaDriftAppliesRegeneratedDraftsAndWritesPRDraft(t *testing.T) {
+	root := t.TempDir()
+	createValidationWorkerProject(t, root, dataWorkerInventory())
+	must(t, GenerateSchemaDraftOnly(root))
+	setSchemaDiffStatus(t, root, "reviewed")
+	must(t, GenerateDataPlansOnly(root))
+	must(t, GenerateCDCPlanOnly(root))
+	if _, err := GenerateValidationPlan(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a"); err != nil {
+		t.Fatalf("GenerateValidationPlan() error = %v", err)
+	}
+
+	inventoryRel := "clusters/prod-sqlserver-a/inventory/inventory.json"
+	inventory := readFile(t, root, inventoryRel)
+	inventory = strings.Replace(inventory, `{"name": "customer_name", "type": "nvarchar"}`, `{"name": "customer_name", "type": "nvarchar"},
+                {"name": "order_total", "type": "decimal", "precision": 18, "scale": 2}`, 1)
+	writeFileForTest(t, root, inventoryRel, inventory)
+
+	result, err := RepairSchemaDrift(root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a", SchemaDriftRepairSpec{
+		Apply:        true,
+		WritePRDraft: true,
+		DataPlan: DataMovementPlanSpec{
+			ObjectURIPrefix: "https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full",
+			ChunkSizeRows:   1000000,
+			ExportFormat:    "csv",
+			ImportEngine:    "sql-insert",
+		},
+		CDCPlan: CDCPlanSpec{
+			Mode:                   "sqlserver-cdc",
+			RetentionHoursRequired: 168,
+			ApplyBatchSize:         1000,
+		},
+		ValidationPlan: ValidationPlanSpec{IncludeChecksum: true},
+	})
+	if err != nil {
+		t.Fatalf("RepairSchemaDrift() error = %v", err)
+	}
+	if !result.DriftDetected || !result.Applied || len(result.Issues) != 1 {
+		t.Fatalf("RepairSchemaDrift() result = %+v, want one applied drift issue", result)
+	}
+	if result.ReportFile != "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/schema-drift-report.md" {
+		t.Fatalf("ReportFile = %q", result.ReportFile)
+	}
+	if result.PRDraftFile != "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/prs/schema-drift-pr.md" {
+		t.Fatalf("PRDraftFile = %q", result.PRDraftFile)
+	}
+	assertStringSliceContains(t, result.UpdatedFiles, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/schema/schema-diff.json")
+	assertStringSliceContains(t, result.UpdatedFiles, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/export-plan.yaml")
+	assertStringSliceContains(t, result.UpdatedFiles, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/cdc-plan.yaml")
+	assertStringSliceContains(t, result.UpdatedFiles, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/validation-plan.yaml")
+
+	report := readFile(t, root, result.ReportFile)
+	assertContains(t, report, "# Schema Drift Report")
+	assertContains(t, report, "sales.dbo.orders")
+	assertContains(t, report, "auto_repairable")
+	assertContains(t, report, "columns_changed")
+	assertContains(t, report, "order_total:decimal")
+
+	diff := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/schema/schema-diff.json")
+	assertContains(t, diff, `"status": "draft-generated"`)
+	assertContains(t, diff, `"source_column": "order_total"`)
+	cdcPlan := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/cdc-plan.yaml")
+	assertContains(t, cdcPlan, "- order_total")
+	validationPlan := readFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/plan/validation-plan.yaml")
+	assertContains(t, validationPlan, "type: checksum")
+
+	prBody := readFile(t, root, result.PRDraftFile)
+	assertContains(t, prBody, "# PR Draft: [schema-drift] sales-db-to-tidb-prod-a")
+	assertContains(t, prBody, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/evidence/schema-drift-report.md")
+	assertContains(t, prBody, "gh pr create --base main --head agent/sales-db-to-tidb-prod-a/schema-drift")
 }
 
 func TestPrepareWorkerExecutorPassesExportGzipCompression(t *testing.T) {

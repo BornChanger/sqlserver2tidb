@@ -56,7 +56,7 @@ LLM 只生成解释、候选方案和文档，不直接执行迁移
 - 生成核心 JSON Schema 文件。
 - 单元测试和 CLI smoke test。
 
-当前 CLI 在执行 `discover-sqlserver --connection-string-env ...` 时会连接 SQL Server，并且只读取 catalog metadata。`sqlserver2tidb-executor apply-ddl --execute` 可以显式连接 TiDB，执行已 review 且不含 `TODO` 的 DDL 文件。`sqlserver2tidb-executor export --execute` 也可以显式连接 SQL Server，把一个已审批的导出 work item 写成本地 `file://` CSV、HTTP(S) CSV、原生 `s3://` CSV、原生 `gs://` CSV 或原生 `azblob://` CSV；CSV 会带内部 `__sqlserver2tidb_null_bitmap` 尾列，用来保留 SQL NULL。S3 使用 AWS Signature V4；GCS 使用 HMAC 凭证；Azure Blob 使用 Shared Key。`sqlserver2tidb-executor import --execute` 可以显式连接 TiDB；默认 `--engine sql-insert` 会把本地 `file://`、HTTP(S)、S3、GCS 或 Azure Blob CSV 逐行写入目标表，并在识别该内部尾列时恢复 NULL；显式 `--engine tidb-import-into` 会执行 TiDB `IMPORT INTO ... FROM FILE`，支持绝对本地路径、本地 `file://`、`s3://`、`gs://` file location，本地/file/S3/GCS CSV 会读取 header 并把内部尾列映射成 TiDB user variable 以跳过写入。Azure Blob 当前只用于 `sql-insert` CSV 路径，不用于 TiDB `IMPORT INTO`。`sqlserver2tidb-executor validate-count --execute` 可以显式同时连接 SQL Server 和 TiDB，对一个源/目标对象做 `COUNT(*)` 对比；`sqlserver2tidb-executor validate-query --execute` 可以执行已 review 的源端/目标端 SQL 标量查询并比较结果，用于 `checksum`、`sampled_hash`、`bucketed_count` 和 `business_sql` 检查项。`sqlserver2tidb-executor cdc-lsn --execute` 可以显式连接 SQL Server，读取当前 CDC max LSN，并在提供源对象时读取 capture instance min LSN；`sqlserver2tidb-executor cdc --execute` 可以在显式提供 `--from-lsn` / `--to-lsn` 的情况下读取 SQL Server CDC 变更并向 TiDB 执行 upsert/delete。除此之外，它不会执行 PR 闭环、真实应用流量切换、通用 row digest 或 bucketed sampled hash 策略；PR approve/merge/approval 文件写回由 `complete-github-pr` 负责。`worker-cutover` 只在 GitHub 文件里记录 cutover gate 通过和 completed 状态，不修改 DNS、代理、应用配置或数据库连接。`cdc-orchestrator` 默认负责探测 max LSN 并生成下一段 range PR 草稿；显式加 `--apply-approved` 时，才会消费已经通过 approval/hash gate 的当前 CDC range，执行 CDC apply 并基于 evidence 推进 checkpoint。`cdc-health` 会读取 GitHub 文件里的 CDC plan/checkpoint 状态，并可选通过 executor 探测 SQL Server max/min LSN，用于输出长周期运维 JSON 健康报告；它不修改 plan、checkpoint 或 approval。`discover-sqlserver --dry-run` 只输出计划，不打开数据库连接，也不写 inventory 文件。`analyze-compatibility`、`generate-schema-draft`、`generate-data-plans`、`generate-cdc-plan`、`prepare-cdc-range`、`advance-cdc-checkpoint`、`generate-validation-plan`、`generate-pr-draft`、`create-pr` 的默认 dry-run、`create-worker-state-pr` 的默认 dry-run、`create-executor-evidence-pr` 的默认 dry-run、`worker-executor` 的默认 dry-run、`sqlserver2tidb-executor` 的默认 dry-run、`compute-payload-hash`、`worker-export`、`worker-import`、`worker-cdc`、`worker-validate`、`worker-cutover`、`worker-reconcile --dry-run`、`worker-reconcile --execute-next`、`worker-reconcile --loop` 和 `worker-agent` 只读取并写回或汇报 GitHub metadata 文件。`worker-reconcile --state-pr-draft`、`worker-agent --state-pr-draft` 和 `generate-executor-evidence-pr-draft` 只生成 Markdown PR body，不调用 GitHub。`create-pr --execute` 会调用本地 `gh pr create`；`complete-github-pr --execute` 会调用本地 `gh` 和 `git` 完成 approve/merge/approval commit/push；`create-worker-state-pr --execute` 和 `create-executor-evidence-pr --execute` 会调用本地 `git` 和 `gh`。
+当前 CLI 在执行 `discover-sqlserver --connection-string-env ...` 时会连接 SQL Server，并且只读取 catalog metadata。`sqlserver2tidb-executor apply-ddl --execute` 可以显式连接 TiDB，执行已 review 且不含 `TODO` 的 DDL 文件。`sqlserver2tidb-executor export --execute` 也可以显式连接 SQL Server，把一个已审批的导出 work item 写成本地 `file://` CSV、HTTP(S) CSV、原生 `s3://` CSV、原生 `gs://` CSV 或原生 `azblob://` CSV；CSV 会带内部 `__sqlserver2tidb_null_bitmap` 尾列，用来保留 SQL NULL。S3 使用 AWS Signature V4；GCS 使用 HMAC 凭证；Azure Blob 使用 Shared Key。`sqlserver2tidb-executor import --execute` 可以显式连接 TiDB；默认 `--engine sql-insert` 会把本地 `file://`、HTTP(S)、S3、GCS 或 Azure Blob CSV 逐行写入目标表，并在识别该内部尾列时恢复 NULL；显式 `--engine tidb-import-into` 会执行 TiDB `IMPORT INTO ... FROM FILE`，支持绝对本地路径、本地 `file://`、`s3://`、`gs://` file location，本地/file/S3/GCS CSV 会读取 header 并把内部尾列映射成 TiDB user variable 以跳过写入。Azure Blob 当前只用于 `sql-insert` CSV 路径，不用于 TiDB `IMPORT INTO`。`sqlserver2tidb-executor validate-count --execute` 可以显式同时连接 SQL Server 和 TiDB，对一个源/目标对象做 `COUNT(*)` 对比；`sqlserver2tidb-executor validate-query --execute` 可以执行已 review 的源端/目标端 SQL 标量查询并比较结果，用于 `checksum`、`sampled_hash`、`bucketed_count` 和 `business_sql` 检查项。`sqlserver2tidb-executor cdc-lsn --execute` 可以显式连接 SQL Server，读取当前 CDC max LSN，并在提供源对象时读取 capture instance min LSN；`sqlserver2tidb-executor cdc --execute` 可以在显式提供 `--from-lsn` / `--to-lsn` 的情况下读取 SQL Server CDC 变更并向 TiDB 执行 upsert/delete。除此之外，它不会执行 PR 闭环、真实应用流量切换、通用 row digest 或 bucketed sampled hash 策略；PR approve/merge/approval 文件写回由 `complete-github-pr` 负责。`worker-cutover` 只在 GitHub 文件里记录 cutover gate 通过和 completed 状态，不修改 DNS、代理、应用配置或数据库连接。`cdc-orchestrator` 默认负责探测 max LSN 并生成下一段 range PR 草稿；显式加 `--apply-approved` 时，才会消费已经通过 approval/hash gate 的当前 CDC range，执行 CDC apply 并基于 evidence 推进 checkpoint。`cdc-health` 会读取 GitHub 文件里的 CDC plan/checkpoint 状态，并可选通过 executor 探测 SQL Server max/min LSN，用于输出长周期运维 JSON 健康报告；它不修改 plan、checkpoint 或 approval。`discover-sqlserver --dry-run` 只输出计划，不打开数据库连接，也不写 inventory 文件。`analyze-compatibility`、`generate-schema-draft`、`generate-data-plans`、`repair-schema-drift`、`generate-cdc-plan`、`prepare-cdc-range`、`advance-cdc-checkpoint`、`generate-validation-plan`、`generate-pr-draft`、`create-pr` 的默认 dry-run、`create-worker-state-pr` 的默认 dry-run、`create-executor-evidence-pr` 的默认 dry-run、`worker-executor` 的默认 dry-run、`sqlserver2tidb-executor` 的默认 dry-run、`compute-payload-hash`、`worker-export`、`worker-import`、`worker-cdc`、`worker-validate`、`worker-cutover`、`worker-reconcile --dry-run`、`worker-reconcile --execute-next`、`worker-reconcile --loop` 和 `worker-agent` 只读取并写回或汇报 GitHub metadata 文件。`worker-reconcile --state-pr-draft`、`worker-agent --state-pr-draft` 和 `generate-executor-evidence-pr-draft` 只生成 Markdown PR body，不调用 GitHub。`create-pr --execute` 会调用本地 `gh pr create`；`complete-github-pr --execute` 会调用本地 `gh` 和 `git` 完成 approve/merge/approval commit/push；`create-worker-state-pr --execute` 和 `create-executor-evidence-pr --execute` 会调用本地 `git` 和 `gh`。
 
 ### 2.2 终极目标
 
@@ -550,6 +550,7 @@ worker/<project_id>/<stage>
 | --- | --- | --- |
 | Discovery PR | `inventory/`、compatibility report | DBA |
 | Schema PR | `schema/tidb-ddl/`、schema diff | DBA、App Owner |
+| Schema Drift PR | `schema/`、`plan/`、`evidence/schema-drift-report.md` | DBA、SRE、App Owner |
 | Plan PR | `plan/` | DBA、SRE、App Owner |
 | Export PR | `plan/export-plan.yaml`、approval | DBA、SRE |
 | Import PR | `plan/import-plan.yaml`、approval | DBA、SRE |
@@ -606,6 +607,7 @@ clusters/prod-sqlserver-a/prs/discovery-pr.md
 | --- | --- | --- |
 | `discovery` | source cluster | review inventory 和兼容性报告 |
 | `schema` | project | review TiDB DDL 草稿和 schema diff |
+| `schema-drift` | project | review schema drift report 和重新生成的 schema/data/CDC/validation 草稿 |
 | `plan` | project | review 迁移计划和阶段策略 |
 | `export` | project | review 全量导出计划和 approval |
 | `import` | project | review 全量导入计划和 approval |
@@ -1711,7 +1713,24 @@ clusters/<source_cluster_id>/cluster.yaml
 - 重新做全量。
 - 或由 DBA 制定人工补偿方案。
 
-### 14.4 数据校验失败
+### 14.4 Schema drift
+
+如果 `worker-executor` 在 export/import/CDC/validation 阶段报 `source schema drift`，不要直接改 approval 文件。先基于最新 discovery 结果执行：
+
+```bash
+bin/sqlserver2tidb repair-schema-drift \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --object-uri-prefix https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full \
+  --include-checksum \
+  --apply \
+  --pr-draft
+```
+
+该命令对比已 review 的 `schema/schema-diff.json` 和当前 `inventory/inventory.json`，写入 `evidence/schema-drift-report.md`。列变化或新增表会被分类为 `auto_repairable`，`--apply` 会重新生成 schema、export/import、CDC 和 validation 草稿，并把它们恢复到需要 review 的状态；已 review 的表在当前 inventory 中消失会被分类为 `manual_required`，自动修复会停止，只留下 report 给 DBA/App Owner 判断。`--pr-draft` 会写入 `prs/schema-drift-pr.md`，后续仍通过 GitHub PR review 合并，不会绕过 approval/hash gate。
+
+### 14.5 数据校验失败
 
 处理：
 
@@ -1722,7 +1741,7 @@ clusters/<source_cluster_id>/cluster.yaml
 5. 检查 delete 是否被 CDC 捕获。
 6. 生成修复 PR，不要直接修目标库。
 
-### 14.5 导入失败
+### 14.6 导入失败
 
 检查：
 
@@ -1865,6 +1884,28 @@ bin/sqlserver2tidb generate-data-plans \
 ```
 
 该命令读取源集群 inventory 和项目 metadata，写回项目目录下的 `plan/export-plan.yaml` 和 `plan/import-plan.yaml`。它只生成当前内置 executor 支持的 CSV 草稿。默认 `--import-engine sql-insert` 时，`--object-uri-prefix` 可以使用本地 `file://`、`http://`、`https://`、`s3://`、`gs://` 或 `azblob://` 前缀，生成的 import job 不带 `fields`；`--compression gzip` 会生成 `.csv.gz` 对象名，并在 plan 中写入 `compression: gzip`。显式 `--import-engine tidb-import-into` 时，端到端可执行的 `--object-uri-prefix` 必须使用本地绝对 `file://`、`s3://` 或 `gs://` 前缀，并会在每个 import job 中写入 `fields`，内容是 inventory 列名加上 `@sqlserver2tidb_null_bitmap`；当前 `tidb-import-into` 不支持 `--compression gzip`。显式 `--import-engine tidb-lightning` 时，`--object-uri-prefix` 可以使用本地 `file://`、`s3://`、`gs://` 或 `azblob://` 前缀；生成的 export 文件名基于 TiDB 目标对象，export plan 写入 `null_encoding: backslash-n`，CSV 不再追加内部 null bitmap 列，SQL NULL 编码为 `\N`，import plan 写入顶层 `data_source_uri`，后续 `worker-executor --stage import` 会生成一个聚合 Lightning 命令。执行 `worker-executor --stage export` 或 `--stage import` 时会重新读取当前 inventory；如果 source table 已消失，reviewed `schema-diff.json` 的源列基线与当前 inventory 不一致，或 `tidb-import-into` reviewed `fields` 与当前 inventory 列不一致，会在生成 executor 命令前失败。该命令不连接 SQL Server 或 TiDB，不执行导出或导入。`--chunk-size-rows` 默认是 `1000000`，`--export-format` 默认是 `csv`，`--import-engine` 默认是 `sql-insert`，`--compression` 默认是 `none`。
+
+### 16.8.1 repair-schema-drift
+
+```bash
+bin/sqlserver2tidb repair-schema-drift \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a \
+  --object-uri-prefix https://object-store.example/migration/prod-sqlserver-a/sales-db-to-tidb-prod-a/full \
+  --chunk-size-rows 1000000 \
+  --export-format csv \
+  --import-engine sql-insert \
+  --compression gzip \
+  --cdc-mode sqlserver-cdc \
+  --retention-hours-required 168 \
+  --cdc-apply-batch-size 1000 \
+  --include-checksum \
+  --apply \
+  --pr-draft
+```
+
+该命令只在 `schema/schema-diff.json` 已经是 `reviewed` 时把它当作 baseline，对比当前 `clusters/<source_cluster_id>/inventory/inventory.json`。它会写入 `evidence/schema-drift-report.md`；如果没有 drift，report 会记录未发现 drift。列变化或新增表会被分类为 `auto_repairable`；传入 `--apply` 时会重新生成 `schema/tidb-ddl/`、`schema/conversion-report.md`、`schema/schema-diff.json`、`plan/export-plan.yaml`、`plan/import-plan.yaml`、`plan/cdc-plan.yaml` 和 `plan/validation-plan.yaml`，并把这些文件恢复为 draft/review 待办。已 review 的表如果从当前 inventory 中消失，会被分类为 `manual_required`，`--apply` 会停止，避免自动删除迁移范围。传入 `--pr-draft` 时会写入 `prs/schema-drift-pr.md`，用于后续 GitHub review。该命令不连接 SQL Server、TiDB 或对象存储，不写 approval，不计算 payload hash，也不执行导出、导入、CDC 或 validation。
 
 ### 16.9 generate-cdc-plan
 
@@ -2544,7 +2585,7 @@ executor evidence PR 校验会拒绝负数的 `cdc_applied_changes`、`data_rows
 11. 执行 `generate-cdc-plan` 和 `generate-validation-plan`，生成 CDC 与 validation plan 草稿，并通过 Plan/Export/Import/CDC/Validation PR review。
 12. 对 discovery/schema/plan/export/import/cdc 等阶段执行 `generate-pr-draft`，生成 PR body 草稿和建议命令。
 13. 执行 `create-pr` dry-run 检查命令，再用 `create-pr --execute` 创建 GitHub PR；PR review 和 checks 通过后，由 `github-pr-auto-complete` workflow 或 `complete-github-pr --execute` 完成 approve/merge/approval 文件写回。
-14. 将 `schema/schema-diff.json` 通过 PR review 标成 `reviewed`，让自动闭环写入 ddl approval；approval 通过后用 `worker-executor --stage ddl` dry-run 检查 DDL 执行命令。
+14. 将 `schema/schema-diff.json` 通过 PR review 标成 `reviewed`，再由 PR 自动化闭环写入匹配的 ddl approval；approval 通过后用 `worker-executor --stage ddl` dry-run 检查 DDL 执行命令。
 15. 执行 `compute-payload-hash --stage export`，把 hash 写入 export approval，approval 通过后运行 `worker-export` 写 planned export state/evidence。
 16. 执行 `compute-payload-hash --stage import`，把 hash 写入 import approval，approval 通过后运行 `worker-import` 写 planned import state/evidence。
 17. 将 `plan/cdc-plan.yaml` 通过 PR review 标成 `reviewed` 或 `approved`，执行 `compute-payload-hash --stage cdc`，把 hash 写入 cdc approval，approval 通过后运行 `worker-cdc` 写 planned CDC state/evidence。
@@ -2553,7 +2594,7 @@ executor evidence PR 校验会拒绝负数的 `cdc_applied_changes`、`data_rows
 20. 执行 `worker-reconcile --execute-next --holder <agent-id> --state-pr-draft`，用 lease-backed 单步 reconcile 执行第一个 ready metadata-only action，并生成 state PR body。
 21. 如果需要连续处理多个已审批 metadata-only action，执行 `worker-reconcile --loop --holder <agent-id> --max-iterations <n>`；正式交付时也可以用 `worker-agent --holder <agent-id>` 作为本地/容器进程入口。loop 会在同一 payload 已有 state 后自动停止重复执行该 stage。
 22. 执行 `create-worker-state-pr` dry-run 检查 git/gh 命令，再按需执行 `create-worker-state-pr --execute` 创建 state/evidence 写回 PR。
-23. 对 ddl/export/import/cdc/validation 执行 `worker-executor` dry-run，检查外部执行器命令和当前 plan 是否一致。
+23. 对 ddl/export/import/cdc/validation 执行 `worker-executor` dry-run，检查外部执行器命令和当前 plan 是否一致；如果命中 schema drift gate，先执行 `repair-schema-drift --apply --pr-draft`，review 修复 PR，再重新计算对应 payload hash。
 24. 按需执行 `worker-executor --execute`，生成 `evidence/executor-<stage>-run.json`。
 25. 对 executor-only evidence 执行 `generate-executor-evidence-pr-draft` 和 `create-executor-evidence-pr` dry-run，再按需执行 `create-executor-evidence-pr --execute` 创建 evidence PR。
 26. approval 通过后执行 `worker-validate`，生成 validation state 和 evidence。
