@@ -5753,6 +5753,69 @@ func TestRunAgentStatusJSONReportsReconcileState(t *testing.T) {
 	}
 }
 
+func TestRunAgentWizardGuidesStatusAndAutoDryRun(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createCLIReadyExportProjectForCluster(t, root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a")
+	exportStateBefore := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/export-chunks.yaml")
+	withCLIStdin(t, "1\n2\nq\n")
+
+	code := Run([]string{
+		"agent",
+		"--mode", "wizard",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("agent wizard code = %d, stdout = %s, stderr = %s", code, stdout.String(), stderr.String())
+	}
+	output := stdout.String()
+	assertCLIOutputContains(t, output, "migration agent wizard")
+	assertCLIOutputContains(t, output, "selected project: prod-sqlserver-a/sales-db-to-tidb-prod-a")
+	assertCLIOutputContains(t, output, "1) Show status")
+	assertCLIOutputContains(t, output, "running: status")
+	assertCLIOutputContains(t, output, "migration agent status")
+	assertCLIOutputContains(t, output, "running: auto dry-run")
+	assertCLIOutputContains(t, output, "migration agent auto dry run")
+	assertCLIOutputContains(t, output, "next action: prod-sqlserver-a/sales-db-to-tidb-prod-a export")
+	assertCLIOutputContains(t, output, "leaving migration agent wizard")
+	exportStateAfter := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/export-chunks.yaml")
+	if exportStateAfter != exportStateBefore {
+		t.Fatal("agent wizard status/preview mutated export state")
+	}
+}
+
+func TestRunAgentWizardExecuteApprovedDefaultsToDryRun(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createCLIReadyExportProjectForCluster(t, root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a")
+	exportStateBefore := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/export-chunks.yaml")
+	withCLIStdin(t, "5\nexport\nn\nq\n")
+
+	code := Run([]string{
+		"agent",
+		"--mode", "wizard",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("agent wizard execute dry-run code = %d, stdout = %s, stderr = %s", code, stdout.String(), stderr.String())
+	}
+	output := stdout.String()
+	assertCLIOutputContains(t, output, "running: execute-approved export")
+	assertCLIOutputContains(t, output, "execute now? [y/N]")
+	assertCLIOutputContains(t, output, "migration agent execute-approved dry run")
+	assertCLIOutputContains(t, output, "command: sqlserver2tidb worker-export")
+	exportStateAfter := readCLIRelFile(t, root, "clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/export-chunks.yaml")
+	if exportStateAfter != exportStateBefore {
+		t.Fatal("agent wizard execute-approved dry-run mutated export state")
+	}
+}
+
 func TestRunAgentAutoDryRunStopsAtSchemaReviewBoundary(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer
@@ -7907,6 +7970,26 @@ func assertCLIOutputContains(t *testing.T, output, want string) {
 	if !strings.Contains(output, want) {
 		t.Fatalf("output = %q, want %q", output, want)
 	}
+}
+
+func withCLIStdin(t *testing.T, content string) {
+	t.Helper()
+	stdinPath := filepath.Join(t.TempDir(), "stdin.txt")
+	if err := os.WriteFile(stdinPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stdin, err := os.Open(stdinPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldStdin := os.Stdin
+	os.Stdin = stdin
+	t.Cleanup(func() {
+		os.Stdin = oldStdin
+		if err := stdin.Close(); err != nil {
+			t.Fatalf("close stdin fixture: %v", err)
+		}
+	})
 }
 
 func readCLIRelFile(t *testing.T, root, rel string) string {

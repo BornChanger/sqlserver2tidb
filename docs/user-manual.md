@@ -1752,6 +1752,7 @@ bin/sqlserver2tidb worker-agent \
 推荐把 `agent` 理解成以下几类能力：
 
 - `--mode status`：校验 metadata repo，读取 reconcile 结果，展示当前第一个 ready action、ready/blocked 明细、stage matrix、artifact 路径、当前 agent policy 摘要，以及指定项目的最新 CDC health 历史摘要。
+- `--mode wizard`：进入交互式终端向导。它引导 operator 查看状态、预览下一步、生成 PR draft、执行已审批 stage、运行 CDC ops 或 LLM review assist。只读动作直接执行；会写文件、调用 GitHub、执行数据库动作或调用 LLM 的动作会在界面里再次确认。
 - `--mode auto --dry-run`：只读分析下一步安全动作。加 `--json` 后输出机器可读结果。
 - `--mode auto`：执行有明确边界的安全规划动作，例如生成 schema draft、schema PR draft 或 plan PR draft。它默认最多执行 1 步，可通过 `--max-steps <n>` 放宽；遇到已存在 PR draft、需要人工 review 的状态，或 ready worker action 时会停止。加 `--execute-pr` 创建 schema/plan PR 时也支持 `--gh-binary <path>`。
 - `--mode plan-and-pr`：为指定 stage 生成 PR draft，并默认 dry-run 展示 `gh pr create` 命令；加 `--execute-pr` 才会调用 GitHub CLI 创建 PR；如需使用包装过的 GitHub CLI，可以同时传 `--gh-binary <path>`。

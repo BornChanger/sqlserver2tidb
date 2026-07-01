@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/hmac"
@@ -464,7 +465,7 @@ const agentPolicyRelPath = "global/policies/agent-policy.yaml"
 func runAgent(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("agent", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	mode := fs.String("mode", "status", "agent mode: status, auto, plan-and-pr, execute-approved, pr-close, cdc-ops, or review-assist")
+	mode := fs.String("mode", "status", "agent mode: status, wizard, auto, plan-and-pr, execute-approved, pr-close, cdc-ops, or review-assist")
 	root := fs.String("root", ".", "repository root")
 	sourceClusterID := fs.String("source-cluster-id", "", "optional source cluster id to scope agent status")
 	projectID := fs.String("project-id", "", "optional project id to scope agent status")
@@ -633,7 +634,8 @@ func runAgent(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "agent policy: %v\n", err)
 		return 2
 	}
-	if err := (agentSecurityPolicy{Config: agentPolicy}).Validate(agentSecurityPolicyRequest{
+	policy := agentSecurityPolicy{Config: agentPolicy}
+	policyReq := agentSecurityPolicyRequest{
 		Mode:              modeValue,
 		Stage:             stageValue,
 		Execute:           *execute,
@@ -645,13 +647,36 @@ func runAgent(args []string, stdout, stderr io.Writer) int {
 		ExecutorOptions:   executorOptions,
 		EvidencePROptions: evidencePROptions,
 		CDCOpsOptions:     cdcOpsOptions,
-	}); err != nil {
+	}
+	if modeValue == "wizard" {
+		policyReq.Execute = false
+		policyReq.ExecutePR = false
+		policyReq.ExecuteLLM = false
+		policyReq.EvidencePROptions = agentEvidencePROptions{
+			GHBinary:  evidencePROptions.GHBinary,
+			GitBinary: evidencePROptions.GitBinary,
+		}
+	}
+	if err := policy.Validate(policyReq); err != nil {
 		fmt.Fprintf(stderr, "agent policy: %v\n", err)
 		return 2
 	}
 	switch modeValue {
 	case "status":
 		return runAgentStatus(*root, sourceClusterIDValue, projectIDValue, *jsonOutput, stdout, stderr)
+	case "wizard":
+		return runAgentWizard(agentWizardOptions{
+			Root:            *root,
+			SourceClusterID: sourceClusterIDValue,
+			ProjectID:       projectIDValue,
+			MaxSteps:        *maxSteps,
+			GHBinary:        ghBinaryValue,
+			Policy:          policy,
+			EvidencePR:      evidencePROptions,
+			Executor:        executorOptions,
+			CDCOps:          cdcOpsOptions,
+			LLM:             llmOptions,
+		}, stdout, stderr)
 	case "auto":
 		if *dryRun || *jsonOutput {
 			return runAgentAutoDryRun(*root, sourceClusterIDValue, projectIDValue, *jsonOutput, stdout, stderr)
@@ -668,9 +693,265 @@ func runAgent(args []string, stdout, stderr io.Writer) int {
 	case "review-assist":
 		return runAgentReviewAssist(*root, sourceClusterIDValue, projectIDValue, stageValue, llmOptions, stdout, stderr)
 	default:
-		fmt.Fprintf(stderr, "agent: unsupported mode %q; supported modes: status, auto, plan-and-pr, execute-approved, pr-close, cdc-ops, review-assist\n", modeValue)
+		fmt.Fprintf(stderr, "agent: unsupported mode %q; supported modes: status, wizard, auto, plan-and-pr, execute-approved, pr-close, cdc-ops, review-assist\n", modeValue)
 		return 2
 	}
+}
+
+type agentWizardOptions struct {
+	Root            string
+	SourceClusterID string
+	ProjectID       string
+	MaxSteps        int
+	GHBinary        string
+	Policy          agentSecurityPolicy
+	EvidencePR      agentEvidencePROptions
+	Executor        agentExecutorOptions
+	CDCOps          agentCDCOpsOptions
+	LLM             agentLLMOptions
+}
+
+func runAgentWizard(options agentWizardOptions, stdout, stderr io.Writer) int {
+	scanner := bufio.NewScanner(os.Stdin)
+	lastCode := 0
+	fmt.Fprintln(stdout, "migration agent wizard")
+	fmt.Fprintf(stdout, "selected project: %s/%s\n", emptyAsDash(options.SourceClusterID), emptyAsDash(options.ProjectID))
+	for {
+		printAgentWizardMenu(stdout)
+		choice, ok := readAgentWizardLine(scanner, stdout, "Choose: ")
+		if !ok {
+			if err := scanner.Err(); err != nil {
+				fmt.Fprintf(stderr, "agent wizard: read input: %v\n", err)
+				return 1
+			}
+			fmt.Fprintln(stdout, "leaving migration agent wizard")
+			return lastCode
+		}
+		switch strings.ToLower(strings.TrimSpace(choice)) {
+		case "":
+			continue
+		case "q", "quit", "exit":
+			fmt.Fprintln(stdout, "leaving migration agent wizard")
+			return lastCode
+		case "1":
+			lastCode = runAgentWizardAction(stdout, "status", func() int {
+				return runAgentStatus(options.Root, options.SourceClusterID, options.ProjectID, false, stdout, stderr)
+			})
+		case "2":
+			lastCode = runAgentWizardAction(stdout, "auto dry-run", func() int {
+				return runAgentAutoDryRun(options.Root, options.SourceClusterID, options.ProjectID, false, stdout, stderr)
+			})
+		case "3":
+			confirmed, ok := confirmAgentWizard(scanner, stdout, "run safe auto planning now? [y/N] ")
+			if !ok {
+				return finishAgentWizardAfterEOF(scanner, stdout, stderr, lastCode)
+			}
+			if !confirmed {
+				fmt.Fprintln(stdout, "skipped: auto planning")
+				continue
+			}
+			if err := options.Policy.Validate(agentSecurityPolicyRequest{
+				Mode:            "auto",
+				MaxSteps:        options.MaxSteps,
+				GHBinary:        options.GHBinary,
+				ExecutorOptions: options.Executor,
+				CDCOpsOptions:   options.CDCOps,
+			}); err != nil {
+				fmt.Fprintf(stderr, "agent policy: %v\n", err)
+				lastCode = 2
+				continue
+			}
+			lastCode = runAgentWizardAction(stdout, "auto", func() int {
+				return runAgentAuto(options.Root, options.SourceClusterID, options.ProjectID, options.MaxSteps, false, options.GHBinary, stdout, stderr)
+			})
+		case "4":
+			stage, ok := readAgentWizardLine(scanner, stdout, "stage: ")
+			if !ok {
+				return finishAgentWizardAfterEOF(scanner, stdout, stderr, lastCode)
+			}
+			stage = strings.TrimSpace(stage)
+			if stage == "" {
+				fmt.Fprintln(stderr, "agent wizard: stage is required")
+				lastCode = 2
+				continue
+			}
+			executePR, ok := confirmAgentWizard(scanner, stdout, "create GitHub PR now? [y/N] ")
+			if !ok {
+				return finishAgentWizardAfterEOF(scanner, stdout, stderr, lastCode)
+			}
+			if err := options.Policy.Validate(agentSecurityPolicyRequest{
+				Mode:            "plan-and-pr",
+				Stage:           stage,
+				ExecutePR:       executePR,
+				GHBinary:        options.GHBinary,
+				ExecutorOptions: options.Executor,
+				CDCOpsOptions:   options.CDCOps,
+			}); err != nil {
+				fmt.Fprintf(stderr, "agent policy: %v\n", err)
+				lastCode = 2
+				continue
+			}
+			lastCode = runAgentWizardAction(stdout, "plan-and-pr "+stage, func() int {
+				return runAgentPlanAndPR(options.Root, options.SourceClusterID, options.ProjectID, stage, executePR, false, options.GHBinary, stdout, stderr)
+			})
+		case "5":
+			stage, ok := readAgentWizardLine(scanner, stdout, "stage: ")
+			if !ok {
+				return finishAgentWizardAfterEOF(scanner, stdout, stderr, lastCode)
+			}
+			stage = strings.TrimSpace(stage)
+			if stage == "" {
+				fmt.Fprintln(stderr, "agent wizard: stage is required")
+				lastCode = 2
+				continue
+			}
+			executeNow, ok := confirmAgentWizard(scanner, stdout, "execute now? [y/N] ")
+			if !ok {
+				return finishAgentWizardAfterEOF(scanner, stdout, stderr, lastCode)
+			}
+			evidencePR := options.EvidencePR
+			if !executeNow {
+				evidencePR = agentEvidencePROptions{
+					GHBinary:  options.EvidencePR.GHBinary,
+					GitBinary: options.EvidencePR.GitBinary,
+				}
+			}
+			if err := options.Policy.Validate(agentSecurityPolicyRequest{
+				Mode:              "execute-approved",
+				Stage:             stage,
+				Execute:           executeNow,
+				GHBinary:          options.EvidencePR.GHBinary,
+				GitBinary:         options.EvidencePR.GitBinary,
+				ExecutorOptions:   options.Executor,
+				EvidencePROptions: evidencePR,
+				CDCOpsOptions:     options.CDCOps,
+			}); err != nil {
+				fmt.Fprintf(stderr, "agent policy: %v\n", err)
+				lastCode = 2
+				continue
+			}
+			lastCode = runAgentWizardAction(stdout, "execute-approved "+stage, func() int {
+				return runAgentExecuteApproved(options.Root, options.SourceClusterID, options.ProjectID, stage, executeNow, false, evidencePR, options.Executor, stdout, stderr)
+			})
+		case "6":
+			cdcOptions := options.CDCOps
+			applyApproved, ok := confirmAgentWizard(scanner, stdout, "apply approved CDC range before probing? [y/N] ")
+			if !ok {
+				return finishAgentWizardAfterEOF(scanner, stdout, stderr, lastCode)
+			}
+			poll, ok := confirmAgentWizard(scanner, stdout, "continue polling when caught up? [y/N] ")
+			if !ok {
+				return finishAgentWizardAfterEOF(scanner, stdout, stderr, lastCode)
+			}
+			cdcOptions.ApplyApproved = applyApproved
+			cdcOptions.Poll = poll
+			if err := options.Policy.Validate(agentSecurityPolicyRequest{
+				Mode:            "cdc-ops",
+				GHBinary:        options.GHBinary,
+				ExecutorOptions: options.Executor,
+				CDCOpsOptions:   cdcOptions,
+			}); err != nil {
+				fmt.Fprintf(stderr, "agent policy: %v\n", err)
+				lastCode = 2
+				continue
+			}
+			lastCode = runAgentWizardAction(stdout, "cdc-ops", func() int {
+				return runAgentCDCOps(options.Root, options.SourceClusterID, options.ProjectID, options.Executor, cdcOptions, stdout, stderr)
+			})
+		case "7":
+			stage, ok := readAgentWizardLine(scanner, stdout, "stage: ")
+			if !ok {
+				return finishAgentWizardAfterEOF(scanner, stdout, stderr, lastCode)
+			}
+			stage = strings.TrimSpace(stage)
+			if stage == "" {
+				fmt.Fprintln(stderr, "agent wizard: stage is required")
+				lastCode = 2
+				continue
+			}
+			executeLLM, ok := confirmAgentWizard(scanner, stdout, "call LLM provider now? [y/N] ")
+			if !ok {
+				return finishAgentWizardAfterEOF(scanner, stdout, stderr, lastCode)
+			}
+			llmOptions := options.LLM
+			llmOptions.ExecuteLLM = executeLLM
+			if err := options.Policy.Validate(agentSecurityPolicyRequest{
+				Mode:            "review-assist",
+				Stage:           stage,
+				ExecuteLLM:      executeLLM,
+				GHBinary:        options.GHBinary,
+				ExecutorOptions: options.Executor,
+				CDCOpsOptions:   options.CDCOps,
+			}); err != nil {
+				fmt.Fprintf(stderr, "agent policy: %v\n", err)
+				lastCode = 2
+				continue
+			}
+			lastCode = runAgentWizardAction(stdout, "review-assist "+stage, func() int {
+				return runAgentReviewAssist(options.Root, options.SourceClusterID, options.ProjectID, stage, llmOptions, stdout, stderr)
+			})
+		default:
+			fmt.Fprintf(stderr, "agent wizard: unknown choice %q\n", choice)
+			lastCode = 2
+		}
+		if lastCode != 0 {
+			fmt.Fprintf(stdout, "action failed with exit code %d\n", lastCode)
+		}
+	}
+}
+
+func printAgentWizardMenu(stdout io.Writer) {
+	fmt.Fprintln(stdout)
+	fmt.Fprintln(stdout, "1) Show status")
+	fmt.Fprintln(stdout, "2) Preview next safe action")
+	fmt.Fprintln(stdout, "3) Run safe auto planning")
+	fmt.Fprintln(stdout, "4) Generate stage PR draft")
+	fmt.Fprintln(stdout, "5) Execute approved stage")
+	fmt.Fprintln(stdout, "6) Run CDC ops")
+	fmt.Fprintln(stdout, "7) Run LLM review assist")
+	fmt.Fprintln(stdout, "q) Quit")
+}
+
+func runAgentWizardAction(stdout io.Writer, name string, run func() int) int {
+	fmt.Fprintf(stdout, "running: %s\n", name)
+	return run()
+}
+
+func readAgentWizardLine(scanner *bufio.Scanner, stdout io.Writer, prompt string) (string, bool) {
+	fmt.Fprint(stdout, prompt)
+	if !scanner.Scan() {
+		return "", false
+	}
+	return scanner.Text(), true
+}
+
+func confirmAgentWizard(scanner *bufio.Scanner, stdout io.Writer, prompt string) (bool, bool) {
+	answer, ok := readAgentWizardLine(scanner, stdout, prompt)
+	if !ok {
+		return false, false
+	}
+	switch strings.ToLower(strings.TrimSpace(answer)) {
+	case "y", "yes":
+		return true, true
+	default:
+		return false, true
+	}
+}
+
+func finishAgentWizardAfterEOF(scanner *bufio.Scanner, stdout, stderr io.Writer, lastCode int) int {
+	if err := scanner.Err(); err != nil {
+		fmt.Fprintf(stderr, "agent wizard: read input: %v\n", err)
+		return 1
+	}
+	fmt.Fprintln(stdout, "leaving migration agent wizard")
+	return lastCode
+}
+
+func emptyAsDash(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "-"
+	}
+	return value
 }
 
 func (policy agentSecurityPolicy) Validate(req agentSecurityPolicyRequest) error {
@@ -6131,6 +6412,7 @@ Usage:
   sqlserver2tidb cdc-orchestrator --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --apply-approved --poll --pr-draft
   sqlserver2tidb cdc-health --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --probe-lsn --max-checkpoint-age 15m --metrics-file artifacts/cdc-health.json --history-file clusters/prod-sqlserver-a/projects/sales-db-to-tidb-prod-a/state/cdc-health-history.jsonl
   sqlserver2tidb agent --mode status --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
+  sqlserver2tidb agent --mode wizard --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
   sqlserver2tidb agent --mode auto --dry-run --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a
   sqlserver2tidb agent --mode auto --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --max-steps 2
   sqlserver2tidb agent --mode plan-and-pr --root . --source-cluster-id prod-sqlserver-a --project-id sales-db-to-tidb-prod-a --stage schema

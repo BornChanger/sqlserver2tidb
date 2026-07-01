@@ -167,6 +167,34 @@ Responsibilities:
 - never call GitHub
 - never connect to SQL Server or TiDB
 
+### 8.1.1 `wizard`
+
+Interactive terminal guidance for operators.
+
+```bash
+sqlserver2tidb agent \
+  --mode wizard \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a
+```
+
+Responsibilities:
+
+- present a concise menu for status, next-step preview, safe planning, PR drafting, approved execution, CDC ops, and LLM review assist
+- call existing agent modes instead of adding a second state machine
+- run read-only status and preview actions immediately
+- ask before write, GitHub, LLM, CDC apply/polling, or database execution actions
+- keep GitHub metadata as the only durable state source
+- reuse `agentSecurityPolicy`, approval gates, payload hashes, executor evidence, and LLM redaction from existing modes
+
+Forbidden behavior:
+
+- no conversational state as migration metadata
+- no automatic approval or PR merge
+- no execution based only on terminal input
+- no LLM-generated executable plan/state/evidence
+
 ### 8.2 `plan-and-pr`
 
 Generate missing deterministic migration drafts and open PRs when explicitly requested.
@@ -505,7 +533,7 @@ Initial command:
 
 ```bash
 sqlserver2tidb agent \
-  --mode status|plan-and-pr|execute-approved|pr-close|cdc-ops|review-assist|auto \
+  --mode status|wizard|plan-and-pr|execute-approved|pr-close|cdc-ops|review-assist|auto \
   --root . \
   --source-cluster-id prod-sqlserver-a \
   --project-id sales-db-to-tidb-prod-a

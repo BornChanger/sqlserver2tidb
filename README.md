@@ -493,6 +493,18 @@ go run ./cmd/sqlserver2tidb agent \
 
 Add `--json` for automation. This first agent slice validates the repository, reuses the same readiness logic as `worker-reconcile --dry-run`, reports the next ready action when one exists, and leaves planning/execution/PR side effects to explicit lower-level commands.
 
+Start the guided terminal wizard when an operator wants the agent to walk through status, preview, PR, execution, CDC, and LLM-assist choices:
+
+```bash
+go run ./cmd/sqlserver2tidb agent \
+  --mode wizard \
+  --root . \
+  --source-cluster-id prod-sqlserver-a \
+  --project-id sales-db-to-tidb-prod-a
+```
+
+The wizard is a guided operator console over the same agent modes. Status and preview choices are read-only. Choices that can write files, call GitHub, execute approved work, run CDC apply/polling, or call an LLM provider ask for confirmation before dispatching to the underlying mode. GitHub metadata remains the durable source of truth.
+
 Preview the next automatic agent step without writing files:
 
 ```bash
