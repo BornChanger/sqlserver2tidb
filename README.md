@@ -503,7 +503,9 @@ go run ./cmd/sqlserver2tidb agent \
   --project-id sales-db-to-tidb-prod-a
 ```
 
-The wizard is a guided operator console over the same agent modes. Status and preview choices are read-only. Choices that can write files, call GitHub, execute approved work, run CDC apply/polling, or call an LLM provider ask for confirmation before dispatching to the underlying mode. GitHub metadata remains the durable source of truth.
+The wizard is a guided operator console over the same agent modes. It starts by showing a stage dependency view with the current status, blocking reason, and recommended next command.
+
+Status and preview choices are read-only. Choices that can write files, call GitHub, execute approved work, run CDC apply/polling, or call an LLM provider ask for confirmation before dispatching to the underlying mode. GitHub metadata remains the durable source of truth.
 
 Preview the next automatic agent step without writing files:
 

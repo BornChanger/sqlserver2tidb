@@ -181,6 +181,7 @@ sqlserver2tidb agent \
 
 Responsibilities:
 
+- render a stage dependency view before the menu, including current status, dependency summary, blocked reason, and recommended next command
 - present a concise menu for status, next-step preview, safe planning, PR drafting, approved execution, CDC ops, and LLM review assist
 - call existing agent modes instead of adding a second state machine
 - run read-only status and preview actions immediately

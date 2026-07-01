@@ -25,11 +25,21 @@ sqlserver2tidb agent --mode wizard \
   --project-id sales-db-to-tidb-prod-a
 ```
 
-The wizard prints the selected project, shows a short menu, and waits for a choice:
+The wizard prints the selected project, renders a stage dependency view, then shows a short menu and waits for a choice:
 
 ```text
 migration agent wizard
 selected project: prod-sqlserver-a/sales-db-to-tidb-prod-a
+
+stage dependency view:
+stage | status | dependency
+schema | reviewed | depends on source inventory and project metadata
+ddl | blocked | depends on reviewed schema diff and ddl approval
+export | ready | depends on reviewed export plan and export approval
+import | blocked | depends on export completed, reviewed import plan, and import approval
+...
+recommended next step: execute approved export
+recommended command: sqlserver2tidb agent --mode execute-approved ...
 
 1) Show status
 2) Preview next safe action

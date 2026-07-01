@@ -716,6 +716,9 @@ func runAgentWizard(options agentWizardOptions, stdout, stderr io.Writer) int {
 	lastCode := 0
 	fmt.Fprintln(stdout, "migration agent wizard")
 	fmt.Fprintf(stdout, "selected project: %s/%s\n", emptyAsDash(options.SourceClusterID), emptyAsDash(options.ProjectID))
+	if code := writeAgentWizardDependencyGuidance(options, stdout, stderr); code != 0 {
+		return code
+	}
 	for {
 		printAgentWizardMenu(stdout)
 		choice, ok := readAgentWizardLine(scanner, stdout, "Choose: ")
@@ -898,6 +901,96 @@ func runAgentWizard(options agentWizardOptions, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stdout, "action failed with exit code %d\n", lastCode)
 		}
 	}
+}
+
+type agentWizardDependencyRow struct {
+	Stage       string
+	Status      string
+	DependsOn   string
+	BlockReason string
+}
+
+func writeAgentWizardDependencyGuidance(options agentWizardOptions, stdout, stderr io.Writer) int {
+	report, err := buildAgentStatusReport(options.Root, options.SourceClusterID, options.ProjectID)
+	if err != nil {
+		fmt.Fprintf(stderr, "agent wizard guidance: %v\n", err)
+		return 1
+	}
+	fmt.Fprintln(stdout)
+	fmt.Fprintln(stdout, "stage dependency view:")
+	if strings.TrimSpace(options.SourceClusterID) == "" || strings.TrimSpace(options.ProjectID) == "" {
+		fmt.Fprintln(stdout, "scope: all projects")
+		fmt.Fprintln(stdout, "tip: pass --source-cluster-id and --project-id for per-project dependency guidance")
+		writeAgentWizardRecommendation(options, report, stdout)
+		return 0
+	}
+	fmt.Fprintln(stdout, "stage | status | dependency")
+	for _, row := range buildAgentWizardDependencyRows(options.Root, options.SourceClusterID, options.ProjectID, report.StageMatrix) {
+		fmt.Fprintf(stdout, "%s | %s | depends on %s\n", row.Stage, row.Status, row.DependsOn)
+		if row.BlockReason != "" {
+			fmt.Fprintf(stdout, "  blocked reason: %s\n", redact.Text(row.BlockReason))
+		}
+	}
+	writeAgentWizardRecommendation(options, report, stdout)
+	return 0
+}
+
+func buildAgentWizardDependencyRows(root, sourceClusterID, projectID string, matrix []agentStageStatus) []agentWizardDependencyRow {
+	rows := []agentWizardDependencyRow{
+		{Stage: "schema", DependsOn: "source inventory and project metadata"},
+		{Stage: "ddl", DependsOn: "reviewed schema diff and ddl approval"},
+		{Stage: "export", DependsOn: "reviewed export plan and export approval"},
+		{Stage: "import", DependsOn: "export completed, reviewed import plan, and import approval"},
+		{Stage: "cdc-enable", DependsOn: "reviewed CDC plan and CDC approval"},
+		{Stage: "cdc", DependsOn: "cdc-enable completed, reviewed CDC range, and CDC approval"},
+		{Stage: "validation", DependsOn: "import completed, reviewed validation plan, and validation approval"},
+		{Stage: "cutover", DependsOn: "validation passed, CDC caught up when required, reviewed cutover runbook, and cutover approval"},
+	}
+	schemaStatus, exists, err := readAgentSchemaDiffStatus(root, sourceClusterID, projectID)
+	if err != nil {
+		rows[0].Status = "unknown"
+		rows[0].BlockReason = err.Error()
+	} else if !exists {
+		rows[0].Status = "not generated"
+	} else if strings.TrimSpace(schemaStatus) == "" {
+		rows[0].Status = "unknown"
+	} else {
+		rows[0].Status = schemaStatus
+	}
+	stageStatus := map[string]agentStageStatus{}
+	for _, row := range matrix {
+		stageStatus[row.Stage] = row
+	}
+	for i := range rows {
+		if rows[i].Stage == "schema" {
+			continue
+		}
+		status, ok := stageStatus[rows[i].Stage]
+		if !ok {
+			rows[i].Status = "unknown"
+			continue
+		}
+		rows[i].Status = status.Status
+		rows[i].BlockReason = status.Reason
+	}
+	return rows
+}
+
+func writeAgentWizardRecommendation(options agentWizardOptions, report agentStatusReport, stdout io.Writer) {
+	if report.NextAction.Stage != "" {
+		fmt.Fprintf(stdout, "recommended next step: execute approved %s\n", report.NextAction.Stage)
+		fmt.Fprintf(stdout, "recommended command: %s\n", redact.Text(renderAgentExecuteApprovedCommand(options.Root, report.NextAction)))
+		return
+	}
+	autoReport, err := buildAgentAutoDryRunReport(options.Root, options.SourceClusterID, options.ProjectID)
+	if err == nil && autoReport.NextAction.Name != "" {
+		fmt.Fprintf(stdout, "recommended next step: %s\n", autoReport.NextAction.Name)
+		if autoReport.NextAction.Command != "" {
+			fmt.Fprintf(stdout, "recommended command: %s\n", redact.Text(autoReport.NextAction.Command))
+		}
+		return
+	}
+	fmt.Fprintln(stdout, "recommended next step: none")
 }
 
 func printAgentWizardMenu(stdout io.Writer) {

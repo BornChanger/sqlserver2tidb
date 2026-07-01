@@ -5787,6 +5787,32 @@ func TestRunAgentWizardGuidesStatusAndAutoDryRun(t *testing.T) {
 	}
 }
 
+func TestRunAgentWizardShowsDependencyGuidanceOnStart(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	createCLIReadyExportProjectForCluster(t, root, "prod-sqlserver-a", "sales-db-to-tidb-prod-a")
+	withCLIStdin(t, "q\n")
+
+	code := Run([]string{
+		"agent",
+		"--mode", "wizard",
+		"--root", root,
+		"--source-cluster-id", "prod-sqlserver-a",
+		"--project-id", "sales-db-to-tidb-prod-a",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("agent wizard dependency guidance code = %d, stdout = %s, stderr = %s", code, stdout.String(), stderr.String())
+	}
+	output := stdout.String()
+	assertCLIOutputContains(t, output, "stage dependency view:")
+	assertCLIOutputContains(t, output, "schema | pending | depends on source inventory and project metadata")
+	assertCLIOutputContains(t, output, "export | ready | depends on reviewed export plan and export approval")
+	assertCLIOutputContains(t, output, "import | blocked | depends on export completed, reviewed import plan, and import approval")
+	assertCLIOutputContains(t, output, "recommended next step: execute approved export")
+	assertCLIOutputContains(t, output, "recommended command: sqlserver2tidb agent --mode execute-approved")
+}
+
 func TestRunAgentWizardExecuteApprovedDefaultsToDryRun(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer
